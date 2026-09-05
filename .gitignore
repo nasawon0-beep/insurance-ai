@@ -1,0 +1,15 @@
+local-engine/database/data/
+local-engine/rag/data/
+control-server/data/
+control-server/secrets.env
+local-engine/whisper/models/
+local-engine/ocr/models/
+**/.venv/
+**/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+logs/
+.pytest_cache/
+.DS_Store
+*.log
+*.tsbuildinfo

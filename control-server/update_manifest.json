@@ -1,0 +1,5 @@
+{
+  "STABLE": { "latest": "0.1.0", "url": null, "mandatory": false, "notes": "초기 버전" },
+  "BETA":   { "latest": "0.1.0", "url": null, "mandatory": false, "notes": "" },
+  "DEV":    { "latest": "0.1.0", "url": null, "mandatory": false, "notes": "" }
+}

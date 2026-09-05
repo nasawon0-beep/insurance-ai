@@ -1,0 +1,39 @@
+{
+  "note": "context는 실제 약관 PDF에서 발췌한 텍스트를 넣으세요. 아직 파서(doc-parser)가 없으니 지금은 손으로 복붙해서 채워도 됩니다. 이 파일 자체가 정답 세트이자 회귀 테스트 역할을 합니다.",
+  "cases": [
+    {
+      "id": "cancer_wait_001",
+      "category": "normal",
+      "question": "암 진단 후 90일 면책기간이 있습니까?",
+      "context": "여기에 실제 약관 발췌문을 붙여넣으세요. 예: '계약일로부터 90일이 지난 날의 다음날부터 암보장개시일로 하며...'",
+      "expected_answer_summary": "있음 (예: 계약일로부터 90일 면책기간 적용)",
+      "expected_evidence": {
+        "company": "예시보험",
+        "product": "예시암보험",
+        "clause": "제○조 암보장개시일",
+        "page": 0
+      }
+    },
+    {
+      "id": "abstention_001",
+      "category": "abstention",
+      "question": "이 약관에 나와 있지 않은 특약(예: 반려동물 특약)의 지급 조건은 어떻게 되나요?",
+      "context": "여기에 관련 없는 약관 발췌문을 붙여넣으세요.",
+      "expected_answer_summary": "근거를 찾지 못했다고 명확히 답해야 함 (환각 없이 거부)",
+      "expected_evidence": null
+    },
+    {
+      "id": "amount_subject_001",
+      "category": "normal",
+      "question": "이 특약의 가입금액 한도는 얼마입니까?",
+      "context": "여기에 실제 약관 발췌문을 붙여넣으세요.",
+      "expected_answer_summary": "약관에 명시된 정확한 금액",
+      "expected_evidence": {
+        "company": "예시보험",
+        "product": "예시특약",
+        "clause": "제○조 보험가입금액",
+        "page": 0
+      }
+    }
+  ]
+}
