@@ -19,3 +19,6 @@ logs/
 *.pfx
 *.env
 !*.env.example
+
+# 로컬 헬퍼 스크립트
+push-to-github.sh
