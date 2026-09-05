@@ -803,7 +803,7 @@ _HANGUL_NAME = re.compile(r"[가-힣]{2,4}")
 
 
 def _name_from_filename(filename: Optional[str]) -> Optional[str]:
-    """'260901_M보장분석_나상원님.pdf' → '나상원'. 문서 내 이름이 마스킹(*)됐을 때 폴백."""
+    """'260901_M보장분석_이영희님.pdf' → '이영희'. 문서 내 이름이 마스킹(*)됐을 때 폴백."""
     if not filename:
         return None
     stem = os.path.splitext(os.path.basename(filename))[0]

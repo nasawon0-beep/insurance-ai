@@ -23,7 +23,7 @@ type Message = {
 };
 
 const EXAMPLES = [
-  "나상원 보험료 얼마 내?",
+  "이영희 보험료 얼마 내?",
   "정지은 만기 언제야?",
   "이번 달 생일인 고객 있어?",
   "만기 3개월 안에 오는 계약?",
@@ -161,7 +161,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
               send();
             }
           }}
-          placeholder="예: 나상원 보험료 얼마 내? (Enter 전송, Shift+Enter 줄바꿈)"
+          placeholder="예: 이영희 보험료 얼마 내? (Enter 전송, Shift+Enter 줄바꿈)"
           rows={2}
           style={{ flex: 1, padding: 8, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit", fontSize: 14 }}
         />

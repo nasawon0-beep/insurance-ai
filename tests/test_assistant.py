@@ -56,7 +56,7 @@ def test_build_context_excludes_rrn(client):
 
     c = _seed_customer(
         client,
-        name="나상원",
+        name="이영희",
         address="서울시 강남구 테헤란로 123",
         memo="콜드콜에서 만남, 암보험 관심",
         birth_date="1990-01-01",
@@ -121,17 +121,17 @@ def _mock_llm(monkeypatch, payload, capture=None):
 
 
 def test_answer_maps_used_customers(client, monkeypatch):
-    seeded = _seed_customer(client, name="나상원")
+    seeded = _seed_customer(client, name="이영희")
     _mock_llm(monkeypatch, {
-        "answer": "나상원 고객의 월 보험료는 45,000원입니다.",
-        "used_customer_names": ["나상원"],
+        "answer": "이영희 고객의 월 보험료는 45,000원입니다.",
+        "used_customer_names": ["이영희"],
         "grounded": True,
         "no_data": False,
     })
-    r = client.post("/assistant/ask", json={"question": "나상원 보험료 얼마 내?"})
+    r = client.post("/assistant/ask", json={"question": "이영희 보험료 얼마 내?"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["used_customers"][0]["name"] == "나상원"
+    assert body["used_customers"][0]["name"] == "이영희"
     assert body["used_customers"][0]["id"] == seeded["id"]
     assert body["no_data"] is False
     assert body["grounded"] is True
@@ -139,10 +139,10 @@ def test_answer_maps_used_customers(client, monkeypatch):
 
 
 def test_answer_no_data_clears_customers(client, monkeypatch):
-    _seed_customer(client, name="나상원")
+    _seed_customer(client, name="이영희")
     _mock_llm(monkeypatch, {
         "answer": "해당 정보를 찾지 못했습니다.",
-        "used_customer_names": ["나상원"],
+        "used_customer_names": ["이영희"],
         "grounded": False,
         "no_data": True,
     })
@@ -154,7 +154,7 @@ def test_answer_no_data_clears_customers(client, monkeypatch):
 
 
 def test_answer_nonjson_fallback(client, monkeypatch):
-    _seed_customer(client, name="나상원")
+    _seed_customer(client, name="이영희")
     _mock_llm(monkeypatch, {})  # JSON 파싱 실패 시뮬
     r = client.post("/assistant/ask", json={"question": "아무거나"})
     assert r.status_code == 200
@@ -166,7 +166,7 @@ def test_answer_nonjson_fallback(client, monkeypatch):
 
 
 def test_history_included_in_prompt(client, monkeypatch):
-    _seed_customer(client, name="나상원")
+    _seed_customer(client, name="이영희")
     captured: list[str] = []
     _mock_llm(
         monkeypatch,

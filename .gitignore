@@ -13,3 +13,9 @@ logs/
 .DS_Store
 *.log
 *.tsbuildinfo
+*.pem
+*.key
+*.p12
+*.pfx
+*.env
+!*.env.example

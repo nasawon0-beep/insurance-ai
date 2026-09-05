@@ -11,9 +11,9 @@ pytest.importorskip("httpx")
 
 _TEST_KEY_B64 = base64.b64encode(b"0" * 32).decode("ascii")
 
-INTAKE_TEXT = """황화연
-010-4601-0151
-580824-2123511
+INTAKE_TEXT = """김민지
+010-1234-5678
+900101-2345678
 효동로 291 금호아파트 101-1054
 주부"""
 
@@ -42,14 +42,14 @@ def test_intake_parse_extracts_fields(client, monkeypatch):
         intake,
         "_call_llm",
         lambda *a, **k: {
-            "name": "황화연",
-            "phone": "01046010151",
-            "birth_date": "1958-08-24",
+            "name": "김민지",
+            "phone": "01012345678",
+            "birth_date": "1990-01-01",
             "gender": "F",
             "email": None,
             "address": "효동로 291 금호아파트 101-1054",
             "occupation": "주부",
-            "rrn": "580824-2123511",
+            "rrn": "900101-2345678",
             "memo": None,
         },
     )
@@ -57,11 +57,11 @@ def test_intake_parse_extracts_fields(client, monkeypatch):
     r = client.post("/customers/intake/parse", json={"text": INTAKE_TEXT})
     assert r.status_code == 200, r.text
     f = r.json()["fields"]
-    assert f["name"] == "황화연"
-    assert f["phone"] == "010-4601-0151"       # 11자리 → 하이픈 정규화
-    assert f["rrn"] == "5808242123511"          # 13자리 정규형
+    assert f["name"] == "김민지"
+    assert f["phone"] == "010-1234-5678"       # 11자리 → 하이픈 정규화
+    assert f["rrn"] == "9001012345678"          # 13자리 정규형
     assert f["occupation"] == "주부"
-    assert f["gender"] == "F" and f["birth_date"] == "1958-08-24"
+    assert f["gender"] == "F" and f["birth_date"] == "1990-01-01"
     assert r.json()["warnings"] == []
 
     # 추출값을 그대로 등록에 넘기면 저장된다
@@ -69,7 +69,7 @@ def test_intake_parse_extracts_fields(client, monkeypatch):
     assert created.status_code == 201
     body = created.json()
     assert body["occupation"] == "주부"
-    assert body["rrn"] == "5808242123511"
+    assert body["rrn"] == "9001012345678"
 
 
 def test_intake_parse_warns_on_bad_rrn(client, monkeypatch):
@@ -95,9 +95,9 @@ def test_intake_recovers_full_rrn_when_llm_splits_it(client, monkeypatch):
 
     monkeypatch.setattr(
         intake, "_call_llm",
-        lambda *a, **k: {"name": "나상원", "birth_date": "1991-02-01", "rrn": "1621916"},
+        lambda *a, **k: {"name": "이영희", "birth_date": "1991-02-01", "rrn": "1621916"},
     )
-    r = client.post("/customers/intake/parse", json={"text": "나상원 9102011621916"})
+    r = client.post("/customers/intake/parse", json={"text": "이영희 9102011621916"})
     f = r.json()["fields"]
     assert f["rrn"] == "9102011621916"
     assert not r.json()["warnings"]
@@ -593,7 +593,7 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
         "보장 1,100만원 권장금액 1억원 보장 0원 권장금액 1억5,000만원\n"
         "보유계약리스트\n한화생명 케어백간병플러스보험 110세 매월납/10년 105,002원\n"
         "삼성화재 건강보험 New내돈내삼 90세 매월납/56년 92,734원\n"
-        "GA2-2지점 나상원 컨설턴트 010-4714-5749\n"
+        "GA2-2지점 이영희 컨설턴트 010-2345-6789\n"
     )
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
     # 모델이 마스킹된 이름·가짜 주민번호(생년월일 9자리)를 냈다고 가정
@@ -609,11 +609,11 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     )
     b = client.post(
         "/capture",
-        files={"file": ("260901_M보장분석_나상원님.pdf", b"%PDF x", "application/pdf")},
+        files={"file": ("260901_M보장분석_이영희님.pdf", b"%PDF x", "application/pdf")},
     ).json()
     it = b["items"][0]
     assert it["doc_type"] == "보장분석"
-    assert it["fields"]["name"] == "나상원"       # 파일명에서 복구
+    assert it["fields"]["name"] == "이영희"       # 파일명에서 복구
     assert it["fields"]["rrn"] is None            # 9자리 → 가짜로 보고 제거
     assert it["fields"]["birth_date"] == "1991-02-01"
     assert len(it["policies"]) == 2
@@ -651,7 +651,7 @@ def test_capture_pdf_ocr_fallback(client, monkeypatch):
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: "")
     monkeypatch.setattr(
         _router_mod, "_ocr_pdf",
-        lambda *a, **k: "정지은 고객님을 위한 가입제안서\n계약자\n정지은 (여 31세)\n직업\n수동 포장원, 2급\n모집자 나상원 010-4714-5749",
+        lambda *a, **k: "정지은 고객님을 위한 가입제안서\n계약자\n정지은 (여 31세)\n직업\n수동 포장원, 2급\n모집자 이영희 010-2345-6789",
     )
     # 모델이 문서에 없는 주민번호를 지어냈다고 가정 → _strip_fabricated 가 걸러야 한다
     _mock_single(monkeypatch, {"name": "정지은", "occupation": "수동 포장원", "rrn": "6208051234567", "birth_date": "1962-08-05", "gender": "M"})
