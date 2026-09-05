@@ -95,7 +95,7 @@ def test_intake_recovers_full_rrn_when_llm_splits_it(client, monkeypatch):
 
     monkeypatch.setattr(
         intake, "_call_llm",
-        lambda *a, **k: {"name": "이영희", "birth_date": "1991-02-01", "rrn": "1621916"},
+        lambda *a, **k: {"name": "이영희", "birth_date": "1992-05-15", "rrn": "1621916"},
     )
     r = client.post("/customers/intake/parse", json={"text": "이영희 9102011621916"})
     f = r.json()["fields"]
@@ -523,7 +523,7 @@ def test_capture_pdf_is_analyzed(client, monkeypatch):
 def test_capture_pdf_extracts_policy_and_coverages(client, monkeypatch):
     """보험 제안서 PDF → 고객 + 보험계약(증권 헤더) + 가입담보목록 원문."""
     doc = (
-        "정지은 고객님을 위한 가입제안서\n계약자\n정지은 (여 31세)\n"
+        "최유진 고객님을 위한 가입제안서\n계약자\n최유진 (여 31세)\n"
         "보험회사 한화손해보험\n상품명 한화 시그니처 여성 건강보험4.0\n"
         "가입담보목록\n순번 가입담보\n상해사망 15,000만원\n암진단비 4,000만원\n"
         "약관을 참고 하시기 바랍니다\n"
@@ -531,13 +531,13 @@ def test_capture_pdf_extracts_policy_and_coverages(client, monkeypatch):
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
     _mock_single(
         monkeypatch,
-        {"name": "정지은", "gender": "F"},
+        {"name": "최유진", "gender": "F"},
         policy={"insurer": "한화손해보험", "product_name": "한화 시그니처 여성 건강보험4.0",
                 "plan_type": "보장", "premium_won": 107244, "payment_cycle": "MONTHLY",
                 "insured_period": "90세만기", "payment_period": "30년납"},
     )
     b = client.post(
-        "/capture", files={"file": ("정지은님.pdf", b"%PDF-1.7 x", "application/pdf")},
+        "/capture", files={"file": ("최유진님.pdf", b"%PDF-1.7 x", "application/pdf")},
     ).json()
     it = b["items"][0]
     assert it["policies"][0]["insurer"] == "한화손해보험"
@@ -587,23 +587,23 @@ def test_capture_proposal_contractor_differs_from_insured(client, monkeypatch):
 def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     """보장분석서 → 여러 건의 보유계약 + 마스킹된 이름은 파일명에서 복구 + 가짜 주민번호 제거."""
     doc = (
-        "나*원 고객님을 위한 간편보장분석\n남 36세 · 1991.02.01 · 상령일 08월01일\n"
+        "나*원 고객님을 위한 간편보장분석\n남 36세 · 1992.05.15 · 상령일 08월01일\n"
         "보장현황 미가입 부족 충분\n"
         "질병사망 부족 11% 일반암 진단비 미가입 0%\n"
         "보장 1,100만원 권장금액 1억원 보장 0원 권장금액 1억5,000만원\n"
-        "보유계약리스트\n한화생명 케어백간병플러스보험 110세 매월납/10년 105,002원\n"
-        "삼성화재 건강보험 New내돈내삼 90세 매월납/56년 92,734원\n"
+        "보유계약리스트\n한화생명 케어백간병플러스보험 110세 매월납/10년 98,500원\n"
+        "삼성화재 건강보험 New내돈내삼 90세 매월납/56년 87,200원\n"
         "GA2-2지점 이영희 컨설턴트 010-2345-6789\n"
     )
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
     # 모델이 마스킹된 이름·가짜 주민번호(생년월일 9자리)를 냈다고 가정
     _mock_single(
         monkeypatch,
-        {"name": "나*원", "gender": "M", "birth_date": "1991-02-01", "rrn": "199102013"},
+        {"name": "나*원", "gender": "M", "birth_date": "1992-05-15", "rrn": "199102013"},
         policies_list=[
-            {"insurer": "한화생명", "product_name": "케어백간병플러스보험", "premium_won": 105002,
+            {"insurer": "한화생명", "product_name": "케어백간병플러스보험", "premium_won": 98500,
              "insured_period": "110세", "payment_period": "매월납/10년"},
-            {"insurer": "삼성화재", "product_name": "건강보험 New내돈내삼", "premium_won": 92734,
+            {"insurer": "삼성화재", "product_name": "건강보험 New내돈내삼", "premium_won": 87200,
              "insured_period": "90세", "payment_period": "매월납/56년"},
         ],
     )
@@ -615,12 +615,12 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     assert it["doc_type"] == "보장분석"
     assert it["fields"]["name"] == "이영희"       # 파일명에서 복구
     assert it["fields"]["rrn"] is None            # 9자리 → 가짜로 보고 제거
-    assert it["fields"]["birth_date"] == "1991-02-01"
+    assert it["fields"]["birth_date"] == "1992-05-15"
     assert len(it["policies"]) == 2
     assert {p["insurer"] for p in it["policies"]} == {"한화생명", "삼성화재"}
     k = it["consultation"]
     assert k["channel"] == "보장분석"
-    assert "105,002원" in k["content"] and "92,734원" in k["content"]
+    assert "98,500원" in k["content"] and "87,200원" in k["content"]
     # 보장현황이 구조화되어 나온다 (표로 렌더)
     cs = {c["name"]: c for c in it["coverage_status"]}
     assert cs["질병사망"]["status"] == "부족" and cs["질병사망"]["pct"] == 11
@@ -651,18 +651,18 @@ def test_capture_pdf_ocr_fallback(client, monkeypatch):
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: "")
     monkeypatch.setattr(
         _router_mod, "_ocr_pdf",
-        lambda *a, **k: "정지은 고객님을 위한 가입제안서\n계약자\n정지은 (여 31세)\n직업\n수동 포장원, 2급\n모집자 이영희 010-2345-6789",
+        lambda *a, **k: "최유진 고객님을 위한 가입제안서\n계약자\n최유진 (여 31세)\n직업\n수동 포장원, 2급\n모집자 이영희 010-2345-6789",
     )
     # 모델이 문서에 없는 주민번호를 지어냈다고 가정 → _strip_fabricated 가 걸러야 한다
-    _mock_single(monkeypatch, {"name": "정지은", "occupation": "수동 포장원", "rrn": "6208051234567", "birth_date": "1962-08-05", "gender": "M"})
+    _mock_single(monkeypatch, {"name": "최유진", "occupation": "수동 포장원", "rrn": "6208051234567", "birth_date": "1962-08-05", "gender": "M"})
     b = client.post(
         "/capture",
-        files={"file": ("정지은님.pdf", b"%PDF-1.7 vector-only", "application/pdf")},
+        files={"file": ("최유진님.pdf", b"%PDF-1.7 vector-only", "application/pdf")},
     ).json()
     it = b["items"][0]
     f = it["fields"]
     assert len(b["items"]) == 1
-    assert f["name"] == "정지은"
+    assert f["name"] == "최유진"
     assert f["occupation"] == "수동 포장원"
     assert f["rrn"] is None  # 문서에 없던 주민번호 → 창작으로 보고 버림
     assert f["gender"] == "F"  # "(여 31세)" 표기로 보정
@@ -678,11 +678,11 @@ def test_estimate_birthdate_from_age():
 
     # "90세만기" 는 나이로 오인하지 않는다
     assert age_in_text("보험기간 90세만기/30년납") is None
-    assert age_in_text("계약자 정지은 (여 31세)") == 31
+    assert age_in_text("계약자 최유진 (여 31세)") == 31
 
     # 보험상령일(10월 12일) → 생일 4월 12일. 발행일 2026-01-26 엔 생일 전 → 1994.
     f = {}
-    w = est(f, "계약자 정지은 (여 31세)\n보험나이 변경일자 2026년 10월 12일", "2026-01-26")
+    w = est(f, "계약자 최유진 (여 31세)\n보험나이 변경일자 2026년 10월 12일", "2026-01-26")
     assert f["birth_date"] == "1994-04-12"
     assert w and "추정" in w
 
@@ -698,9 +698,9 @@ def test_estimate_birthdate_from_age():
 
 
 def test_capture_pdf_estimates_birthdate(client, monkeypatch):
-    doc = "정지은 고객님을 위한 가입제안서\n계약자 정지은 (여 31세)\n보험나이 변경일자: 매년 10월 12일\n보험기간 90세만기/30년납"
+    doc = "최유진 고객님을 위한 가입제안서\n계약자 최유진 (여 31세)\n보험나이 변경일자: 매년 10월 12일\n보험기간 90세만기/30년납"
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
-    _mock_single(monkeypatch, {"name": "정지은", "gender": "F"},
+    _mock_single(monkeypatch, {"name": "최유진", "gender": "F"},
                  policy={"insurer": "한화손해보험", "issued_date": "2026-01-26"})
     b = client.post("/capture", files={"file": ("x.pdf", b"%PDF x", "application/pdf")}).json()
     it = b["items"][0]

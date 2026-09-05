@@ -97,16 +97,16 @@ def test_capture_and_intake_return_null_rrn(client, monkeypatch):
 
     monkeypatch.setattr(
         intake, "_call_llm",
-        lambda *a, **k: {"name": "정지은", "rrn": "620805-1234567", "birth_date": "1962-08-05"},
+        lambda *a, **k: {"name": "최유진", "rrn": "620805-1234567", "birth_date": "1962-08-05"},
     )
-    parsed = client.post("/customers/intake/parse", json={"text": "정지은 620805-1234567"}).json()
+    parsed = client.post("/customers/intake/parse", json={"text": "최유진 620805-1234567"}).json()
     assert parsed["fields"]["rrn"] is None
     assert not any("주민등록번호" in w for w in parsed["warnings"])
 
     monkeypatch.setattr(
-        intake, "_call_llm", lambda *a, **k: {"customers": [{"name": "정지은", "rrn": "620805-1234567"}]}
+        intake, "_call_llm", lambda *a, **k: {"customers": [{"name": "최유진", "rrn": "620805-1234567"}]}
     )
-    cap = client.post("/capture", data={"text": "정지은 620805-1234567"}).json()
+    cap = client.post("/capture", data={"text": "최유진 620805-1234567"}).json()
     assert cap["items"][0]["fields"]["rrn"] is None
 
 

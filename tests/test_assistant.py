@@ -85,7 +85,7 @@ def test_build_context_excludes_rrn(client):
 def test_aggregate_premium_sum_divides_yearly(client):
     from database import assistant
 
-    c = _seed_customer(client, name="정지은")
+    c = _seed_customer(client, name="최유진")
     _seed_policy(client, c["id"], insurer="한화생명", product_name="월납상품",
                  premium=45000, payment_cycle="MONTHLY", status="ACTIVE")
     _seed_policy(client, c["id"], insurer="삼성화재", product_name="연납상품",
@@ -268,7 +268,7 @@ def test_answer_uses_customer_named_in_history(client, monkeypatch):
 
 
 def test_answer_filters_to_own_policies_when_asked(client, monkeypatch):
-    c = _seed_customer(client, name="정지은")
+    c = _seed_customer(client, name="최유진")
     _seed_policy(client, c["id"], insurer="한화생명", product_name="내가판매한상품",
                  premium=45000, is_own=True)
     _seed_policy(client, c["id"], insurer="삼성화재", product_name="타사이관상품",
@@ -277,11 +277,11 @@ def test_answer_filters_to_own_policies_when_asked(client, monkeypatch):
     captured: list[str] = []
     _mock_llm(
         monkeypatch,
-        {"answer": "내가판매한상품 하나입니다.", "used_customer_names": ["정지은"],
+        {"answer": "내가판매한상품 하나입니다.", "used_customer_names": ["최유진"],
          "grounded": True, "no_data": False},
         capture=captured,
     )
-    r = client.post("/assistant/ask", json={"question": "정지은 내가 가입시킨거 뭐야"})
+    r = client.post("/assistant/ask", json={"question": "최유진 내가 가입시킨거 뭐야"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["own_only"] is True
@@ -297,27 +297,27 @@ def test_own_regex_does_not_falsely_trigger_on_third_person_direct(monkeypatch):
     """'고객이 직접 가입한' 처럼 1인칭이 아닌 '직접' 은 내 계약 필터를 켜면 안 된다."""
     from database.assistant import _is_own_only_question
 
-    assert _is_own_only_question("정지은 내가 가입시킨거 뭐야") is True
+    assert _is_own_only_question("최유진 내가 가입시킨거 뭐야") is True
     assert _is_own_only_question("제가 직접 가입시킨 계약만 보여줘") is True
     assert _is_own_only_question("내가 판매한 상품 목록") is True
-    assert _is_own_only_question("정지은이 직접 가입한 보험 뭐야") is False
+    assert _is_own_only_question("최유진이 직접 가입한 보험 뭐야") is False
     assert _is_own_only_question("고객이 직접 가입한 계약 알려줘") is False
-    assert _is_own_only_question("정지은 보험료 얼마 내?") is False
+    assert _is_own_only_question("최유진 보험료 얼마 내?") is False
 
 
 def test_normal_question_keeps_all_policies_with_markers(client, monkeypatch):
-    c = _seed_customer(client, name="정지은")
+    c = _seed_customer(client, name="최유진")
     _seed_policy(client, c["id"], insurer="한화생명", product_name="내가판매한상품", is_own=True)
     _seed_policy(client, c["id"], insurer="삼성화재", product_name="타사이관상품", is_own=False)
 
     captured: list[str] = []
     _mock_llm(
         monkeypatch,
-        {"answer": "두 건입니다.", "used_customer_names": ["정지은"],
+        {"answer": "두 건입니다.", "used_customer_names": ["최유진"],
          "grounded": True, "no_data": False},
         capture=captured,
     )
-    r = client.post("/assistant/ask", json={"question": "정지은 보험 뭐 있어?"})
+    r = client.post("/assistant/ask", json={"question": "최유진 보험 뭐 있어?"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["own_only"] is False
