@@ -14,7 +14,7 @@ _TEST_KEY_B64 = base64.b64encode(b"0" * 32).decode("ascii")
 INTAKE_TEXT = """김민지
 010-1234-5678
 900101-2345678
-효동로 291 금호아파트 101-1054
+가상로 12 예시아파트 101동 202호
 주부"""
 
 
@@ -47,7 +47,7 @@ def test_intake_parse_extracts_fields(client, monkeypatch):
             "birth_date": "1990-01-01",
             "gender": "F",
             "email": None,
-            "address": "효동로 291 금호아파트 101-1054",
+            "address": "가상로 12 예시아파트 101동 202호",
             "occupation": "주부",
             "rrn": "900101-2345678",
             "memo": None,

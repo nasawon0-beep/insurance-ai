@@ -1411,7 +1411,7 @@ export default function CustomersScreen({
                 </div>
                 <textarea
                   style={{ ...inputStyle, minHeight: 84 }}
-                  placeholder={"양광석 010-3433-3497 620805-1234567 자영업\n김민지 010-1234-5678 900101-2345678 주부"}
+                  placeholder={"박준서 010-8765-4321 850315-1876543 자영업\n김민지 010-1234-5678 900101-2345678 주부"}
                   value={intakeText}
                   onChange={(e) => setIntakeText(e.target.value)}
                 />
