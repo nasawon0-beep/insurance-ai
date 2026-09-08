@@ -54,3 +54,32 @@ jobs:
           projectPath: desktop
           tagName: app-v__VERSION__
           releaseName: 'App v__VERSION__'
+
+  # 코드 저장소는 private 이라 배포 앱이 릴리스 자산을 못 받는다.
+  # 빌드된 산출물만 public 저장소(insurance-ai-releases)로 미러 → updater 엔드포인트가 그쪽을 가리킨다.
+  mirror-to-public:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        run: echo "version=$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: private 릴리스 자산 내려받기
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir out
+          gh release download "app-v${{ steps.v.outputs.version }}" \
+            --repo "${{ github.repository }}" --dir out
+      - name: public 릴리스 저장소로 미러
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          tag="app-v${{ steps.v.outputs.version }}"
+          repo="nasawon0-beep/insurance-ai-releases"
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" out/* --repo "$repo" --clobber
+          else
+            gh release create "$tag" out/* --repo "$repo" \
+              --title "App v${{ steps.v.outputs.version }}" --notes ""
+          fi
