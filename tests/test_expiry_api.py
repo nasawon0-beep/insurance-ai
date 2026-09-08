@@ -262,19 +262,60 @@ def test_follow_up_complete_and_reopen(client):
 def test_follow_up_complete_reopen_is_symmetric(client):
     c = _mk(client)
     original = "첫 줄\n\n마지막 줄"
-    utc_today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    local_today = dt.date.today().isoformat()  # 완료 스탬프는 설계사 PC 로컬 날짜 (KST 새벽 전날-찍힘 방지)
     k = client.post(
         f"/customers/{c['id']}/consultations", json={"content": original}
     ).json()
 
     for _ in range(2):
         completed = client.post(f"/consultations/{k['id']}/follow-up/complete").json()
-        assert completed["follow_up_done_at"] == utc_today
+        assert completed["follow_up_done_at"] == local_today
         assert completed["content"] == original
 
         reopened = client.post(f"/consultations/{k['id']}/follow-up/reopen").json()
         assert reopened["follow_up_done_at"] is None
         assert reopened["content"] == original
+
+
+def test_follow_up_complete_stamps_local_date_not_utc(client, monkeypatch):
+    """A5: 완료 스탬프는 date.today()(설계사 PC 로컬) — UTC 날짜가 아니다.
+    KST 00:00~08:59 에는 UTC date 가 전날이라 예전엔 화면에 전날로 찍혔다.
+    repo.date 를 고정해 UTC 회귀를 결정적으로 잡는다."""
+    from database import repo
+
+    fixed = dt.date(2026, 3, 15)  # '로컬 오늘' — UTC now 의 date 와 (거의) 항상 다르다
+
+    class _FixedDate(dt.date):
+        @classmethod
+        def today(cls):
+            return fixed
+
+    monkeypatch.setattr(repo, "date", _FixedDate)
+    c = _mk(client)
+    k = client.post(f"/customers/{c['id']}/consultations", json={"content": "x"}).json()
+    completed = client.post(f"/consultations/{k['id']}/follow-up/complete").json()
+    assert completed["follow_up_done_at"] == "2026-03-15"
+
+
+@pytest.mark.parametrize("bad", ["abc", "2026-13-01", "2026-02-30", "오늘"])
+def test_consultation_rejects_invalid_consulted_at(client, bad):
+    """A4: consulted_at 미검증 → 임의 문자열 저장 → 타임라인 문자열 정렬 오염."""
+    c = _mk(client)
+    r = client.post(f"/customers/{c['id']}/consultations",
+                    json={"content": "x", "consulted_at": bad})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("good,expected", [
+    ("2026-9-8", "2026-09-08"),
+    ("2026-09-08T08:30:00+00:00", "2026-09-08T08:30:00+00:00"),
+])
+def test_consultation_accepts_date_or_timestamp(client, good, expected):
+    c = _mk(client)
+    r = client.post(f"/customers/{c['id']}/consultations",
+                    json={"content": "x", "consulted_at": good})
+    assert r.status_code == 201
+    assert r.json()["consulted_at"] == expected
 
 
 def test_reopen_removes_only_legacy_done_marker_lines(client):

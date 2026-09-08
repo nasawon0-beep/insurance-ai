@@ -16,6 +16,7 @@ import { totalMonthlyPremium, expiringCount } from "./customerKpi";
 import { policyProgressPct } from "./policyProgress";
 import { computeMergeRows, memoAppend, type MergeRow } from "./mergeDiff";
 import { normalizeDate } from "./normalizeDate";
+import { parsePremium } from "./parsePremium";
 import { hasPendingDraft } from "./analysisDraft";
 
 type Customer = {
@@ -1764,7 +1765,7 @@ function PoliciesSection({
         .filter(([k]) => k !== "premium" && k !== "is_own")
         .map(([k, v]) => [k, (v as string).trim() === "" ? null : (v as string).trim()]),
     ),
-    premium: f.premium.trim() === "" ? null : Number(f.premium),
+    premium: parsePremium(f.premium),
     is_own: f.is_own,
   });
 

@@ -1068,10 +1068,13 @@ def update_consultation(
 
 
 def complete_follow_up(conn: sqlite3.Connection, kid: str) -> Optional[dict]:
-    """후속 연락 완료: follow_up_done_at 스탬프(UTC 날짜)."""
+    """후속 연락 완료: follow_up_done_at 스탬프(설계사 PC 로컬 날짜).
+
+    이전엔 UTC 날짜를 썼는데, KST 00:00~08:59 에 완료 처리하면 화면에 전날로 찍혔다.
+    지연/오늘/이번주 버킷팅은 전부 date.today()(로컬) 기준이므로 여기도 맞춘다."""
     if get_consultation(conn, kid) is None:
         return None
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = date.today().isoformat()
     conn.execute(
         "UPDATE consultations SET follow_up_done_at = ?, updated_at = ? WHERE id = ?",
         (today, _now(), kid),

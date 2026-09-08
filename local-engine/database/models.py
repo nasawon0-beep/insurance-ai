@@ -5,7 +5,7 @@ PATCH 는 model_dump(exclude_unset=True) 로 "안 보낸 필드"와 "명시적 n
 py3.9 호환을 위해 `X | None` 대신 Optional 을 쓴다 (FastAPI/pydantic 런타임 평가).
 """
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -60,6 +60,31 @@ def _check_date(v, *, allow_2digit_birth=False):
     except ValueError:
         raise ValueError("날짜는 YYYY-MM-DD 형식의 실제 달력 날짜여야 합니다.")
     return normalized
+
+
+def _check_datetime(v):
+    """상담 일시를 정렬 가능한 단일 형식으로 정규화한다.
+
+    - 시각이 포함된 값: 구분자를 'T'로 통일하고 `datetime.isoformat()`으로 재출력.
+      tz offset 이 있으면 UTC(`+00:00`)로 환산. tz 없는 값(파일명 유래 로컬시각 등)은
+      그대로 naive 로 둔다 — 없는 zone 을 UTC 라고 단정하면 실제 시각을 왜곡한다.
+    - 날짜만(YYYY-MM-DD) → _check_date 로 정규화.
+    정규화하지 않으면 구분자('T' vs 공백)·offset 표기 차이로 TEXT 컬럼의
+    `ORDER BY consulted_at DESC` 가 실제 시간순과 어긋난다."""
+    if v is None or v == "":
+        return v
+    s = str(v).strip()
+    if not s:
+        return ""
+    if "T" in s or (" " in s and ":" in s):
+        try:
+            dt = datetime.fromisoformat(s.replace(" ", "T"))
+        except ValueError:
+            raise ValueError("상담 일시는 YYYY-MM-DD 또는 ISO 8601 타임스탬프여야 합니다.")
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat()
+    return _check_date(s)
 
 
 def _check_gender(v):
@@ -324,6 +349,11 @@ class ConsultationIn(BaseModel):
     def _valid_follow_up_at(cls, v):
         return _check_date(v)
 
+    @field_validator("consulted_at")
+    @classmethod
+    def _valid_consulted_at(cls, v):
+        return _check_datetime(v)
+
 
 class ConsultationPatch(BaseModel):
     consulted_at: Optional[str] = None
@@ -339,3 +369,8 @@ class ConsultationPatch(BaseModel):
     @classmethod
     def _valid_follow_up_date(cls, v):
         return _check_date(v)
+
+    @field_validator("consulted_at")
+    @classmethod
+    def _valid_consulted_at(cls, v):
+        return _check_datetime(v)

@@ -6,6 +6,22 @@ export type CoverageRow = {
   recommended: string | null;
 };
 
+// coverage_json(문자열) 파싱 결과. corrupt=true 는 "저장은 됐는데 읽을 수 없음" —
+// json===null("내용 없음")과 구분해서 사용자에게 알려야 표가 왜 사라졌는지 안다.
+export function parseCoverageJson(json: string | null): { rows: CoverageRow[]; corrupt: boolean } {
+  if (!json) return { rows: [], corrupt: false };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { rows: [], corrupt: true };
+  }
+  // 보장현황 표는 항상 배열. 배열이 아니면 구조적으로 손상된 것 —
+  // 빈 표로 착각해 "표 만들기"로 덮어쓰지 않도록 corrupt 로 알린다.
+  if (!Array.isArray(parsed)) return { rows: [], corrupt: true };
+  return { rows: normalizeCoverageRows(parsed), corrupt: false };
+}
+
 export function normalizeCoverageRows(rows: unknown[]): CoverageRow[] {
   return (Array.isArray(rows) ? rows : [])
     .filter((row): row is Record<string, unknown> => !!row && typeof row === "object")

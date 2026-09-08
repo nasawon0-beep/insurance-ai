@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { groupByCategory } from "./coverageCategories";
-import { normalizeCoverageRows, type CoverageRow } from "./coverageRows";
+import { normalizeCoverageRows, parseCoverageJson, type CoverageRow } from "./coverageRows";
 
 export { normalizeCoverageRows } from "./coverageRows";
 export type { CoverageRow } from "./coverageRows";
@@ -301,15 +301,18 @@ export function CoverageTableEditable({
   );
 }
 
-/** 저장된 consultation.coverage_json(문자열) → 표. 파싱 실패 시 아무것도 안 그린다. */
+function CoverageCorruptNotice() {
+  return (
+    <div style={{ color: "#b00", fontSize: 12, margin: "6px 0" }}>
+      저장된 보장분석 데이터를 읽을 수 없습니다 (형식 손상). 분석을 다시 실행하거나 표를 새로 만들어 주세요.
+    </div>
+  );
+}
+
+/** 저장된 consultation.coverage_json(문자열) → 표. 손상 시 그 사실을 표시한다. */
 export function CoverageTableSafe({ json }: { json: string | null }) {
-  if (!json) return null;
-  let rows: CoverageRow[] = [];
-  try {
-    rows = normalizeCoverageRows(JSON.parse(json));
-  } catch {
-    return null;
-  }
+  const { rows, corrupt } = parseCoverageJson(json);
+  if (corrupt) return <CoverageCorruptNotice />;
   return Array.isArray(rows) && rows.length ? <CoverageTable rows={rows} /> : null;
 }
 
@@ -320,21 +323,32 @@ export function CoverageTableEditableSafe({
   json: string | null;
   onCommit: (rows: CoverageRow[]) => void | Promise<void>;
 }) {
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { rows, corrupt } = parseCoverageJson(json);
+
+  if (corrupt) return <CoverageCorruptNotice />;
   if (!json) return null;
-  let rows: CoverageRow[] = [];
-  try {
-    rows = normalizeCoverageRows(JSON.parse(json));
-  } catch {
-    return null;
-  }
+
   if (!rows.length) {
+    const create = async () => {
+      setErr(null);
+      setBusy(true);
+      try {
+        await onCommit([{ name: "", status: "미가입", pct: 0, current: null, recommended: null }]);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    };
     return (
-      <button
-        style={{ fontSize: 12, color: "#2563eb", margin: "6px 0" }}
-        onClick={() => onCommit([{ name: "", status: "미가입", pct: 0, current: null, recommended: null }])}
-      >
-        + 보장현황 표 만들기
-      </button>
+      <div style={{ margin: "6px 0" }}>
+        <button style={{ fontSize: 12, color: "#2563eb" }} onClick={create} disabled={busy}>
+          + 보장현황 표 만들기
+        </button>
+        {err && <div style={{ color: "#b00", fontSize: 12, marginTop: 4 }}>{err}</div>}
+      </div>
     );
   }
   return <CoverageTableEditable rows={rows} onCommit={onCommit} />;

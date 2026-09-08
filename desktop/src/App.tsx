@@ -23,6 +23,7 @@ import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
+import { checkForUpdate } from "./updater";
 
 type EngineStatus = {
   local_engine?: string;
@@ -1557,6 +1558,9 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
   return (
     <div style={{ maxWidth: 620, margin: "24px auto", padding: "0 16px" }}>
       <h2 style={{ marginTop: 0 }}>설정 · 진단</h2>
+      <button onClick={() => void checkForUpdate()} style={{ marginBottom: 12 }}>
+        업데이트 확인
+      </button>
       {err && <p style={{ color: "#b00" }}>{err}</p>}
       {!d ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>
@@ -1764,6 +1768,7 @@ function App() {
   // (Customers.tsx canOpenCustomer)와 상단 탭 가드의 정책을 맞춘다.
   const hasDraftRef = useRef(false);
   const isAnalyzingRef = useRef(false);
+  const updateCheckStartedRef = useRef(false);
   // early return(미로그인 등) 이전에 선언해야 하는 훅 — 아래쪽 일반 함수들과 달리 Hook 규칙 적용.
   const handleDraftChange = useCallback((s: { hasDraft: boolean; isAnalyzing: boolean }) => {
     hasDraftRef.current = s.hasDraft;
@@ -1791,6 +1796,13 @@ function App() {
   useEffect(() => {
     boot();
   }, [boot]);
+
+  useEffect(() => {
+    // 앱 실행(프로세스) 당 1회만. 로그아웃→재로그인해도 다시 확인하지 않는다.
+    if (auth !== "in" || updateCheckStartedRef.current) return;
+    updateCheckStartedRef.current = true;
+    void checkForUpdate({ silent: true });
+  }, [auth]);
 
   // 앱 로드 시 만기 임박(30일) 계약 수 확인 → 상단 배너
   useEffect(() => {

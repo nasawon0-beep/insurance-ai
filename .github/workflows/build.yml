@@ -4,7 +4,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: 순수 로직 테스트 (node --test)
+        run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: local-engine 의존성 설치
+        run: |
+          python -m venv local-engine/.venv
+          local-engine/.venv/bin/pip install --upgrade pip
+          local-engine/.venv/bin/pip install -r local-engine/requirements.txt
+      - name: 엔진 테스트 (pytest)
+        run: local-engine/.venv/bin/pytest -q tests
+
   build:
+    needs: test
     permissions:
       contents: write
     strategy:
