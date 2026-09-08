@@ -294,7 +294,9 @@ def test_diagnostics_bundle(client):
     assert set(d) >= {"engine", "customer_db", "whisper", "data", "rag"}
     assert "credits" not in d  # 크레딧 시스템 제거 — 재도입 방지
     assert d["customer_db"]["encryption"].startswith("AES-256-GCM")
-    assert "large-v3" in d["whisper"]["model"]
+    # 모델명은 환경마다 다르다 (CLI 있으면 ggml-large-v3-turbo, 없으면 faster-whisper "small").
+    # 진단 번들은 그 값이 채워져 있기만 하면 된다.
+    assert isinstance(d["whisper"]["model"], str) and d["whisper"]["model"]
     assert "customers" in d["data"]
 
 
