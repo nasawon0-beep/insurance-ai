@@ -3,7 +3,7 @@
   "private": true,
   "description": "루트: 순수 로직 테스트 러너. 앱 빌드는 desktop/ 참조.",
   "scripts": {
-    "test": "node --test --experimental-strip-types tests/",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
     "test:py": "local-engine/.venv/bin/pytest -q tests"
   }
 }
