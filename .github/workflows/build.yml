@@ -20,7 +20,7 @@ jobs:
         run: |
           python -m venv local-engine/.venv
           local-engine/.venv/bin/pip install --upgrade pip
-          local-engine/.venv/bin/pip install -r local-engine/requirements.txt
+          local-engine/.venv/bin/pip install -r local-engine/requirements.txt -r tests/requirements.txt
       - name: 엔진 테스트 (pytest)
         run: local-engine/.venv/bin/pytest -q tests
 
