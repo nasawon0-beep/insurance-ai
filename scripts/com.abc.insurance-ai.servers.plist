@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  보험 AI 로컬 서버 자동기동 (사용자 로그인 시).
+  install-autostart.command 가 __ROOT__ 를 이 repo 의 실제 경로로 치환해
+  ~/Library/LaunchAgents/ 에 설치한다. repo 를 옮기면 재설치할 것.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.abc.insurance-ai.servers</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__ROOT__/scripts/start-servers.command</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 서버가 죽어(exit 1) 나가면 재기동. 준비물 미비 등으로 스크립트가
+       정상 종료(exit 0)하면 재기동하지 않는다(무한 실패 루프 방지). -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__ROOT__/logs/launchagent.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT__/logs/launchagent.log</string>
+</dict>
+</plist>

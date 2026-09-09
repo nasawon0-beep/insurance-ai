@@ -24,6 +24,7 @@ import ImportWizard from "./ImportWizard";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
 import { checkForUpdate } from "./updater";
+import { loadRememberedEmail, saveRememberedEmail } from "./rememberEmail";
 
 type EngineStatus = {
   local_engine?: string;
@@ -146,7 +147,9 @@ type ParsedDoc = {
 
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
+  const rememberedEmail = loadRememberedEmail();
+  const [email, setEmail] = useState(rememberedEmail);
+  const [rememberEmail, setRememberEmail] = useState(rememberedEmail !== "");
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -209,7 +212,9 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
     setBusy(true);
     setErr(null);
     try {
-      await authenticate(mode, email.trim().toLowerCase(), pw);
+      const normalizedEmail = email.trim().toLowerCase();
+      await authenticate(mode, normalizedEmail, pw);
+      saveRememberedEmail(normalizedEmail, rememberEmail);
       onLogin();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -243,6 +248,14 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
           value={pw}
           onChange={(e) => setPw(e.target.value)}
         />
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={rememberEmail}
+            onChange={(e) => setRememberEmail(e.target.checked)}
+          />
+          이메일 기억하기
+        </label>
         <button type="submit" disabled={busy}>
           {busy ? "..." : mode === "login" ? "로그인" : "가입하고 시작"}
         </button>
