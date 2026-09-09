@@ -71,6 +71,12 @@ jobs:
           mkdir out
           gh release download "app-v${{ steps.v.outputs.version }}" \
             --repo "${{ github.repository }}" --dir out
+      - name: latest.json 자산 URL 을 public 저장소로 치환
+        run: |
+          # tauri-action 이 생성한 latest.json 은 빌드 저장소(private)를 가리킨다.
+          # 배포 앱은 인증이 없으므로 public 저장소 경로로 바꿔야 다운로드가 된다.
+          sed -i 's#/${{ github.repository }}/releases/download/#/nasawon0-beep/insurance-ai-releases/releases/download/#g' out/latest.json
+          cat out/latest.json
       - name: public 릴리스 저장소로 미러
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
