@@ -22,3 +22,8 @@ logs/
 
 # 로컬 헬퍼 스크립트
 push-to-github.sh
+
+# sidecar 빌드 산출물 (build-sidecars.sh / CI 가 생성)
+control-server/build/
+control-server/dist/
+desktop/src-tauri/binaries/

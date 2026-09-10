@@ -57,7 +57,14 @@ app.add_middleware(
 )
 
 TRIAL_DAYS = int(os.environ.get("CONTROL_TRIAL_DAYS", "30"))
-UPDATE_MANIFEST = Path(__file__).parent / "update_manifest.json"
+
+
+def _resource_path(name: str) -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return root / name
+
+
+UPDATE_MANIFEST = _resource_path("update_manifest.json")
 _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 _FWD_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
 
@@ -376,6 +383,44 @@ def health():
     return {"control_server": "ok"}
 
 
+def _port_taken(host: str, port: int) -> bool:
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
+def _healthy(host: str, port: int) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _watch_parent(ppid: int) -> None:
+    """부모(데스크톱 앱)가 사라지면 자체 종료 — 사이드카 고아 방지."""
+    import threading
+    import time
+
+    def loop() -> None:
+        while True:
+            time.sleep(2)
+            if os.getppid() != ppid:  # 부모 죽으면 재부모화되어 ppid 가 바뀐다 (POSIX)
+                print("control-server: parent gone — shutting down", file=sys.stderr)
+                os._exit(0)
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -385,4 +430,17 @@ if __name__ == "__main__":
     if host not in _LOOPBACK:
         os.environ["CONTROL_LOCAL_RECOVERY"] = "0"
         print("control-server: local-recovery disabled (non-loopback bind)", file=sys.stderr)
+
+    # 이미 정상 인스턴스가 점유 중이면 재사용(개발 스크립트 중복 기동·재시작 충돌 방지).
+    if _port_taken(host, port):
+        if _healthy(host, port):
+            print(f"control-server: :{port} already serving — reusing", file=sys.stderr)
+            sys.exit(0)
+        print(f"control-server: :{port} taken by an unhealthy process — exiting", file=sys.stderr)
+        sys.exit(1)
+
+    _ppid = os.environ.get("CONTROL_PARENT_PID", "")
+    if _ppid.isdigit():
+        _watch_parent(int(_ppid))
+
     uvicorn.run(app, host=host, port=port)

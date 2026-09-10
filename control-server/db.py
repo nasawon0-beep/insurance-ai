@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 _DEFAULT = Path(__file__).parent / "data" / "control.sqlite3"
@@ -49,7 +50,12 @@ CREATE TABLE IF NOT EXISTS error_reports (
 
 
 def db_path() -> Path:
-    return Path(os.environ.get("CONTROL_DB_PATH") or _DEFAULT)
+    configured = os.environ.get("CONTROL_DB_PATH")
+    if configured:
+        return Path(configured)
+    if getattr(sys, "_MEIPASS", None):
+        raise RuntimeError("CONTROL_DB_PATH must be set for the packaged control-server")
+    return _DEFAULT
 
 
 def connect() -> sqlite3.Connection:
