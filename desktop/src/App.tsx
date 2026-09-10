@@ -23,7 +23,7 @@ import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
-import { checkForUpdate } from "./updater";
+import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
 import { loadRememberedEmail, saveRememberedEmail } from "./rememberEmail";
 
 type EngineStatus = {
@@ -1462,6 +1462,20 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
   const [passwordToast, setPasswordToast] = useState<string | null>(null);
   const passwordDetails = useRef<HTMLDetailsElement>(null);
   const passwordToastTimer = useRef<number | null>(null);
+  const [upd, setUpd] = useState<UpdateCheck | { kind: "checking" } | { kind: "installing" } | null>(null);
+
+  const runUpdateCheck = async () => {
+    setUpd({ kind: "checking" });
+    setUpd(await checkForUpdate());
+  };
+  const runUpdateInstall = async (u: Extract<UpdateCheck, { kind: "available" }>) => {
+    setUpd({ kind: "installing" });
+    try {
+      await installUpdate(u.update);
+    } catch (e) {
+      setUpd({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  };
 
   useEffect(() => () => {
     if (passwordToastTimer.current) window.clearTimeout(passwordToastTimer.current);
@@ -1571,9 +1585,30 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
   return (
     <div style={{ maxWidth: 620, margin: "24px auto", padding: "0 16px" }}>
       <h2 style={{ marginTop: 0 }}>설정 · 진단</h2>
-      <button onClick={() => void checkForUpdate()} style={{ marginBottom: 12 }}>
-        업데이트 확인
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <button
+          onClick={() => void runUpdateCheck()}
+          disabled={upd?.kind === "checking" || upd?.kind === "installing"}
+        >
+          {upd?.kind === "checking" ? "확인 중…" : "업데이트 확인"}
+        </button>
+        {upd?.kind === "latest" && <span style={{ color: "#176b2c", fontSize: 13 }}>최신 버전입니다</span>}
+        {upd?.kind === "unsupported" && (
+          <span style={{ color: "#888", fontSize: 13 }}>데스크톱 앱에서만 지원됩니다</span>
+        )}
+        {upd?.kind === "installing" && (
+          <span style={{ color: "#888", fontSize: 13 }}>다운로드·설치 중… 창을 닫지 마세요</span>
+        )}
+        {upd?.kind === "error" && (
+          <span style={{ color: "#b00", fontSize: 13 }}>업데이트 실패: {upd.message}</span>
+        )}
+        {upd?.kind === "available" && (
+          <>
+            <span style={{ fontSize: 13 }}>새 버전 {upd.version} 있음</span>
+            <button onClick={() => void runUpdateInstall(upd)}>지금 설치하고 재시작</button>
+          </>
+        )}
+      </div>
       {err && <p style={{ color: "#b00" }}>{err}</p>}
       {!d ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>
@@ -1814,7 +1849,7 @@ function App() {
     // 앱 실행(프로세스) 당 1회만. 로그아웃→재로그인해도 다시 확인하지 않는다.
     if (auth !== "in" || updateCheckStartedRef.current) return;
     updateCheckStartedRef.current = true;
-    void checkForUpdate({ silent: true });
+    void checkForUpdate();
   }, [auth]);
 
   // 앱 로드 시 만기 임박(30일) 계약 수 확인 → 상단 배너
