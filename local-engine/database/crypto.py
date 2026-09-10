@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -25,7 +26,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _SERVICE = "insurance-ai-local-engine"
 _ACCOUNT = "customer-db-key"
-_KEYFILE_FALLBACK = Path(__file__).parent / "data" / ".dbkey"
+_DEFAULT_KEYFILE = (
+    Path.home() / ".insurance-ai" / "customer-db.key"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).parent / "data" / ".dbkey"
+)
+_KEYFILE_FALLBACK = Path(os.environ.get("CUSTOMER_DB_KEYFILE") or _DEFAULT_KEYFILE)
 _PREFIX = "enc:v1:"  # 암호문 마커. 없으면 평문(구데이터)로 간주하고 그대로 반환.
 
 

@@ -26,4 +26,7 @@ push-to-github.sh
 # sidecar 빌드 산출물 (build-sidecars.sh / CI 가 생성)
 control-server/build/
 control-server/dist/
+local-engine/build/
+local-engine/dist/
+control-server/dist/
 desktop/src-tauri/binaries/

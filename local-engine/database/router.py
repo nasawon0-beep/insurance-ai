@@ -308,7 +308,8 @@ def _upload_kind(filename: Optional[str]) -> str:
 # --- 글자 없는 PDF(스캔본 / 벡터로 그려진 보험사 출력물) OCR 폴백 ---
 #   1순위: macOS Vision (ocr/pdf-ocr 바이너리) — 빠르고 정확.
 #   2순위: pypdfium2 렌더 → RapidOCR(onnxruntime, 한국어+영어 모델 번들). Windows/Linux 대응.
-_OCR_BIN = Path(__file__).resolve().parent.parent / "ocr" / "pdf-ocr"
+_RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+_OCR_BIN = _RESOURCE_ROOT / "ocr" / "pdf-ocr"
 _OCR_MAX_PAGES = int(os.environ.get("PDF_OCR_MAX_PAGES", "6"))  # 계약자(앞) + 가입담보목록(3~4p)
 
 
@@ -333,7 +334,7 @@ def _rapidocr_available() -> bool:
 # 한국어 인식 모델 (RapidOCR 기본 번들은 중국어+영어뿐 → 한글이 한자로 깨짐).
 #   korean_PP-OCRv4_rec_mobile.onnx + korean_dict.txt 를 ocr/models/ 에 두면 그걸 쓴다.
 #   (없으면 기본 ch/en 모델로 폴백 — 숫자·영문은 나오지만 한글은 부정확)
-_OCR_MODEL_DIR = Path(__file__).resolve().parent.parent / "ocr" / "models"
+_OCR_MODEL_DIR = _RESOURCE_ROOT / "ocr" / "models"
 _KO_REC_ONNX = _OCR_MODEL_DIR / "korean_PP-OCRv4_rec_mobile.onnx"
 _KO_REC_DICT = _OCR_MODEL_DIR / "korean_dict.txt"
 

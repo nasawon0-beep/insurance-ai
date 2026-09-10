@@ -1,11 +1,19 @@
-use std::fs::{self, OpenOptions};
+use fs2::FileExt;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
-struct ControlServerChild(Mutex<Option<CommandChild>>);
+struct SidecarChildren {
+    control_server: Mutex<Option<CommandChild>>,
+    local_engine: Mutex<Option<CommandChild>>,
+}
+
+// 앱 수명 동안 flock(LOCK_EX) 을 잡고 있는 파일. 앱이 어떤 이유로든 죽으면 OS 가 락을
+// 해제하고, 사이드카가 LOCK_NB 로 잡히는 걸 보고 자체 종료한다(PID 재사용·좀비 무관).
+struct AppLock(#[allow(dead_code)] File);
 
 fn random_hex() -> Result<String, Box<dyn std::error::Error>> {
     let mut bytes = [0_u8; 32];
@@ -70,6 +78,17 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
+
+            // 사이드카 생존 신호용 잠금 파일. 이 File 을 앱 상태로 보관해 fd 를 열어둔다.
+            let lock_path = data_dir.join("app.lock");
+            let lock_path_str = lock_path.to_string_lossy().into_owned();
+            let lock_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&lock_path)?;
+            lock_file.lock_exclusive()?;
+            app.manage(AppLock(lock_file));
+
             let (jwt_secret, admin_token) =
                 load_or_create_secrets(&config_dir.join("control-secrets.env"))?;
             let (mut events, child) = app
@@ -80,15 +99,18 @@ pub fn run() {
                 .env("CONTROL_LICENSE_SECRET", "dev-license-secret-change-me")
                 .env("CONTROL_LOCAL_RECOVERY", "1")
                 .env("CONTROL_DB_PATH", data_dir.join("control.sqlite3"))
-                // 부모(이 앱) PID → sidecar 가 부모 소멸 시 자체 종료 (고아 방지)
-                .env("CONTROL_PARENT_PID", std::process::id().to_string())
+                // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
+                .env("APP_LOCK_FILE", &lock_path_str)
                 .spawn()?;
             // sidecar 출력을 앱 stderr 로 흘려 진단 가능하게 하고 조기 종료를 표면화한다.
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = events.recv().await {
                     match event {
                         CommandEvent::Stdout(l) | CommandEvent::Stderr(l) => {
-                            eprintln!("[control-server] {}", String::from_utf8_lossy(&l).trim_end())
+                            eprintln!(
+                                "[control-server] {}",
+                                String::from_utf8_lossy(&l).trim_end()
+                            )
                         }
                         CommandEvent::Terminated(p) => eprintln!(
                             "[control-server] 종료됨 code={:?} signal={:?}",
@@ -99,7 +121,37 @@ pub fn run() {
                     }
                 }
             });
-            app.manage(ControlServerChild(Mutex::new(Some(child))));
+            let (mut engine_events, engine_child) = app
+                .shell()
+                .sidecar("local-engine")?
+                .env("CUSTOMER_DB_PATH", data_dir.join("customers.sqlite3"))
+                .env("RAG_DB_PATH", data_dir.join("rag-index.sqlite3"))
+                .env("WHISPER_MODEL_DIR", data_dir.join("whisper-models"))
+                .env("CUSTOMER_DB_KEYFILE", config_dir.join("customer-db.key"))
+                // whisper 모델(1.5GB+)은 부팅 시 받지 않는다 — 첫 STT 사용 시 자체 UI 로 다운로드
+                .env("WHISPER_PREWARM", "0")
+                // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
+                .env("APP_LOCK_FILE", &lock_path_str)
+                .spawn()?;
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = engine_events.recv().await {
+                    match event {
+                        CommandEvent::Stdout(l) | CommandEvent::Stderr(l) => {
+                            eprintln!("[local-engine] {}", String::from_utf8_lossy(&l).trim_end())
+                        }
+                        CommandEvent::Terminated(p) => eprintln!(
+                            "[local-engine] 종료됨 code={:?} signal={:?}",
+                            p.code, p.signal
+                        ),
+                        CommandEvent::Error(e) => eprintln!("[local-engine] 오류: {e}"),
+                        _ => {}
+                    }
+                }
+            });
+            app.manage(SidecarChildren {
+                control_server: Mutex::new(Some(child)),
+                local_engine: Mutex::new(Some(engine_child)),
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -107,8 +159,21 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            if let Some(state) = app_handle.try_state::<ControlServerChild>() {
-                if let Some(child) = state.0.lock().expect("control-server child lock").take() {
+            if let Some(state) = app_handle.try_state::<SidecarChildren>() {
+                if let Some(child) = state
+                    .control_server
+                    .lock()
+                    .expect("control-server child lock")
+                    .take()
+                {
+                    let _ = child.kill();
+                }
+                if let Some(child) = state
+                    .local_engine
+                    .lock()
+                    .expect("local-engine child lock")
+                    .take()
+                {
                     let _ = child.kill();
                 }
             }

@@ -30,7 +30,50 @@ from security import (
     verify_password,
 )
 
-app = FastAPI(title="Insurance AI Control Server")
+import asyncio
+import contextlib
+
+
+def _lock_is_free(lock_path: str) -> bool:
+    import fcntl
+
+    try:
+        fd = os.open(lock_path, os.O_RDWR)
+    except OSError:
+        return False  # 파일 없음/못 엶 — 판단 보류
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False  # 앱이 잡고 있음 = 정상
+    finally:
+        os.close(fd)
+    return True  # 우리가 잡음 = 앱이 놨다 = 앱 종료
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    lock_path = os.environ.get("APP_LOCK_FILE", "")
+    task = None
+    if lock_path:
+        print(f"control-server: watching parent lock {lock_path!r}", file=sys.stderr)
+
+        async def _watch() -> None:
+            # 부모(앱) 종료 시 stderr 파이프의 read end 가 닫혀 이후 어떤 print 든 블록/EPIPE 된다.
+            # 그래서 감지 후엔 I/O 없이 바로 os._exit(0). (심장박동·안내 로그 넣지 말 것)
+            while True:
+                await asyncio.sleep(2)
+                if _lock_is_free(lock_path):
+                    os._exit(0)
+
+        task = asyncio.ensure_future(_watch())
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+app = FastAPI(title="Insurance AI Control Server", lifespan=_lifespan)
 _DEFAULT_ORIGINS = ",".join(
     [
         # 데스크톱 앱 (Tauri 런타임 + vite 개발 서버)
@@ -406,21 +449,6 @@ def _healthy(host: str, port: int) -> bool:
         return False
 
 
-def _watch_parent(ppid: int) -> None:
-    """부모(데스크톱 앱)가 사라지면 자체 종료 — 사이드카 고아 방지."""
-    import threading
-    import time
-
-    def loop() -> None:
-        while True:
-            time.sleep(2)
-            if os.getppid() != ppid:  # 부모 죽으면 재부모화되어 ppid 가 바뀐다 (POSIX)
-                print("control-server: parent gone — shutting down", file=sys.stderr)
-                os._exit(0)
-
-    threading.Thread(target=loop, daemon=True).start()
-
-
 if __name__ == "__main__":
     import uvicorn
 
@@ -438,9 +466,6 @@ if __name__ == "__main__":
             sys.exit(0)
         print(f"control-server: :{port} taken by an unhealthy process — exiting", file=sys.stderr)
         sys.exit(1)
-
-    _ppid = os.environ.get("CONTROL_PARENT_PID", "")
-    if _ppid.isdigit():
-        _watch_parent(int(_ppid))
+    # APP_LOCK_FILE 감시는 _lifespan 에서 (asyncio 태스크 — onefile 스레드 이슈 회피)
 
     uvicorn.run(app, host=host, port=port)

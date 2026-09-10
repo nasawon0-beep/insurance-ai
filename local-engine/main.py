@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 import getpass
 import logging
 import secrets
+import sys
 import tempfile
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +40,11 @@ _MAINT_STATUS = {
     "backup": {"state": "pending"}, "usage_prune": {"state": "pending"},
     "audit_prune": {"state": "pending"},
 }
+
+
+def _resource_path(name: str) -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return root / name
 
 
 def _utcnow_iso():
@@ -71,13 +78,50 @@ def _create_api_secret() -> str:
 API_SECRET = _create_api_secret()
 
 
+def _lock_is_free(lock_path: str) -> bool:
+    import fcntl
+
+    try:
+        fd = os.open(lock_path, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    import asyncio
+
     if os.environ.get("ENGINE_WARMUP", "1") == "1":
         threading.Thread(target=_warm_ollama, daemon=True).start()
     threading.Thread(target=_warm_whisper, daemon=True).start()
     _startup_maintenance()
-    yield
+
+    _lock = os.environ.get("APP_LOCK_FILE", "")
+    _watch_task = None
+    if _lock:
+        print(f"local-engine: watching parent lock {_lock!r}", file=sys.stderr)
+
+        async def _watch() -> None:
+            # 부모(앱) 종료 시 stderr 파이프의 read end 가 닫혀 이후 어떤 print 든 블록/EPIPE 된다.
+            # 그래서 감지 후엔 I/O 없이 바로 os._exit(0). (심장박동·안내 로그 넣지 말 것)
+            while True:
+                await asyncio.sleep(2)
+                if _lock_is_free(_lock):
+                    os._exit(0)
+
+        _watch_task = asyncio.ensure_future(_watch())
+    try:
+        yield
+    finally:
+        if _watch_task:
+            _watch_task.cancel()
 
 
 def _startup_maintenance() -> None:
@@ -325,8 +369,41 @@ def health():
     return engine_status
 
 
+def _port_taken(host: str, port: int) -> bool:
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
+def _healthy(host: str, port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
     import uvicorn
 
     # 반드시 127.0.0.1만 — 외부에서 접근 불가
-    uvicorn.run(app, host="127.0.0.1", port=8420)
+    host = "127.0.0.1"
+    port = int(os.environ.get("ENGINE_PORT", "8420"))
+
+    # 이미 정상 인스턴스가 점유 중이면 재사용(개발 스크립트 중복 기동·재시작 충돌 방지).
+    if _port_taken(host, port):
+        if _healthy(host, port):
+            print(f"local-engine: :{port} already serving — reusing", file=sys.stderr)
+            sys.exit(0)
+        print(f"local-engine: :{port} taken by an unhealthy process — exiting", file=sys.stderr)
+        sys.exit(1)
+    # APP_LOCK_FILE 감시는 _lifespan 의 asyncio 태스크에서 (onefile 스레드 이슈 회피)
+
+    uvicorn.run(app, host=host, port=port)

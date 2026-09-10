@@ -33,7 +33,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/control-server"],
+    "externalBin": ["binaries/control-server", "binaries/local-engine"],
     "targets": "all",
     "icon": [
       "icons/32x32.png",
