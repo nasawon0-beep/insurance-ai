@@ -1,12 +1,12 @@
 // control-server 연동: 로그인 / 라이선스 / 기기 등록 + 오프라인 유예.
 // 아키텍처 3번: 시계 되돌리기 방지용 단조 타임스탬프를 로컬에 별도 저장.
 
+import { CONTROL_URL } from "./config";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature";
 
-export const CONTROL_URL =
-  (import.meta as any).env?.VITE_CONTROL_URL || "http://127.0.0.1:8790";
+export { CONTROL_URL };
 
 const GRACE_DAYS = 5; // 오프라인 유예 (문서: 3~7일)
 

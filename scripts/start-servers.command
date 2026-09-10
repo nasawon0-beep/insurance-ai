@@ -18,8 +18,7 @@ LOGS="$ROOT/logs"
 VENV_PY="$ROOT/local-engine/.venv/bin/python"
 CONTROL_PY="$ROOT/control-server/.venv/bin/python"
 SECRETS="$ROOT/control-server/secrets.env"
-ENGINE_PORT=8420
-CONTROL_PORT=8790
+. "$HERE/lib/servers.sh"   # ENGINE_PORT / CONTROL_PORT / load_control_secrets
 mkdir -p "$LOGS"
 
 log(){ printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -62,8 +61,7 @@ case $cs in
   2) log "중단: 포트 $CONTROL_PORT 를 응답 없는 프로세스가 점유 중. 해당 PID 종료 후 재시도(수동 개입 필요)."
      lsof -nP -iTCP:"$CONTROL_PORT" -sTCP:LISTEN 2>/dev/null | tail -n +1 | while read -r l; do log "  $l"; done
      exit 0 ;;
-  1) set -a; . "$SECRETS"; set +a
-     export CONTROL_LOCAL_RECOVERY=1   # 로컬: 로그인 전 계정 복구 허용 (loopback 게이트가 원격 차단)
+  1) load_control_secrets "$ROOT" "$VENV_PY"   # 시크릿은 위에서 존재 확인함 — 로드만
      log "control-server 시작 (:$CONTROL_PORT)"
      ( cd "$ROOT/control-server" && exec "$CONTROL_PY" main.py ) >>"$LOGS/control-server.log" 2>&1 & ;;
 esac

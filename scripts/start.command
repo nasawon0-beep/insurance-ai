@@ -10,8 +10,7 @@ LOGS="$ROOT/logs"
 mkdir -p "$LOGS"
 VENV_PY="$ROOT/local-engine/.venv/bin/python"
 CONTROL_PY="$ROOT/control-server/.venv/bin/python"
-ENGINE_PORT=8420
-CONTROL_PORT=8790
+. "$HERE/lib/servers.sh"   # ENGINE_PORT / CONTROL_PORT / load_control_secrets
 
 log(){ printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*"; }
 
@@ -41,29 +40,11 @@ if [ "${START_CONTROL_SERVER:-1}" != "0" ]; then
   if lsof -ti "tcp:$CONTROL_PORT" >/dev/null 2>&1; then
     log "control-server 이미 실행 중 (:$CONTROL_PORT)"
   else
-    SECRETS="$ROOT/control-server/secrets.env"
-    if [ ! -f "$SECRETS" ]; then
-      log "control-server 시크릿 생성 (최초 1회): $SECRETS"
-      JWT=$("$VENV_PY" -c 'import secrets;print(secrets.token_hex(32))')
-      ADM=$("$VENV_PY" -c 'import secrets;print(secrets.token_hex(32))')
-      umask 177
-      cat > "$SECRETS" <<EOF
-# 이 PC 전용. 커밋·공유 금지. 삭제하면 다음 실행에 재생성됨(기존 로그인 토큰 무효).
-CONTROL_JWT_SECRET=$JWT
-CONTROL_ADMIN_TOKEN=$ADM
-# 데스크톱 빌드의 VITE_LICENSE_SECRET 과 반드시 동일해야 오프라인 라이선스(P0-B)가 검증됨.
-# 파일럿은 둘 다 아래 기본값. 정식 배포 시 양쪽을 같은 강한 값으로 교체.
-CONTROL_LICENSE_SECRET=dev-license-secret-change-me
-EOF
-      chmod 600 "$SECRETS"
-    fi
-    set -a; . "$SECRETS"; set +a
+    load_control_secrets "$ROOT" "$VENV_PY" create
     if [ ! -x "$CONTROL_PY" ]; then
       log "오류: control-server/.venv 가 없습니다. setup-once.command 를 먼저 실행하세요."
       exit 1
     fi
-    # 로컬 파일럿: 로그인 전 계정 복구 활성화 (loopback 게이트가 원격 차단)
-    export CONTROL_LOCAL_RECOVERY=1
     log "control-server 시작 (:$CONTROL_PORT)"
     ( cd "$ROOT/control-server" && nohup "$CONTROL_PY" main.py >"$LOGS/control-server.log" 2>&1 & )
   fi

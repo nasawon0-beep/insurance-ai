@@ -5,7 +5,10 @@
 #       'pkill -f main.py' 는 절대 쓰지 않는다 (둘 다 죽는다).
 set -uo pipefail
 
-for PORT in 8420 8790; do
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/servers.sh"   # ENGINE_PORT / CONTROL_PORT
+
+for PORT in "$ENGINE_PORT" "$CONTROL_PORT"; do
   PIDS="$(lsof -ti "tcp:$PORT" 2>/dev/null || true)"
   if [ -n "$PIDS" ]; then
     echo "포트 $PORT 종료: $PIDS"

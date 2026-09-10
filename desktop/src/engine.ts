@@ -1,4 +1,6 @@
-export const LOCAL_ENGINE_URL = "http://127.0.0.1:8420";
+import { LOCAL_ENGINE_URL } from "./config";
+
+export { LOCAL_ENGINE_URL };
 
 const API_SECRET_HEADER = "X-Insurance-AI-Secret";
 const ACTOR_HEADER = "X-Actor-Id";
