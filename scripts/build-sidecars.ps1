@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+# UTF-8 모드: pip 가 requirements.txt 를 cp1252 로 읽어 깨지는 것 방지
+$env:PYTHONUTF8 = "1"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $ControlDir = Join-Path $Root "control-server"

@@ -8,8 +8,12 @@ faster-whisper==1.2.1
 pypdfium2==5.13.0
 onnxruntime==1.19.2
 openpyxl==3.1.5
-# RapidOCR: 글자 없는 PDF 의 크로스플랫폼 OCR 폴백 (Windows/Linux). 한국어 모델은 ocr/models/ 에 번들.
-# 1.3.24 는 numpy<2 를 요구한다 → Windows pip(엄격 resolver)에서 numpy 2.x 와 ResolutionImpossible.
-# numpy 1.26.4 로 고정 (onnxruntime>=1.21.6, faster-whisper, pdfplumber 모두 호환).
+# NOTE: keep this file ASCII-only. Windows pip decodes requirements.txt as cp1252
+# when there is no BOM, so non-ASCII comments break `pip install -r` on CI.
+# RapidOCR: cross-platform OCR fallback for scanned PDFs (Windows/Linux).
+# Korean recognition model is bundled under local-engine/ocr/models/.
+# rapidocr-onnxruntime 1.3.24 requires numpy<2; Windows pip's strict resolver
+# hits ResolutionImpossible with numpy 2.x, so numpy is pinned to 1.26.4
+# (compatible with onnxruntime 1.19.2, faster-whisper, pdfplumber).
 rapidocr-onnxruntime==1.3.24
 numpy==1.26.4

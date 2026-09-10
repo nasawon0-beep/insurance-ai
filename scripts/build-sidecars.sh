@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONUTF8=1   # pip 가 requirements.txt 를 항상 UTF-8 로 읽게 (Windows .ps1 과 동일)
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONTROL_DIR="$ROOT/control-server"

@@ -3,7 +3,7 @@ local-engine/rag/data/
 control-server/data/
 control-server/secrets.env
 local-engine/whisper/models/
-local-engine/ocr/models/
+# local-engine/ocr/models/ 는 번들 필수(한국어 OCR, ~23MB) — 커밋됨. whisper 모델(GB급)만 제외.
 **/.venv/
 **/node_modules/
 desktop/dist/
