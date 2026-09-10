@@ -16,8 +16,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional
@@ -69,6 +71,42 @@ def _keyfile_set(key: bytes) -> None:
     _KEYFILE_FALLBACK.parent.mkdir(parents=True, exist_ok=True)
     _KEYFILE_FALLBACK.write_text(base64.b64encode(key).decode("ascii"))
     os.chmod(_KEYFILE_FALLBACK, 0o600)
+
+
+def _database_has_encrypted_values() -> bool:
+    """키가 없을 때만 DB를 훑어 기존 암호문의 존재를 확인한다."""
+    from .db import resolve_db_path
+
+    db_path = resolve_db_path()
+    if not db_path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for (table,) in tables:
+                quoted_table = '"' + table.replace('"', '""') + '"'
+                columns = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+                for column in columns:
+                    quoted_column = '"' + column[1].replace('"', '""') + '"'
+                    found = conn.execute(
+                        f"SELECT 1 FROM {quoted_table} "
+                        f"WHERE typeof({quoted_column}) = 'text' "
+                        f"AND substr({quoted_column}, 1, 7) = ? LIMIT 1",
+                        (_PREFIX,),
+                    ).fetchone()
+                    if found:
+                        return True
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError(
+            "고객 DB의 암호화 키 안전 검사를 완료할 수 없어 신규 키 생성을 중단합니다."
+        ) from exc
+    return False
 
 
 class FieldCipher:
@@ -126,6 +164,11 @@ def get_cipher() -> FieldCipher:
         key = _keyfile_get()
         source = "keyfile"
     if key is None:
+        if _database_has_encrypted_values():
+            raise RuntimeError(
+                "고객 DB에 암호문(enc:v1:)이 있지만 기존 암호화 키를 찾을 수 없습니다. "
+                "키링 또는 CUSTOMER_DB_KEYFILE을 복구해야 합니다."
+            )
         key = AESGCM.generate_key(bit_length=256)
         source = "keyring" if _keyring_set(key) else "keyfile"
         if source == "keyfile":
@@ -133,6 +176,24 @@ def get_cipher() -> FieldCipher:
 
     _cipher = FieldCipher(key, source)
     return _cipher
+
+
+def write_backup_key(path: Path) -> str:
+    """DB 스냅샷과 함께 보관할 복구용 키 메타 파일을 0600으로 쓴다."""
+    cipher = get_cipher()
+    payload = json.dumps(
+        {
+            "version": 1,
+            "key_source": cipher.key_source,
+            "key_b64": base64.b64encode(cipher._key).decode("ascii"),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(payload)
+    os.chmod(path, 0o600)
+    return cipher.key_source
 
 
 def reset_cache() -> None:

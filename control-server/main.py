@@ -35,14 +35,20 @@ import contextlib
 
 
 def _lock_is_free(lock_path: str) -> bool:
-    import fcntl
-
     try:
         fd = os.open(lock_path, os.O_RDWR)
     except OSError:
         return False  # 파일 없음/못 엶 — 판단 보류
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return False  # 앱이 잡고 있음 = 정상
     finally:

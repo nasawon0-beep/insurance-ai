@@ -6,13 +6,20 @@ CONTROL_DIR="$ROOT/control-server"
 LOCAL_ENGINE_DIR="$ROOT/local-engine"
 CONTROL_PYTHON="$CONTROL_DIR/.venv/bin/python"
 LOCAL_ENGINE_PYTHON="$LOCAL_ENGINE_DIR/.venv/bin/python"
-TARGET_TRIPLE=$(rustc -Vv | awk '/^host:/ { print $2 }')
+TARGET_TRIPLE=$(rustc -Vv | sed -n 's/^host: //p')
 DEST_DIR="$ROOT/desktop/src-tauri/binaries"
+export PYINSTALLER_CONFIG_DIR="${TMPDIR:-/tmp}/insurance-ai-pyinstaller"
+mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 if [[ -z "$TARGET_TRIPLE" ]]; then
   echo "rustc host target triple을 확인할 수 없습니다." >&2
   exit 1
 fi
+
+if [[ ! -x "$CONTROL_PYTHON" ]]; then
+  python3 -m venv "$CONTROL_DIR/.venv"
+fi
+"$CONTROL_PYTHON" -m pip install -r "$CONTROL_DIR/requirements.txt"
 
 # pyinstaller 가 이미 맞는 버전이면 재설치 생략 (오프라인·인덱스 상태 의존 축소)
 if ! "$CONTROL_PYTHON" -c 'import PyInstaller, sys; sys.exit(0 if PyInstaller.__version__.split(".")[0] == "6" else 1)' 2>/dev/null; then
@@ -22,6 +29,11 @@ fi
   cd "$CONTROL_DIR"
   "$CONTROL_PYTHON" -m PyInstaller --clean --noconfirm control-server.spec
 )
+
+if [[ ! -x "$LOCAL_ENGINE_PYTHON" ]]; then
+  python3 -m venv "$LOCAL_ENGINE_DIR/.venv"
+fi
+"$LOCAL_ENGINE_PYTHON" -m pip install -r "$LOCAL_ENGINE_DIR/requirements.txt"
 
 if ! "$LOCAL_ENGINE_PYTHON" -c 'import PyInstaller, sys; sys.exit(0 if PyInstaller.__version__.split(".")[0] == "6" else 1)' 2>/dev/null; then
   "$LOCAL_ENGINE_PYTHON" -m pip install 'pyinstaller>=6,<7'
@@ -40,7 +52,9 @@ install_sidecar() {
   rm -f "$dst"
   cp "$src" "$dst"
   chmod 755 "$dst"
-  codesign --force --sign - "$dst"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    codesign --force --sign - "$dst"
+  fi
   echo "sidecar: $dst"
 }
 

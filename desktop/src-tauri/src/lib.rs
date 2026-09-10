@@ -15,6 +15,78 @@ struct SidecarChildren {
 // 해제하고, 사이드카가 LOCK_NB 로 잡히는 걸 보고 자체 종료한다(PID 재사용·좀비 무관).
 struct AppLock(#[allow(dead_code)] File);
 
+#[cfg(windows)]
+struct SidecarJob(Mutex<Option<isize>>);
+
+#[cfg(windows)]
+impl SidecarJob {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        use std::mem::size_of;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                let error = std::io::Error::last_os_error();
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return Err(error.into());
+            }
+            Ok(Self(Mutex::new(Some(handle as isize))))
+        }
+    }
+
+    fn assign(&self, pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+
+        let job = self.0.lock().expect("sidecar job lock");
+        let job = (*job).ok_or("sidecar Job Object가 이미 닫혔습니다")? as *mut _;
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let assigned = AssignProcessToJobObject(job, process);
+            windows_sys::Win32::Foundation::CloseHandle(process);
+            if assigned == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        Ok(())
+    }
+
+    fn terminate_all(&self) {
+        if let Some(handle) = self.0.lock().expect("sidecar job lock").take() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle as *mut _);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SidecarJob {
+    fn drop(&mut self) {
+        self.terminate_all();
+    }
+}
+
 fn random_hex() -> Result<String, Box<dyn std::error::Error>> {
     let mut bytes = [0_u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("CSPRNG 실패: {e}"))?; // OS CSPRNG (크로스플랫폼)
@@ -89,6 +161,9 @@ pub fn run() {
             lock_file.lock_exclusive()?;
             app.manage(AppLock(lock_file));
 
+            #[cfg(windows)]
+            let sidecar_job = SidecarJob::new()?;
+
             let (jwt_secret, admin_token) =
                 load_or_create_secrets(&config_dir.join("control-secrets.env"))?;
             let (mut events, child) = app
@@ -102,6 +177,8 @@ pub fn run() {
                 // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
                 .env("APP_LOCK_FILE", &lock_path_str)
                 .spawn()?;
+            #[cfg(windows)]
+            sidecar_job.assign(child.pid())?;
             // sidecar 출력을 앱 stderr 로 흘려 진단 가능하게 하고 조기 종료를 표면화한다.
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = events.recv().await {
@@ -133,6 +210,8 @@ pub fn run() {
                 // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
                 .env("APP_LOCK_FILE", &lock_path_str)
                 .spawn()?;
+            #[cfg(windows)]
+            sidecar_job.assign(engine_child.pid())?;
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = engine_events.recv().await {
                     match event {
@@ -152,6 +231,8 @@ pub fn run() {
                 control_server: Mutex::new(Some(child)),
                 local_engine: Mutex::new(Some(engine_child)),
             });
+            #[cfg(windows)]
+            app.manage(sidecar_job);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -159,6 +240,10 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            #[cfg(windows)]
+            if let Some(job) = app_handle.try_state::<SidecarJob>() {
+                job.terminate_all();
+            }
             if let Some(state) = app_handle.try_state::<SidecarChildren>() {
                 if let Some(child) = state
                     .control_server

@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -45,6 +48,13 @@ jobs:
       - name: Install frontend dependencies
         working-directory: desktop
         run: npm ci
+      - name: Build sidecars (macOS)
+        if: runner.os == 'macOS'
+        run: scripts/build-sidecars.sh
+      - name: Build sidecars (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/build-sidecars.ps1
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,6 @@
 """고객 DB 백업/복구 테스트 (database/backup.py)."""
 import base64
+import json
 import sqlite3
 
 import pytest
@@ -39,6 +40,9 @@ def test_make_and_list(env):
 
     r = backup.make_backup("manual")
     assert r["created"] and r["filename"].startswith("customers-")
+    key_meta = json.loads((env.parent / "backups" / r["key_backup"]).read_text())
+    assert key_meta["key_b64"] == _KEY
+    assert key_meta["key_source"] == "env"
     lst = backup.list_backups()
     assert len(lst) == 1 and lst[0]["filename"] == r["filename"]
     assert lst[0]["kind"] == "snapshot"
