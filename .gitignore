@@ -28,5 +28,4 @@ control-server/build/
 control-server/dist/
 local-engine/build/
 local-engine/dist/
-control-server/dist/
 desktop/src-tauri/binaries/
