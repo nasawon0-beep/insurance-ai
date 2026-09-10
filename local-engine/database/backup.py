@@ -132,7 +132,6 @@ def _prune(d: Path) -> int:
     for p in to_delete:
         try:
             p.unlink()
-            _rm(p.with_suffix(p.suffix + ".key.json"))
             pruned += 1
         except OSError:
             pass
@@ -140,8 +139,6 @@ def _prune(d: Path) -> int:
 
 
 def make_backup(trigger: str = "manual", db_path: Optional[str] = None) -> dict:
-    from .crypto import write_backup_key
-
     src = resolve_db_path(db_path)
     d = backup_dir(db_path)
     if not src.exists():
@@ -153,22 +150,13 @@ def make_backup(trigger: str = "manual", db_path: Optional[str] = None) -> dict:
     while dst.exists():  # 같은 초 안에 여러 번 눌러도 안 겹치게
         dst = d / f"{base}_{n:03d}.sqlite3"
         n += 1
-    key_path = dst.with_suffix(dst.suffix + ".key.json")
-    try:
-        _snapshot(src, dst)
-        key_source = write_backup_key(key_path)
-    except Exception:
-        _rm(dst)
-        _rm(key_path)
-        raise
+    _snapshot(src, dst)
     pruned = _prune(d)
     st = dst.stat()
     return {
         "created": True,
         "filename": dst.name,
         "path": str(dst),
-        "key_backup": key_path.name,
-        "key_source": key_source,
         "size": st.st_size,
         "pruned": pruned,
         "trigger": trigger,

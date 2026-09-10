@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import json
 import os
 import secrets
 import sqlite3
@@ -176,24 +175,6 @@ def get_cipher() -> FieldCipher:
 
     _cipher = FieldCipher(key, source)
     return _cipher
-
-
-def write_backup_key(path: Path) -> str:
-    """DB 스냅샷과 함께 보관할 복구용 키 메타 파일을 0600으로 쓴다."""
-    cipher = get_cipher()
-    payload = json.dumps(
-        {
-            "version": 1,
-            "key_source": cipher.key_source,
-            "key_b64": base64.b64encode(cipher._key).decode("ascii"),
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(payload)
-    os.chmod(path, 0o600)
-    return cipher.key_source
 
 
 def reset_cache() -> None:

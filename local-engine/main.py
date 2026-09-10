@@ -68,7 +68,8 @@ def _create_api_secret() -> str:
     )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):  # Unix 전용 — Windows 는 os.open 모드로 충분
+            os.fchmod(fd, 0o600)
         os.write(fd, value.encode("utf-8"))
     finally:
         os.close(fd)
