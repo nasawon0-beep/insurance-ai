@@ -31,7 +31,6 @@ from rag import router as rag_router
 from database import router as customer_router
 from database.uploads import MAX_AUDIO
 from whisper.router import router as whisper_router
-from google_sync.router import router as google_router
 
 
 API_SECRET_HEADER = "X-Insurance-AI-Secret"
@@ -217,7 +216,6 @@ app.include_router(parser_router)
 app.include_router(rag_router)
 app.include_router(customer_router)
 app.include_router(whisper_router)
-app.include_router(google_router)
 
 
 @app.middleware("http")
