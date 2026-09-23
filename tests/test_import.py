@@ -58,6 +58,35 @@ def test_preview_columns_and_encoding(client):
     assert len(b["sample_rows"]) == 3
 
 
+def test_preview_includes_ai_auto_mapping_and_sample_classification(client, monkeypatch):
+    from database.import_data import ai_classifier
+
+    async def fake_auto_map(columns):
+        assert columns == ["이름", "전화", "생년월일", "태그"]
+        return {"name": "이름", "phone": "전화", "birth_date": "생년월일", "tags": "태그"}
+
+    async def fake_classify(rows):
+        assert rows[0] == ["홍길동", "01011112222", "1990.01.02", "VIP;암보험"]
+        return [
+            {
+                "row_index": 0,
+                "ai_category": "customer",
+                "ai_confidence": 0.9,
+                "reasoning": "test",
+                "extracted_data": {"name": "홍길동"},
+            }
+        ]
+
+    monkeypatch.setattr(ai_classifier, "auto_map_columns", fake_auto_map)
+    monkeypatch.setattr(ai_classifier, "classify_and_extract_batch", fake_classify)
+
+    r = client.post("/import/preview", files={"file": ("c.csv", CSV.encode("utf-8"), "text/csv")})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["auto_mapping"] == {"name": "이름", "phone": "전화", "birth_date": "생년월일", "tags": "태그"}
+    assert b["ai_sample_rows"][0]["ai_category"] == "customer"
+
+
 def test_preview_detects_cp949(client):
     raw = "이름,전화\n가나다,010-1111-2222\n".encode("cp949")
     r = client.post("/import/preview", files={"file": ("c.csv", raw, "text/csv")})

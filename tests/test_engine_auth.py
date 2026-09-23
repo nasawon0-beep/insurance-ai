@@ -1,3 +1,10 @@
+"""엔진 인증 테스트"""
+import os
+
+# 이 테스트는 인증을 확인하므로 DEV_SKIP_AUTH를 비활성화
+os.environ["DEV_SKIP_AUTH"] = "0"
+
+
 def test_api_requires_secret_header():
     from fastapi.testclient import TestClient
     import main
@@ -51,3 +58,31 @@ def test_allowed_origin_preflight_succeeds():
         },
     )
     assert 200 <= response.status_code < 300
+
+
+def test_dev_skip_auth_is_blocked_in_production(monkeypatch):
+    import main
+
+    monkeypatch.setenv("DEV_SKIP_AUTH", "1")
+    monkeypatch.setenv("HERMES_ENV", "production")
+
+    try:
+        main._guard_dev_skip_auth()
+    except RuntimeError as exc:
+        assert "DEV_SKIP_AUTH" in str(exc)
+    else:
+        raise AssertionError("production DEV_SKIP_AUTH must block startup")
+
+
+def test_dev_skip_auth_is_blocked_in_release(monkeypatch):
+    import main
+
+    monkeypatch.setenv("DEV_SKIP_AUTH", "1")
+    monkeypatch.setenv("RELEASE", "true")
+
+    try:
+        main._guard_dev_skip_auth()
+    except RuntimeError as exc:
+        assert "RELEASE" in str(exc)
+    else:
+        raise AssertionError("release DEV_SKIP_AUTH must block startup")

@@ -105,6 +105,11 @@ def _lock_is_free(lock_path: str) -> bool:
 async def _lifespan(app: FastAPI):
     import asyncio
 
+    # 보안 경고/릴리스 가드: DEV_SKIP_AUTH
+    dev_skip_auth = _guard_dev_skip_auth()
+    if dev_skip_auth:
+        print("⚠️  경고: DEV_SKIP_AUTH=1 활성화됨. 프로덕션 환경에서 절대 사용 금지!", file=sys.stderr)
+
     if os.environ.get("ENGINE_WARMUP", "1") == "1":
         threading.Thread(target=_warm_ollama, daemon=True).start()
     threading.Thread(target=_warm_whisper, daemon=True).start()
@@ -129,6 +134,19 @@ async def _lifespan(app: FastAPI):
     finally:
         if _watch_task:
             _watch_task.cancel()
+
+
+def _guard_dev_skip_auth() -> bool:
+    """릴리스/프로덕션 실행에서 DEV_SKIP_AUTH 인증 우회를 차단한다."""
+    if os.getenv("DEV_SKIP_AUTH") != "1":
+        return False
+    hermes_env = (os.getenv("HERMES_ENV") or "").strip().lower()
+    release = (os.getenv("RELEASE") or "").strip().lower()
+    if hermes_env == "production" or release == "true":
+        raise RuntimeError(
+            "DEV_SKIP_AUTH=1 is not allowed when HERMES_ENV=production or RELEASE=true"
+        )
+    return True
 
 
 def _startup_maintenance() -> None:
@@ -221,6 +239,8 @@ app.include_router(whisper_router)
 @app.middleware("http")
 async def require_api_secret(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in {"/health", "/api-secret"}:
+        return await call_next(request)
+    if os.getenv("DEV_SKIP_AUTH") == "1":
         return await call_next(request)
     supplied = request.headers.get(API_SECRET_HEADER, "")
     if not secrets.compare_digest(supplied, API_SECRET):

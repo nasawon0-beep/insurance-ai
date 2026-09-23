@@ -4,11 +4,15 @@
 - local-engine 을 import 경로에 올린다 (tests/ 는 repo 루트에 있으므로).
 - 외부 라이브러리 없이 최소 PDF를 만들어 주는 build_pdf 헬퍼를 제공한다.
 """
+import os
 import sys
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
+
+# 테스트 전역 기본값: DEV_SKIP_AUTH 활성화 (개별 테스트는 monkeypatch로 비활성화)
+os.environ["DEV_SKIP_AUTH"] = "1"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_ENGINE = REPO_ROOT / "local-engine"
@@ -81,3 +85,39 @@ def _build_pdf(pages_text: list[str]) -> bytes:
 @pytest.fixture
 def build_pdf():
     return _build_pdf
+
+
+@pytest.fixture(autouse=True)
+def auto_login_session(monkeypatch, request):
+    """기존 테스트는 기본적으로 인증을 우회하고, 세션 헤더를 주입한다."""
+    auth_check_modules = {"test_engine_auth", "test_stt_router"}
+    if request.module.__name__ not in auth_check_modules:
+        monkeypatch.setenv("DEV_SKIP_AUTH", "1")
+    try:
+        import auth
+        if auth.session_mgr is None:
+            class TestSessionManager:
+                def validate_session(self, session_id):
+                    return session_id == "test-session-12345"
+
+            monkeypatch.setattr(auth, "session_mgr", TestSessionManager())
+        else:
+            original_validate = auth.session_mgr.validate_session
+
+            def validate_session(session_id):
+                if session_id == "test-session-12345":
+                    return True
+                return original_validate(session_id)
+
+            monkeypatch.setattr(auth.session_mgr, "validate_session", validate_session)
+    except Exception:
+        pass
+
+    original_init = TestClient.__init__
+
+    def session_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        # 테스트용 고정 세션 ID
+        self.headers["X-Session-ID"] = "test-session-12345"
+
+    monkeypatch.setattr(TestClient, "__init__", session_init)

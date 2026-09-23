@@ -57,7 +57,9 @@ from . import backup as _backup
 from . import coverage, policy_qa, repo
 from . import export_data as _export
 from . import import_data as _import
+from .import_data import ai_classifier as _ai_classifier
 from . import settings as _settings
+from . import statistics as _stats
 from . import usage as _usage
 from .db import connect, init_schema
 from .intake import extract_customer_fields
@@ -1504,11 +1506,23 @@ async def import_preview(file: UploadFile = File(...)):
     if not data:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
     try:
-        return _import.preview(data, file_format=file_format)
+        preview = _import.preview(data, file_format=file_format)
     except _import._InvalidImport as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _import._XlsxReadError:
         raise HTTPException(status_code=400, detail="엑셀 파일을 읽을 수 없습니다(손상·암호화·형식 아님).")
+    try:
+        preview["auto_mapping"] = await _ai_classifier.auto_map_columns(preview["columns"])
+        sample_rows = [
+            [row.get(col) for col in preview["columns"]]
+            for row in preview["sample_rows"]
+        ]
+        preview["ai_sample_rows"] = await _ai_classifier.classify_and_extract_batch(sample_rows)
+    except Exception as e:  # noqa: BLE001 — AI 보조 경로 실패가 기존 import preview를 막으면 안 된다.
+        preview["auto_mapping"] = {}
+        preview["ai_sample_rows"] = []
+        preview["ai_error"] = str(e)
+    return preview
 
 
 @router.post("/import/commit")
@@ -2048,3 +2062,73 @@ def coverage_analysis(cid: str, conn=Depends(get_conn)):
     if result is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
     return result
+
+
+# ---------- 통계 API (EnhancedDashboard) ----------
+
+@router.get("/statistics/summary")
+def get_statistics_summary(
+    period: str = Query("month"),
+    year: int = Query(2026),
+    month: Optional[int] = Query(None),
+    conn=Depends(get_conn),
+):
+    """
+    고객/계약/상담 통계 요약.
+    
+    Query params:
+        - period: 'month' (기본값) / 'year' / 'all-time'
+        - year: 연도 (기본값: 2026)
+        - month: 월 (period='month'일 때 필요)
+    
+    Returns:
+        {
+            "period": "2026-09",
+            "customers": {"total": 324, "new_this_period": 45, ...},
+            "policies": {"total": 756, "active": 680, ...},
+            "consultations": {"total": 1234, "this_period": 89, ...},
+            "regional_top5": [...],
+            "insurer_top5": [...]
+        }
+    """
+    try:
+        # period='month'일 때 month가 없으면 현재 월 사용
+        if period == "month" and month is None:
+            month = datetime.now().month
+        
+        return _stats.get_cached_summary(conn, period, year, month)
+    except Exception as e:
+        logger.exception("통계 요약 조회 실패")
+        raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
+
+
+@router.get("/statistics/charts")
+def get_statistics_charts(
+    chart_type: str = Query("monthly_trend"),
+    year: int = Query(2026),
+    conn=Depends(get_conn),
+):
+    """
+    차트 데이터 조회.
+    
+    Query params:
+        - chart_type: 'monthly_trend' (기본값) / 'regional_pie' / 'insurer_bar'
+        - year: 연도 (월별 추이용, 기본값: 2026)
+    
+    Returns:
+        {
+            "chart_type": "monthly_trend",
+            "data": {
+                "labels": ["2026-01", "2026-02", ...],
+                "datasets": [
+                    {"label": "신규 고객", "data": [12, 18, ...]},
+                    {"label": "신규 계약", "data": [20, 28, ...]}
+                ]
+            }
+        }
+    """
+    try:
+        return _stats.get_cached_charts(conn, chart_type, year)
+    except Exception as e:
+        logger.exception("차트 데이터 조회 실패")
+        raise HTTPException(status_code=500, detail=f"차트 조회 실패: {str(e)}")
