@@ -124,6 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_consultations_customer ON consultations(customer_
 CREATE INDEX IF NOT EXISTS idx_consultations_followup ON consultations(follow_up_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_rrn_hash ON customers(rrn_hash);
 CREATE INDEX IF NOT EXISTS idx_rrn_access_customer ON rrn_access_log(customer_id);
+CREATE INDEX IF NOT EXISTS idx_rrn_access_customer_time ON rrn_access_log(customer_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_event_time ON usage_log(event, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_customer ON audit_log(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at);

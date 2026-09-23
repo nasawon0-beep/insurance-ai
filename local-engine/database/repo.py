@@ -459,6 +459,10 @@ def create_customer(conn: sqlite3.Connection, data: dict) -> dict:
     for f in _CUSTOMER_FIELDS:
         values[f] = _encrypt(data.get(f), f, _CUSTOMER_ENC)
     values["rrn_hash"] = get_cipher().blind_index(data.get("rrn"))
+    if values["rrn_hash"] and conn.execute(
+        "SELECT 1 FROM customers WHERE rrn_hash = ? LIMIT 1", (values["rrn_hash"],)
+    ).fetchone():
+        raise DuplicateRRNError
     bde = data.get("birth_date_estimated")
     values["birth_date_estimated"] = int(bool(bde)) if bde is not None else None
     values.update(id=cid, created_at=now, updated_at=now)
@@ -567,6 +571,11 @@ def update_customer(conn: sqlite3.Connection, cid: str, patch: dict) -> Optional
     enc = {k: _encrypt(v, k, _CUSTOMER_ENC) for k, v in fields.items()}
     if "rrn" in fields:  # 주민번호가 바뀌면 지문도 다시 계산
         enc["rrn_hash"] = get_cipher().blind_index(fields["rrn"])
+        if enc["rrn_hash"] and conn.execute(
+            "SELECT 1 FROM customers WHERE rrn_hash = ? AND id != ? LIMIT 1",
+            (enc["rrn_hash"], cid),
+        ).fetchone():
+            raise DuplicateRRNError
     if "birth_date_estimated" in patch:  # 평문 INTEGER — 전용 처리
         v = patch["birth_date_estimated"]
         enc["birth_date_estimated"] = int(bool(v)) if v is not None else None

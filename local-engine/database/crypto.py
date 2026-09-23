@@ -73,34 +73,38 @@ def _keyfile_set(key: bytes) -> None:
 
 
 def _database_has_encrypted_values() -> bool:
-    """키가 없을 때만 DB를 훑어 기존 암호문의 존재를 확인한다."""
+    """키가 없을 때 기존 암호문 존재 여부를 대표 암호화 컬럼만 샘플링한다."""
     from .db import resolve_db_path
 
     db_path = resolve_db_path()
     if not db_path.is_file():
         return False
     try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            tables = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-            for (table,) in tables:
-                quoted_table = '"' + table.replace('"', '""') + '"'
-                columns = conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()
-                for column in columns:
-                    quoted_column = '"' + column[1].replace('"', '""') + '"'
+        with sqlite3.connect(str(db_path)) as conn:
+            checks = (
+                ("customers", ("name", "phone", "email", "address", "memo", "rrn")),
+                ("policies", ("insurer", "product_name", "policy_number", "memo")),
+                ("consultations", ("channel", "title", "content", "transcript")),
+            )
+            checked_known_schema = False
+            for table, columns in checks:
+                predicates = " OR ".join(
+                    f"substr({column}, 1, 7) = ?" for column in columns
+                )
+                try:
                     found = conn.execute(
-                        f"SELECT 1 FROM {quoted_table} "
-                        f"WHERE typeof({quoted_column}) = 'text' "
-                        f"AND substr({quoted_column}, 1, 7) = ? LIMIT 1",
-                        (_PREFIX,),
+                        f"SELECT 1 FROM {table} WHERE {predicates} LIMIT 1",
+                        (_PREFIX,) * len(columns),
                     ).fetchone()
-                    if found:
-                        return True
-        finally:
-            conn.close()
+                except sqlite3.OperationalError as exc:
+                    if "no such table" in str(exc).lower() or "no such column" in str(exc).lower():
+                        continue
+                    raise
+                checked_known_schema = True
+                if found:
+                    return True
+            if not checked_known_schema and db_path.stat().st_size > 0:
+                return True
     except (OSError, sqlite3.Error) as exc:
         raise RuntimeError(
             "고객 DB의 암호화 키 안전 검사를 완료할 수 없어 신규 키 생성을 중단합니다."

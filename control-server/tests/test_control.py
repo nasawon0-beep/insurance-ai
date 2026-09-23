@@ -218,6 +218,24 @@ def test_change_password(client):
     assert client.post("/auth/login", json={"email": "chg@x.com", "password": "newpass1"}).status_code == 200
 
 
+def test_change_password_invalidates_existing_token(client):
+    tok, _ = _auth(client, "invalidate@x.com", "oldpass1")
+    assert client.get("/auth/me", headers=h(tok)).status_code == 200
+
+    changed = client.post(
+        "/auth/change-password",
+        json={"current_password": "oldpass1", "new_password": "newpass1"},
+        headers=h(tok),
+    )
+    assert changed.status_code == 200
+    assert client.get("/auth/me", headers=h(tok)).status_code == 401
+
+    new_tok = client.post(
+        "/auth/login", json={"email": "invalidate@x.com", "password": "newpass1"}
+    ).json()["token"]
+    assert client.get("/auth/me", headers=h(new_tok)).status_code == 200
+
+
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [

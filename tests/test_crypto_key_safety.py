@@ -50,3 +50,46 @@ def test_empty_db_without_key_allows_first_key(tmp_path, monkeypatch):
         assert len(saved) == 1 and len(saved[0]) == 32
     finally:
         crypto.reset_cache()
+
+
+def test_encrypted_db_detection_uses_targeted_queries(tmp_path, monkeypatch):
+    from database import crypto
+    from database.db import connect, init_schema
+
+    db_path = tmp_path / "customers.sqlite3"
+    conn = connect(db_path)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO customers (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        ("c1", "enc:v1:sample", "2024-01-01", "2024-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    calls = []
+    real_connect = sqlite3.connect
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            calls.append(sql)
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def close(self):
+            return self._inner.close()
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+    monkeypatch.setenv("CUSTOMER_DB_PATH", str(db_path))
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: CountingConnection(real_connect(*a, **kw)))
+
+    assert crypto._database_has_encrypted_values() is True
+    assert not any("sqlite_master" in sql for sql in calls)
+    assert len(calls) <= 3

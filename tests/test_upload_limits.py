@@ -71,6 +71,28 @@ def test_content_length_rejects_without_reading():
     assert exc.value.detail == "파일이 너무 큽니다. 최대 1MB."
 
 
+def test_read_upload_capped_streams_in_bounded_chunks():
+    from database.uploads import read_upload_capped
+
+    class TrackingFile(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.max_read_size = 0
+
+        def read(self, size=-1):
+            self.max_read_size = max(self.max_read_size, size)
+            return super().read(size)
+
+    body = TrackingFile(b"x" * (_MB + 1))
+    upload = UploadFile(body, filename="streamed.bin", headers=Headers({"content-length": "abc"}))
+
+    with pytest.raises(Exception) as exc:
+        asyncio.run(read_upload_capped(upload, _MB))
+
+    assert exc.value.status_code == 413
+    assert body.max_read_size <= 64 * 1024
+
+
 @pytest.mark.parametrize("size,rejected", [(_MB, False), (_MB + 1, True)])
 def test_read_upload_capped_exact_boundary(size, rejected):
     from database.uploads import read_upload_capped

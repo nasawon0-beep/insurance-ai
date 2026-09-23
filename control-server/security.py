@@ -52,9 +52,15 @@ def verify_password(pw: str, pw_hash: str) -> bool:
         return False
 
 
-def make_token(user_id: str, email: str) -> str:
+def make_token(user_id: str, email: str, session_version: int = 0) -> str:
     now = int(time.time())
-    payload = {"sub": user_id, "email": email, "iat": now, "exp": now + TOKEN_TTL_SEC}
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "sv": int(session_version or 0),
+        "iat": now,
+        "exp": now + TOKEN_TTL_SEC,
+    }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
 

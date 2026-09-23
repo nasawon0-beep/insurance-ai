@@ -5,6 +5,7 @@ from fastapi import HTTPException, UploadFile
 
 
 _MB = 1024 * 1024
+_READ_CHUNK = 64 * 1024
 
 # 값은 양의 정수 MB. import 시점에 1회 읽으므로 변경하려면 엔진 재기동 필요.
 MAX_AUDIO = int(os.environ.get("UPLOAD_MAX_AUDIO_MB", "200")) * _MB
@@ -23,7 +24,14 @@ async def read_upload_capped(file: UploadFile, max_bytes: int) -> bytes:
         except ValueError:
             pass
 
-    data = await file.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise HTTPException(status_code=413, detail=detail)
-    return data
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(min(_READ_CHUNK, max_bytes + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=detail)
+        chunks.append(chunk)
+    return b"".join(chunks)

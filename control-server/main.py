@@ -164,6 +164,16 @@ def current_user(authorization: Optional[str] = Header(None)) -> dict:
     payload = decode_token(authorization.split(" ", 1)[1])
     if not payload:
         raise HTTPException(status_code=401, detail="토큰이 유효하지 않거나 만료되었습니다.")
+    conn = connect()
+    try:
+        init(conn)
+        row = conn.execute(
+            "SELECT session_version FROM users WHERE id = ?", (payload["sub"],)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or int(payload.get("sv") or 0) != int(row["session_version"] or 0):
+        raise HTTPException(status_code=401, detail="토큰이 유효하지 않거나 만료되었습니다.")
     return payload
 
 
@@ -181,7 +191,7 @@ def require_admin(x_control_admin_token: Optional[str] = Header(None)) -> None:
 
 def _issue(conn, row) -> dict:
     return {
-        "token": make_token(row["id"], row["email"]),
+        "token": make_token(row["id"], row["email"], row["session_version"]),
         "user": {"id": row["id"], "email": row["email"]},
     }
 
@@ -243,7 +253,8 @@ def change_password(body: dict, user=Depends(current_user), conn=Depends(get_con
     if not row or not verify_password(cur_pw, row["pw_hash"]):
         raise HTTPException(status_code=401, detail="현재 비밀번호가 올바르지 않습니다.")
     conn.execute(
-        "UPDATE users SET pw_hash = ? WHERE id = ?", (hash_password(new_pw), user["sub"])
+        "UPDATE users SET pw_hash = ?, session_version = session_version + 1 WHERE id = ?",
+        (hash_password(new_pw), user["sub"]),
     )
     conn.commit()
     return {"changed": True}
@@ -275,7 +286,8 @@ def local_recovery_reset(
     if not row:
         raise HTTPException(status_code=404, detail="해당 이메일의 계정을 찾을 수 없습니다.")
     conn.execute(
-        "UPDATE users SET pw_hash = ? WHERE id = ?", (hash_password(new_pw), row["id"])
+        "UPDATE users SET pw_hash = ?, session_version = session_version + 1 WHERE id = ?",
+        (hash_password(new_pw), row["id"]),
     )
     conn.commit()
     print(

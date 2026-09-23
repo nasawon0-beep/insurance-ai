@@ -16,6 +16,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("CUSTOMER_DB_PATH", str(tmp_path / "customers.sqlite3"))
     monkeypatch.setenv("CUSTOMER_DB_KEY_B64", base64.b64encode(b"a" * 32).decode())
     monkeypatch.setenv("RAG_DB_PATH", str(tmp_path / "rag.sqlite3"))
+    monkeypatch.setenv("DEV_SKIP_AUTH", "0")
     crypto.reset_cache()
     yield TestClient(main.app)
     crypto.reset_cache()
