@@ -1999,10 +1999,26 @@ function App() {
   }, [boot]);
 
   useEffect(() => {
-    // 앱 실행(프로세스) 당 1회만. 로그아웃→재로그인해도 다시 확인하지 않는다.
+    // 앱 실행(프로세스) 당 1회만. 로그인 완료 5초 뒤 자동 확인한다.
+    // 실제 manifest/서명 검증은 패키지된 Tauri 앱에서만 동작할 수 있다.
     if (auth !== "in" || updateCheckStartedRef.current) return;
     updateCheckStartedRef.current = true;
-    void checkForUpdate();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const result = await checkForUpdate();
+        if (result.kind !== "available") return;
+        const ok = window.confirm(
+          `업데이트 ${result.version} 버전이 있습니다.\n지금 다운로드·설치하고 앱을 재시작할까요?`,
+        );
+        if (!ok) return;
+        try {
+          await installUpdate(result.update);
+        } catch (e) {
+          window.alert(`업데이트 설치 실패: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      })();
+    }, 5000);
+    return () => window.clearTimeout(timer);
   }, [auth]);
 
   // 앱 로드 시 만기 임박(30일) 계약 수 확인 → 상단 배너
