@@ -1,0 +1,54 @@
+.card {
+  background-color: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  transition: box-shadow var(--transition-fast);
+}
+
+.card-hover:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+.card-header {
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.card-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.card-subtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
+}
+
+.card-body {
+  padding: var(--space-6);
+}
+
+.card-footer {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-base);
+}
+
+/* 다크모드 카드 footer */
+[data-theme="dark"] .card-footer {
+  background-color: #242424; /* 다크모드에서 약간 더 어두운 배경 */
+}
+
+/* Compact variant */
+.card-compact .card-header,
+.card-compact .card-footer {
+  padding: var(--space-3) var(--space-4);
+}
+
+.card-compact .card-body {
+  padding: var(--space-4);
+}

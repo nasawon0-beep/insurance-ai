@@ -1,0 +1,214 @@
+:root {
+  /* ─────────────── 색상 ─────────────── */
+  
+  /* Primary (파란색) */
+  --primary-50: #eff6ff;
+  --primary-100: #dbeafe;
+  --primary-200: #bfdbfe;
+  --primary-300: #93c5fd;
+  --primary-400: #60a5fa;
+  --primary-500: #3b82f6;
+  --primary-600: #2563eb;
+  --primary-700: #1d4ed8;
+  --primary-800: #1e40af;
+  --primary-900: #1e3a8a;
+  
+  /* Secondary (초록색) */
+  --secondary-50: #f0fdf4;
+  --secondary-100: #dcfce7;
+  --secondary-200: #bbf7d0;
+  --secondary-300: #86efac;
+  --secondary-400: #4ade80;
+  --secondary-500: #22c55e;
+  --secondary-600: #16a34a;
+  --secondary-700: #15803d;
+  --secondary-800: #166534;
+  --secondary-900: #14532d;
+  
+  /* Accent (빨간색) */
+  --accent-50: #fef2f2;
+  --accent-100: #fee2e2;
+  --accent-200: #fecaca;
+  --accent-300: #fca5a5;
+  --accent-400: #f87171;
+  --accent-500: #ef4444;
+  --accent-600: #dc2626;
+  --accent-700: #b91c1c;
+  --accent-800: #991b1b;
+  --accent-900: #7f1d1d;
+  
+  /* Warning (주황색) */
+  --warning-50: #fffbeb;
+  --warning-100: #fef3c7;
+  --warning-200: #fde68a;
+  --warning-300: #fcd34d;
+  --warning-400: #fbbf24;
+  --warning-500: #f59e0b;
+  --warning-600: #d97706;
+  --warning-700: #b45309;
+  --warning-800: #92400e;
+  --warning-900: #78350f;
+  
+  /* Neutral (회색) */
+  --neutral-50: #fafafa;
+  --neutral-100: #f5f5f5;
+  --neutral-200: #e5e5e5;
+  --neutral-300: #d4d4d4;
+  --neutral-400: #a3a3a3;
+  --neutral-500: #737373;
+  --neutral-600: #525252;
+  --neutral-700: #404040;
+  --neutral-800: #262626;
+  --neutral-900: #171717;
+  --neutral-950: #0a0a0a;
+  
+  /* Semantic */
+  --color-success: var(--secondary-600);
+  --color-error: var(--accent-600);
+  --color-warning: var(--warning-600);
+  --color-info: var(--primary-500);
+  --coverage-sufficient: #3b82f6;
+  --coverage-shortage: #ef4444;
+  --coverage-uninsured: #6b7280;
+  --coverage-priority-critical: #f97316;
+  --coverage-sufficient-bg: #dbeafe;
+  --coverage-shortage-bg: #fee2e2;
+  --coverage-uninsured-bg: #f3f4f6;
+  --coverage-priority-critical-bg: #fed7aa;
+  --coverage-badge-sufficient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  --coverage-badge-shortage: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  --coverage-badge-uninsured: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  --coverage-badge-critical: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  
+  --color-bg-base: #fafaf9;
+  --color-bg-surface: #f4f4f5;
+  --color-bg-hover: #e4e4e7;
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+  
+  --color-text-primary: var(--neutral-900);
+  --color-text-secondary: var(--neutral-500);
+  --color-text-disabled: var(--neutral-400);
+  --color-text-inverse: #ffffff;
+  
+  --color-border-default: #d4d4d8;
+  --color-border-hover: #a1a1aa;
+  --color-border-focus: var(--primary-500);
+  
+  /* ─────────────── 타이포그래피 ─────────────── */
+  
+  --font-sans: 'Inter', 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  
+  --text-xs: 0.75rem;     /* 12px */
+  --text-sm: 0.875rem;    /* 14px */
+  --text-base: 1rem;      /* 16px */
+  --text-lg: 1.125rem;    /* 18px */
+  --text-xl: 1.25rem;     /* 20px */
+  --text-2xl: 1.5rem;     /* 24px */
+  --text-3xl: 1.875rem;   /* 30px */
+  
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+  
+  --leading-tight: 1.25;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.75;
+  
+  /* ─────────────── 간격 ─────────────── */
+  
+  --space-0: 0;
+  --space-1: 0.25rem;   /* 4px */
+  --space-2: 0.5rem;    /* 8px */
+  --space-3: 0.75rem;   /* 12px */
+  --space-4: 1rem;      /* 16px */
+  --space-5: 1.25rem;   /* 20px */
+  --space-6: 1.5rem;    /* 24px */
+  --space-8: 2rem;      /* 32px */
+  --space-10: 2.5rem;   /* 40px */
+  --space-12: 3rem;     /* 48px */
+  --space-16: 4rem;     /* 64px */
+  
+  /* ─────────────── 그림자 ─────────────── */
+  
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  
+  /* ─────────────── 둥근 모서리 ─────────────── */
+  
+  --radius-sm: 0.25rem;   /* 4px */
+  --radius-md: 0.5rem;    /* 8px */
+  --radius-lg: 0.75rem;   /* 12px */
+  --radius-xl: 1rem;      /* 16px */
+  --radius-full: 9999px;
+  
+  /* ─────────────── 애니메이션 ─────────────── */
+  
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ─────────────── 반응형 브레이크포인트 ─────────────── */
+  
+  --bp-sm: 640px;   /* 작은 태블릿 */
+  --bp-md: 768px;   /* 태블릿 */
+  --bp-lg: 1024px;  /* 데스크톱 */
+  --bp-xl: 1280px;  /* 큰 화면 */
+}
+
+/* ─────────────── 다크 모드 ─────────────── */
+
+[data-theme="dark"] {
+  /* 배경 - 데모 버전 다크모드 (가독성 개선) */
+  --color-bg-base: #0a0a0a;        /* Primary Background - 더 깊은 블랙 */
+  --color-bg-surface: #171717;     /* Card/Surface Background - 더 진한 그레이 */
+  --color-bg-hover: #262626;
+  --color-bg-overlay: rgba(0, 0, 0, 0.7);
+  
+  /* 텍스트 - 데모 버전 (대비 최적화) */
+  --color-text-primary: #fafafa;   /* 주 텍스트 - 더 밝게 */
+  --color-text-secondary: #a3a3a3; /* 보조 텍스트 */
+  --color-text-disabled: #737373;  /* 비활성 텍스트 */
+  --color-text-inverse: #0a0a0a;   /* 반전 텍스트 */
+  
+  /* 테두리 - 데모 버전 */
+  --color-border-default: #404040; /* 기본 테두리 */
+  --color-border-hover: #525252;   /* 호버 테두리 */
+  --color-border-focus: var(--primary-400);
+  
+  /* Primary 색상 - 데모 버전 다크모드용 */
+  --primary-500: #60a5fa;
+  --primary-600: #3b82f6;
+  
+  /* 그림자 - 데모 버전 다크모드용 */
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* 다크모드 전환 애니메이션 */
+html {
+  transition: background-color var(--transition-base), color var(--transition-base);
+}
+
+html * {
+  transition: background-color var(--transition-base), 
+              border-color var(--transition-base), 
+              color var(--transition-base);
+}
+
+/* 애니메이션 줄이기 선호 (접근성) */
+@media (prefers-reduced-motion: reduce) {
+  html,
+  html * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

@@ -37,6 +37,7 @@ from typing import Optional
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -2056,11 +2057,52 @@ def ask_customer_documents(
 
 
 @router.get("/customers/{cid}/coverage-analysis")
-def coverage_analysis(cid: str, conn=Depends(get_conn)):
-    """고객의 보험계약 + 약관을 종합해 카테고리별 보장 충분/부족/중복을 분석."""
-    result = coverage.analyze(conn, cid)
+def coverage_analysis(
+    cid: str,
+    audience: str = Query("internal", pattern="^(customer|internal)$"),
+    include_sufficient: bool = Query(True),
+    priority: Optional[str] = Query(None),
+    run_id: Optional[str] = Query(None),
+    conn=Depends(get_conn),
+):
+    """최신 completed 보장분석 run을 고객용/내부용으로 분리해 조회."""
+    result = coverage.get_analysis_response(
+        conn,
+        cid,
+        audience=audience,
+        include_sufficient=include_sufficient,
+        priority=priority,
+        run_id=run_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="고객 또는 보장분석 결과를 찾을 수 없습니다.")
+    return result
+
+
+@router.post("/customers/{cid}/coverage-analysis/recalculate")
+def recalculate_coverage_analysis(
+    cid: str,
+    body: dict = Body(default_factory=dict),
+    conn=Depends(get_conn),
+):
+    """13개 카테고리 × 46개 세부 담보 보장분석을 동기 재계산하고 저장."""
+    result = coverage.recalculate(conn, cid, body)
     if result is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    return result
+
+
+@router.patch("/customers/{cid}/coverage-analysis/{coverage_id}")
+def patch_coverage_analysis_item(
+    cid: str,
+    coverage_id: str,
+    body: dict = Body(...),
+    conn=Depends(get_conn),
+):
+    """세부 담보 분석 결과를 수동 조정하고 manual_override를 기록."""
+    result = coverage.patch_item(conn, cid, coverage_id, body)
+    if result is None:
+        raise HTTPException(status_code=404, detail="보장분석 항목을 찾을 수 없습니다.")
     return result
 
 

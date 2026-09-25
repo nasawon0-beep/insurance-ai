@@ -1,26 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { engineFetch } from "./engine";
-import { formatErrorDetail } from "./errorDetail";
-
-async function api(path: string, init?: RequestInit) {
-  const res = await engineFetch(path, {
-    headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(formatErrorDetail(body?.detail) ?? `HTTP ${res.status}`);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-type UsedCustomer = { id: string; name: string };
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-  used_customers?: UsedCustomer[];
-  no_data?: boolean;
-};
+import { useAssistant } from "./AssistantContext";
 
 const EXAMPLES = [
   "이영희 보험료 얼마 내?",
@@ -32,10 +11,8 @@ const EXAMPLES = [
 ];
 
 export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { messages, busy, err, sendQuestion, clearMessages } = useAssistant();
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -45,39 +22,33 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
   const send = async (raw?: string) => {
     const question = (raw ?? input).trim();
     if (!question || busy) return;
-    const history = messages.slice(-6).map((m) => ({ role: m.role, content: m.content }));
-    setMessages((ms) => [...ms, { role: "user", content: question }]);
+    
+    await sendQuestion(question, messages);
     setInput("");
-    setErr(null);
-    setBusy(true);
-    try {
-      const res = await api("/assistant/ask", {
-        method: "POST",
-        body: JSON.stringify({ question, history }),
-      });
-      setMessages((ms) => [
-        ...ms,
-        {
-          role: "assistant",
-          content: res.answer,
-          used_customers: res.used_customers ?? [],
-          no_data: !!res.no_data,
-        },
-      ]);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
   };
 
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, display: "flex", flexDirection: "column", height: "calc(100vh - 110px)" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>AI 문의</h2>
-        <span style={{ marginLeft: 10, fontSize: 12, color: "#888" }}>고객 데이터를 자연어로 물어보세요</span>
+    <div style={{ maxWidth: 800, margin: "0 auto", padding: 20, display: "flex", flexDirection: "column", height: "calc(100vh - 110px)" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #e5e5e5" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600, color: "var(--color-text-primary)" }}>AI 문의</h2>
+          <span style={{ fontSize: "0.875rem", color: "var(--color-text-secondary)" }}>고객 데이터를 자연어로 물어보세요</span>
+        </div>
         {messages.length > 0 && (
-          <button onClick={() => setMessages([])} style={{ marginLeft: "auto", fontSize: 12 }}>
+          <button 
+            onClick={clearMessages}
+            style={{ 
+              marginLeft: "auto", 
+              fontSize: 13, 
+              padding: "6px 12px",
+              borderRadius: 6,
+              border: "1px solid #e5e5e5",
+              background: "var(--color-bg-surface)",
+              color: "#525252",
+              cursor: "pointer",
+              fontWeight: 500
+            }}
+          >
             대화 초기화
           </button>
         )}
@@ -85,18 +56,34 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
 
       <div
         ref={scrollRef}
-        style={{ flex: 1, overflowY: "auto", border: "1px solid #e5e5e5", borderRadius: 8, padding: 12, background: "#fafafa" }}
+        style={{ 
+          flex: 1, 
+          overflowY: "auto", 
+          borderRadius: 12, 
+          padding: 16, 
+          background: "var(--color-bg-surface)",
+          marginBottom: 12
+        }}
       >
         {messages.length === 0 && (
-          <div style={{ color: "#666" }}>
-            <p style={{ marginTop: 0 }}>예시 질문을 눌러보세요:</p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ textAlign: "center", padding: "32px 0" }}>
+            <p className="example-header" style={{ marginTop: 0, marginBottom: 16, fontSize: "1rem", fontWeight: 500 }}>예시 질문을 선택해보세요</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
               {EXAMPLES.map((ex) => (
                 <button
                   key={ex}
                   onClick={() => send(ex)}
                   disabled={busy}
-                  style={{ fontSize: 13, padding: "6px 10px", borderRadius: 16, border: "1px solid #ccc", background: "#fff", cursor: "pointer" }}
+                  className="example-button"
+                  style={{ 
+                    fontSize: "0.875rem", 
+                    padding: "8px 14px", 
+                    borderRadius: 20, 
+                    cursor: busy ? "not-allowed" : "pointer",
+                    transition: "all 0.15s",
+                    fontWeight: 500,
+                    opacity: busy ? 0.5 : 1
+                  }}
                 >
                   {ex}
                 </button>
@@ -106,34 +93,50 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
         )}
 
         {messages.map((m, i) => (
-          <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", margin: "8px 0" }}>
+          <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", margin: "12px 0" }}>
             <div
               style={{
-                maxWidth: "78%",
-                padding: "8px 12px",
-                borderRadius: 12,
+                maxWidth: "75%",
+                padding: "10px 14px",
+                borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
                 whiteSpace: "pre-wrap",
                 lineHeight: 1.5,
-                background: m.role === "user" ? "#2563eb" : "#fff",
-                color: m.role === "user" ? "#fff" : "#111",
-                border: m.role === "user" ? "none" : "1px solid #e0e0e0",
+                background: m.role === "user" ? "var(--primary-600)" : "var(--color-bg-base)",
+                color: m.role === "user" ? "#fff" : "var(--color-text-primary)",
+                border: "1px solid var(--color-border-default)",
+                boxShadow: m.role === "user" 
+                  ? "0 1px 2px rgba(37,99,235,0.1)" 
+                  : "var(--shadow-sm)",
+                fontSize: "1rem"
               }}
             >
               <div>{m.content}</div>
               {m.role === "assistant" && m.no_data && (
-                <div style={{ marginTop: 6, fontSize: 11, color: "#888" }}>
-                  <span style={{ background: "#eee", borderRadius: 4, padding: "1px 6px" }}>데이터에서 찾지 못함</span>
+                <div style={{ marginTop: 8, fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+                  <span style={{ background: "var(--color-bg-base)", borderRadius: 6, padding: "3px 8px", border: "1px solid #e5e5e5" }}>
+                    데이터에서 찾지 못함
+                  </span>
                 </div>
               )}
               {m.role === "assistant" && (m.used_customers?.length ?? 0) > 0 && (
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {m.used_customers!.map((c) => (
                     <button
                       key={c.id}
                       onClick={() => onOpenCustomer(c.id)}
-                      style={{ fontSize: 12, padding: "2px 8px", borderRadius: 12, border: "1px solid #cbd5e1", background: "#f1f5f9", cursor: "pointer" }}
+                      style={{ 
+                        fontSize: "0.75rem", 
+                        padding: "4px 10px", 
+                        borderRadius: 12, 
+                        border: "1px solid #dbeafe", 
+                        background: "var(--color-bg-surface)", 
+                        cursor: "pointer",
+                        color: "#1d4ed8",
+                        fontWeight: 500,
+                        transition: "all 0.15s"
+                      }}
                     >
-                      참조: {c.name}
+                      👤 {c.name}
                     </button>
                   ))}
                 </div>
@@ -143,15 +146,60 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
         ))}
 
         {busy && (
-          <div style={{ color: "#888", fontSize: 13, margin: "8px 0" }}>
-            AI가 데이터를 확인하는 중… (처음 질문은 20초쯤 걸릴 수 있어요)
+          <div style={{ display: "flex", justifyContent: "flex-start", margin: "12px 0" }}>
+            <div style={{
+              padding: "10px 14px",
+              borderRadius: "16px 16px 16px 4px",
+              background: "var(--color-bg-base)",
+              border: "1px solid var(--color-border-default)",
+              boxShadow: "var(--shadow-sm)"
+            }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <div style={{ 
+                  width: 6, 
+                  height: 6, 
+                  borderRadius: "50%", 
+                  background: "#a3a3a3",
+                  animation: "pulse 1.4s ease-in-out infinite"
+                }} />
+                <div style={{ 
+                  width: 6, 
+                  height: 6, 
+                  borderRadius: "50%", 
+                  background: "#a3a3a3",
+                  animation: "pulse 1.4s ease-in-out 0.2s infinite"
+                }} />
+                <div style={{ 
+                  width: 6, 
+                  height: 6, 
+                  borderRadius: "50%", 
+                  background: "#a3a3a3",
+                  animation: "pulse 1.4s ease-in-out 0.4s infinite"
+                }} />
+              </div>
+              <p style={{ fontSize: "0.75rem", color: "#a3a3a3", margin: "6px 0 0", fontStyle: "italic" }}>
+                AI가 데이터를 확인하는 중…
+              </p>
+            </div>
           </div>
         )}
       </div>
 
-      {err && <p style={{ color: "#b00", fontSize: 13 }}>오류: {err}</p>}
+      {err && (
+        <div style={{ 
+          padding: "10px 14px", 
+          background: "var(--color-bg-surface)", 
+          border: "1px solid #fecaca", 
+          borderRadius: 8, 
+          color: "#991b1b", 
+          fontSize: "0.875rem",
+          marginBottom: 12
+        }}>
+          오류: {err}
+        </div>
+      )}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 8, background: "var(--color-bg-surface)", borderRadius: 12, border: "1px solid var(--color-border-default)", padding: 8, boxShadow: "var(--shadow-sm)" }}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -163,16 +211,105 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
           }}
           placeholder="예: 이영희 보험료 얼마 내? (Enter 전송, Shift+Enter 줄바꿈)"
           rows={2}
-          style={{ flex: 1, padding: 8, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit", fontSize: 14 }}
+          className="assistant-input"
+          style={{ 
+            flex: 1, 
+            padding: 10, 
+            resize: "none", 
+            boxSizing: "border-box", 
+            fontFamily: "inherit", 
+            fontSize: "1rem",
+            border: "1px solid var(--color-border-default)",
+            outline: "none",
+            background: "transparent"
+          }}
         />
-        <button onClick={() => send()} disabled={busy || !input.trim()} style={{ padding: "0 18px" }}>
-          {busy ? "…" : "전송"}
+        <button 
+          onClick={() => send()} 
+          disabled={busy || !input.trim()} 
+          style={{ 
+            padding: "8px 20px",
+            background: busy || !input.trim() ? "var(--color-bg-base)" : "var(--primary-600)",
+            color: busy || !input.trim() ? "#a3a3a3" : "#fff",
+            border: "1px solid var(--color-border-default)",
+            borderRadius: 8,
+            cursor: busy || !input.trim() ? "not-allowed" : "pointer",
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            transition: "all 0.15s",
+            alignSelf: "flex-end"
+          }}
+        >
+          {busy ? "전송 중…" : "전송"}
         </button>
       </div>
 
-      <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        특정 보험의 약관 내용(보장 금액·조건)은 고객 목록 → 고객 선택 → '이 고객 약관에 질문'에서 물어보세요.
+      <p style={{ fontSize: "0.75rem", color: "#a3a3a3", marginTop: 12, textAlign: "center" }}>
+        특정 보험의 약관 내용은 고객 상세 화면의 '이 고객 약관에 질문'에서 확인하세요
       </p>
+      
+      <style>{`
+        @keyframes pulse {
+          0%, 100% {
+            opacity: 0.3;
+            transform: scale(0.8);
+          }
+          50% {
+            opacity: 1;
+            transform: scale(1.2);
+          }
+        }
+
+        /* 라이트모드 기본 스타일 */
+        .example-header {
+          color: var(--color-text-secondary);
+        }
+
+        .example-button {
+          border: 1px solid var(--color-border-default);
+          background: var(--color-bg-base);
+          color: var(--color-text-primary);
+        }
+
+        .example-button:hover:not(:disabled) {
+          background: var(--color-bg-surface);
+          border-color: var(--color-border-hover);
+        }
+
+        .assistant-input {
+          color: var(--color-text-primary);
+        }
+
+        .assistant-input::placeholder {
+          color: var(--color-text-secondary);
+        }
+
+        /* 다크모드 스타일 */
+        @media (prefers-color-scheme: dark) {
+          .example-header {
+            color: var(--color-text-secondary);
+          }
+
+          .example-button {
+            border: 1px solid var(--color-border-default);
+            background: var(--color-bg-base);
+            color: var(--color-text-primary);
+          }
+
+          .example-button:hover:not(:disabled) {
+            background: var(--color-bg-surface);
+            border-color: var(--color-border-hover);
+          }
+
+          .assistant-input {
+            color: var(--color-text-primary);
+          }
+
+          .assistant-input::placeholder {
+            color: var(--color-text-secondary);
+          }
+        }
+      `}</style>
     </div>
   );
 }

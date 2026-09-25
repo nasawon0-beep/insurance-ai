@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
+import LoginScreen from "./LoginScreen";
 import CustomersScreen from "./Customers";
 import AssistantScreen from "./Assistant";
+import CoverageAnalysisScreen from "./CoverageAnalysis";
+import { AssistantProvider, useAssistant } from "./AssistantContext";
 import { CoverageTable, PolicyList, savePolicies, type PolicyDraft } from "./PolicyList";
+import { StatCard } from "./components/DashboardCards";
+import { ThemeToggle, ThemeSelector } from "./components/ThemeToggle";
 import {
-  authenticate,
   changePassword,
   fetchMe,
   getToken,
   getUser,
   listDevices,
-  listLocalAccounts,
   loadEngineSettings,
-  localRecoveryStatus,
   logout,
   removeDevice,
-  resetLocalPassword,
   resolveLicense,
   rrnEnabled,
 } from "./auth";
@@ -24,7 +25,6 @@ import ImportWizard from "./ImportWizard";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
-import { loadRememberedEmail, saveRememberedEmail } from "./rememberEmail";
 
 type EngineStatus = {
   local_engine?: string;
@@ -145,187 +145,7 @@ type ParsedDoc = {
   extracted_at: string;
 };
 
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const rememberedEmail = loadRememberedEmail();
-  const [email, setEmail] = useState(rememberedEmail);
-  const [rememberEmail, setRememberEmail] = useState(rememberedEmail !== "");
-  const [pw, setPw] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [recovery, setRecovery] = useState<"closed" | "loading" | "available" | "unavailable">("closed");
-  const [accounts, setAccounts] = useState<{ email: string; created_at?: string }[]>([]);
-  const [recoveryEmail, setRecoveryEmail] = useState("");
-  const [recoveryPw, setRecoveryPw] = useState("");
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [recoveryErr, setRecoveryErr] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const openRecovery = async () => {
-    setRecovery("loading");
-    setRecoveryErr(null);
-    setMsg(null);
-    if (!(await localRecoveryStatus())) {
-      setRecovery("unavailable");
-      return;
-    }
-    try {
-      const found = await listLocalAccounts();
-      setAccounts(found);
-      setRecoveryEmail(found[0]?.email ?? "");
-      setRecovery("available");
-    } catch {
-      setRecovery("unavailable");
-    }
-  };
-
-  const submitRecovery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!recoveryEmail || recoveryPw.length < 6) {
-      setRecoveryErr("계정과 6자 이상 새 비밀번호를 입력하세요.");
-      return;
-    }
-    setRecoveryBusy(true);
-    setRecoveryErr(null);
-    try {
-      await resetLocalPassword(recoveryEmail, recoveryPw);
-      setEmail(recoveryEmail);
-      setPw("");
-      setRecoveryPw("");
-      setRecovery("closed");
-      setMode("login");
-      setErr(null);
-      setMsg("새 비밀번호를 설정했습니다. 로그인해 주세요.");
-    } catch (e) {
-      setRecoveryErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRecoveryBusy(false);
-    }
-  };
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim() || pw.length < 6) {
-      setErr("이메일과 6자 이상 비밀번호를 입력하세요.");
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    try {
-      const normalizedEmail = email.trim().toLowerCase();
-      await authenticate(mode, normalizedEmail, pw);
-      saveRememberedEmail(normalizedEmail, rememberEmail);
-      onLogin();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 320, margin: "80px auto" }}>
-      <h2>Insurance AI</h2>
-      <div style={{ display: "flex", gap: 6, fontSize: 13 }}>
-        <button
-          onClick={() => setMode("login")}
-          style={{ fontWeight: mode === "login" ? 700 : 400 }}
-        >
-          로그인
-        </button>
-        <button
-          onClick={() => setMode("register")}
-          style={{ fontWeight: mode === "register" ? 700 : 400 }}
-        >
-          회원가입
-        </button>
-      </div>
-      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <input placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input
-          placeholder="비밀번호 (6자 이상)"
-          type="password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-        />
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={rememberEmail}
-            onChange={(e) => setRememberEmail(e.target.checked)}
-          />
-          이메일 기억하기
-        </label>
-        <button type="submit" disabled={busy}>
-          {busy ? "..." : mode === "login" ? "로그인" : "가입하고 시작"}
-        </button>
-      </form>
-      {err && <small style={{ color: "#b00" }}>{err}</small>}
-      {msg && <small style={{ color: "#176b2c" }}>{msg}</small>}
-      {recovery === "closed" ? (
-        <button
-          type="button"
-          onClick={openRecovery}
-          style={{ border: 0, background: "none", padding: 0, color: "#3567a8", textAlign: "left", textDecoration: "underline" }}
-        >
-          비밀번호나 가입 이메일을 잊으셨나요?
-        </button>
-      ) : (
-        <div style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, fontSize: 13 }}>
-          {recovery === "loading" && <div>계정 복구 정보를 확인하고 있습니다...</div>}
-          {recovery === "available" && (
-            <form onSubmit={submitRecovery} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <strong>이 컴퓨터에 저장된 계정</strong>
-              {accounts.map((account) => (
-                <label key={account.email}>
-                  <input
-                    type="radio"
-                    name="recovery-account"
-                    checked={recoveryEmail === account.email}
-                    onChange={() => setRecoveryEmail(account.email)}
-                  />{" "}
-                  {account.email}{account.created_at ? ` (${account.created_at.slice(0, 10)})` : ""}
-                </label>
-              ))}
-              {accounts.length === 0 && <span>저장된 계정이 없습니다.</span>}
-              {accounts.length > 0 && (
-                <>
-                  <input
-                    type="password"
-                    placeholder="새 비밀번호 (6자 이상)"
-                    value={recoveryPw}
-                    onChange={(e) => setRecoveryPw(e.target.value)}
-                  />
-                  <button type="submit" disabled={recoveryBusy || !recoveryEmail}>
-                    {recoveryBusy ? "..." : "비밀번호 재설정"}
-                  </button>
-                </>
-              )}
-              {recoveryErr && <small style={{ color: "#b00" }}>{recoveryErr}</small>}
-              <small>이 목록은 설계사님 컴퓨터 안의 인증 서버에만 있습니다. 인터넷으로 나가지 않습니다.</small>
-            </form>
-          )}
-          {recovery === "unavailable" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span>이 컴퓨터에서는 앱에서 바로 재설정할 수 없습니다. 서버를 운영하는 PC의 control-server 폴더에서 아래를 실행하세요.</span>
-              <code>macOS: cd control-server &amp;&amp; .venv/bin/python reset_password.py --list</code>
-              <code>Windows: cd control-server &amp;&amp; .venv\Scripts\python.exe reset_password.py --list</code>
-            </div>
-          )}
-        </div>
-      )}
-      <div style={{ fontSize: 14, fontWeight: 700 }}>
-        <div>🔒 고객 정보는 100% 설계사님 본인 컴퓨터 안에만 있습니다.</div>
-        <div>클라우드로 전송되지 않으며, 인터넷이 끊겨도 고객 관리는 그대로 작동합니다.</div>
-      </div>
-      <small style={{ color: "#888" }}>
-        고객 이름·연락처·주민등록번호·병력 메모·상담 녹취 — 모두 이 PC에 암호화되어 저장됩니다.
-        로그인할 때만 인증 서버에 연결하며, 이때 오가는 정보는 이메일과 비밀번호뿐입니다 (고객 데이터
-        미포함).
-      </small>
-    </div>
-  );
-}
+// LoginScreen is now imported from ./LoginScreen.tsx
 
 function EngineStrip() {
   const [status, setStatus] = useState<EngineStatus | null>(null);
@@ -346,7 +166,7 @@ function EngineStrip() {
   if (status === null || (ok && ollamaOk)) return null;
 
   return (
-    <div style={{ fontSize: 12, color: "#8a6500", background: "#fff8e1", padding: 8, marginBottom: 12 }}>
+    <div style={{ fontSize: 12, color: "#8a6500", background: "var(--color-bg-surface)", padding: 8, marginBottom: 12 }}>
       {ok
         ? "⚠ AI 분석 기능이 지금 안 됩니다. (고객 관리는 정상 작동합니다.)"
         : "⚠ 일부 기능이 일시적으로 멈췄습니다. 앱을 껐다 다시 켜 주세요."}
@@ -356,11 +176,11 @@ function EngineStrip() {
 
 function Card({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return (
-    <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, marginBottom: 14 }}>
-      <h3 style={{ margin: "0 0 8px" }}>
-        {title} <span style={{ color: "#888", fontWeight: 400 }}>({count})</span>
+    <div style={{ border: "1px solid var(--color-border-default)", borderRadius: 8, padding: 12, marginBottom: 14 }}>
+      <h3 style={{ margin: "0 0 8px", fontSize: "1.125rem" }}>
+        {title} <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>({count})</span>
       </h3>
-      {count === 0 ? <p style={{ color: "#888", margin: 0 }}>없음</p> : children}
+      {count === 0 ? <p style={{ color: "var(--color-text-secondary)", margin: 0 }}>없음</p> : children}
     </div>
   );
 }
@@ -597,7 +417,11 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     input.type = "file";
     input.accept = "audio/*,.m4a,.mp3,.wav,.aac,.aiff,.pdf,.txt,.csv,.md,text/plain";
     const f: File | null = await new Promise((resolve) => {
-      input.onchange = () => resolve(input.files?.[0] ?? null);
+      input.onchange = () => {
+        const selected = input.files?.[0] ?? null;
+        input.value = "";
+        resolve(selected);
+      };
       input.click();
     });
     if (f) setStaged(f); // 바로 분석하지 않고 설명을 받는다
@@ -606,13 +430,22 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
   const patchRow = (i: number, p: Record<string, unknown>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
+  const recalculateCoverageIfNeeded = async (cid: string, row: any) => {
+    if (row.doc_type !== "보장분석") return false;
+    await api(`/customers/${cid}/coverage-analysis/recalculate`, {
+      method: "POST",
+      body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
+    });
+    return true;
+  };
+
   const run = async () => {
     batchRef.current = crypto.randomUUID().replace(/-/g, "");
     setErr(null);
     setMsg(null);
     setBusy(true);
     setPhase("저장 중…");
-    const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, consultations: 0 };
+    const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, consultations: 0, coverageAnalyses: 0 };
     let lastNewId: string | null = null;
     let mergedId: string | null = null;
     const policyFails: { label: string; error: string }[] = [];
@@ -699,6 +532,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
           res.policies += r.saved;
           policyFails.push(...r.failures.map(({ label, error }) => ({ label, error })));
         }
+        if (cid && (await recalculateCoverageIfNeeded(cid, row))) res.coverageAnalyses++;
       } catch (e) {
         res.failed++;
         saveErr = saveErr || (e instanceof Error ? e.message : String(e));
@@ -752,6 +586,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     setMsg(
       `완료 — 신규 ${res.created} · 갱신 ${res.merged} · 건너뜀 ${res.skipped}` +
         (res.policies ? ` · 보험계약 ${res.policies}` : "") +
+        (res.coverageAnalyses ? ` · 보장분석 ${res.coverageAnalyses}건 자동 실행` : "") +
         (res.failed ? ` · 실패 ${res.failed}` : ""),
     );
     const errs = [
@@ -806,15 +641,28 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
         if (f) setStaged(f); // 바로 분석하지 않고 설명을 받는다
       }}
       style={{
-        border: dragOver ? "2px dashed #2563eb" : "1px solid #2563eb",
-        borderRadius: 8,
-        padding: 12,
+        border: dragOver ? "2px dashed var(--primary-500)" : "2px dashed var(--color-border-default)",
+        borderRadius: 16,
+        padding: 16,
         marginBottom: 16,
-        background: dragOver ? "#e7efff" : "#f5f8ff",
+        background: dragOver 
+          ? "linear-gradient(135deg, #1e3a5f 0%, #1a2942 100%)" 
+          : "var(--color-bg-surface)",
+        transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        boxShadow: dragOver 
+          ? "0 4px 6px -1px rgba(59, 130, 246, 0.1), 0 2px 4px -1px rgba(59, 130, 246, 0.06)"
+          : "var(--shadow-sm)",
       }}
     >
       {lastBatch && Date.now() - lastBatch.at < 30 * 60 * 1000 && (
-        <div style={{ border: "1px solid #9ac", borderRadius: 6, padding: 8, marginBottom: 10, background: "#fff" }}>
+        <div style={{ 
+          border: "1px solid #a5b4fc", 
+          borderRadius: 8, 
+          padding: 10, 
+          marginBottom: 12, 
+          background: "var(--color-bg-surface)",
+          fontSize: 13
+        }}>
           {!undoConfirm ? (
             <span>
               방금 등록: 신규 {lastBatch.created}명 · 갱신 {lastBatch.merged}명 · 보험계약 {lastBatch.policies}건 · 상담 {lastBatch.consultations}건{" "}
@@ -829,61 +677,276 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
           )}
         </div>
       )}
-      <h3 style={{ margin: "0 0 6px" }}>던져넣기 — 한 명이든 여러 명이든, 녹취·PDF·텍스트 무엇이든</h3>
+      <div style={{ 
+        display: "flex", 
+        alignItems: "center", 
+        justifyContent: "space-between",
+        gap: 12, 
+        marginBottom: 12,
+        paddingBottom: 10,
+        borderBottom: dragOver ? "2px solid #3b82f6" : "1px solid #e5e5e5"
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ 
+            width: 40, 
+            height: 40, 
+            borderRadius: 10, 
+            background: dragOver ? "var(--primary-500)" : "var(--neutral-100)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 20,
+            transition: "all 0.3s"
+          }}>
+            {dragOver ? "📥" : "⚡"}
+          </div>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "var(--color-text-primary)" }}>
+              던져넣기 {dragOver && "— 여기에 놓으세요"}
+            </h3>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>
+              한 명이든 여러 명이든, 녹취·PDF·텍스트 무엇이든
+            </p>
+          </div>
+        </div>
+        {rows.length > 0 && (
+          <button
+            aria-label="상단 분석 후 저장"
+            onClick={run}
+            disabled={busy}
+            style={{
+              padding: "8px 14px",
+              background: busy ? "var(--color-bg-base)" : "var(--primary-500)",
+              color: busy ? "#a3a3a3" : "#fff",
+              border: "1px solid var(--color-border-default)",
+              borderRadius: 8,
+              cursor: busy ? "not-allowed" : "pointer",
+              fontSize: 13,
+              fontWeight: 600,
+              whiteSpace: "nowrap"
+            }}
+          >
+            {busy ? "처리 중…" : rows.length > 1 ? `${rows.length}명 저장` : "분석 후 저장"}
+          </button>
+        )}
+      </div>
       {staged ? (
         <div
           style={{
-            border: "1px solid #2563eb",
-            borderRadius: 8,
-            padding: 10,
-            background: "#fff",
+            border: "2px solid var(--primary-500)",
+            borderRadius: 12,
+            padding: 12,
+            background: "var(--color-bg-surface)",
+            boxShadow: "0 1px 3px rgba(59, 130, 246, 0.1)"
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <span style={{ fontWeight: 600, color: "#161" }}>📎 {staged.name}</span>
-            <button onClick={() => setStaged(null)} disabled={busy} style={{ fontSize: 12 }}>
-              파일 빼기
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{ 
+              width: 32, 
+              height: 32, 
+              borderRadius: 8, 
+              background: "var(--color-bg-base)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 16
+            }}>
+              📎
+            </div>
+            <span style={{ fontWeight: 600, color: "var(--color-text-primary)", fontSize: 14 }}>{staged.name}</span>
+            <button 
+              onClick={() => setStaged(null)} 
+              disabled={busy} 
+              style={{ 
+                marginLeft: "auto",
+                fontSize: 13,
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #e5e5e5",
+                background: "var(--color-bg-surface)",
+                cursor: "pointer",
+                color: "#525252"
+              }}
+            >
+              ✕ 파일 빼기
             </button>
           </div>
           <textarea
-            style={{ width: "100%", boxSizing: "border-box", minHeight: 72, padding: 6 }}
+            style={{ 
+              width: "100%", 
+              boxSizing: "border-box", 
+              minHeight: 70, 
+              padding: 10,
+              borderRadius: 8,
+              border: "1px solid var(--color-border-default)",
+              backgroundColor: "var(--color-bg-surface)",
+              color: "var(--color-text-primary)",
+              fontSize: 14,
+              fontFamily: "inherit",
+              resize: "vertical",
+              outline: "none",
+              transition: "border 0.2s"
+            }}
             placeholder={
               "이 파일에 대해 알려주세요 — 누구 자료인지(고객 이름), 어느 보험사, 어떤 문서(제안서·증권·보장분석·녹취)인지, 특별히 봐야 할 점.\n여기 적은 내용이 분석에 함께 들어갑니다. (저장은 안 됩니다)"
             }
             value={context}
             onChange={(e) => setContext(e.target.value)}
             autoFocus
+            onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+            onBlur={(e) => e.target.style.borderColor = "var(--color-border-default)"}
           />
-          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
             <button
               onClick={() => analyze(staged)}
               disabled={busy}
-              style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px" }}
+              style={{ 
+                padding: "10px 18px",
+                background: busy ? "var(--color-bg-base)" : "var(--primary-500)",
+                color: busy ? "#a3a3a3" : "#fff",
+                border: "1px solid var(--color-border-default)",
+                borderRadius: 8,
+                cursor: busy ? "not-allowed" : "pointer",
+                fontSize: 14,
+                fontWeight: 600,
+                transition: "all 0.15s"
+              }}
             >
-              {busy ? "분석 중…" : "이 파일 분석"}
+              {busy ? "⏳ 분석 중…" : "✨ 이 파일 분석"}
             </button>
-            <button onClick={() => { setStaged(null); setContext(""); }} disabled={busy}>
+            <button 
+              onClick={() => { setStaged(null); setContext(""); }} 
+              disabled={busy} 
+              style={{
+                padding: "10px 18px",
+                background: "var(--color-bg-surface)",
+                color: "#525252",
+                border: "1px solid #e5e5e5",
+                borderRadius: 8,
+                cursor: busy ? "not-allowed" : "pointer",
+                fontSize: 14,
+                fontWeight: 500,
+                transition: "all 0.15s"
+              }}
+            >
               취소
             </button>
           </div>
         </div>
       ) : (
         <>
+          <div style={{
+            background: dragOver ? "rgba(59, 130, 246, 0.15)" : "var(--color-bg-base)",
+            border: dragOver ? "2px dashed var(--primary-500)" : "2px dashed var(--color-border-default)",
+            borderRadius: 12,
+            padding: "24px 16px",
+            textAlign: "center",
+            transition: "all 0.3s",
+            marginBottom: 10
+          }}>
+            <div style={{
+              fontSize: dragOver ? 48 : 40,
+              marginBottom: 8,
+              transition: "all 0.3s",
+              transform: dragOver ? "scale(1.1)" : "scale(1)"
+            }}>
+              {dragOver ? "📥" : "📄"}
+            </div>
+            <p style={{ 
+              margin: "0 0 8px", 
+              fontSize: 14, 
+              color: dragOver ? "#2563eb" : "#525252",
+              fontWeight: 500
+            }}>
+              {dragOver 
+                ? "여기에 파일을 놓으세요" 
+                : "파일을 이 영역에 끌어다 놓으세요"}
+            </p>
+            <p style={{ margin: 0, fontSize: 13, color: "#a3a3a3" }}>
+              녹취 (m4a, mp3, wav) · PDF · 텍스트 지원
+            </p>
+          </div>
+          
           <textarea
-            style={{ width: "100%", boxSizing: "border-box", minHeight: 60, padding: 6 }}
-            placeholder={"고객 정보를 붙여넣으세요. 여러 명이면 한 줄에 한 명씩.\n또는 녹취·PDF·텍스트 파일을 이 영역에 끌어다 놓거나 [📎 파일] 버튼을 쓰세요."}
+            style={{ 
+              width: "100%", 
+              boxSizing: "border-box", 
+              minHeight: 64, 
+              padding: 10,
+              borderRadius: 8,
+              border: "1px solid var(--color-border-default)",
+              backgroundColor: "var(--color-bg-surface)",
+              color: "var(--color-text-primary)",
+              fontSize: 14,
+              fontFamily: "inherit",
+              resize: "vertical",
+              outline: "none",
+              transition: "border 0.2s",
+              marginBottom: 10
+            }}
+            placeholder={"고객 정보를 붙여넣으세요. 여러 명이면 한 줄에 한 명씩.\n또는 녹취·PDF·텍스트 파일을 위 영역에 끌어다 놓으세요."}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+            onBlur={(e) => e.target.style.borderColor = "var(--color-border-default)"}
           />
-          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-            <button onClick={() => analyze()} disabled={busy}>
-              {busy ? "분석 중…" : "분석"}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button 
+              onClick={() => analyze()} 
+              disabled={busy}
+              style={{
+                padding: "10px 18px",
+                background: busy ? "var(--color-bg-base)" : "var(--primary-500)",
+                color: busy ? "#a3a3a3" : "#fff",
+                border: "1px solid var(--color-border-default)",
+                borderRadius: 8,
+                cursor: busy ? "not-allowed" : "pointer",
+                fontSize: 14,
+                fontWeight: 600,
+                transition: "all 0.15s"
+              }}
+            >
+              {busy ? "⏳ 분석 중…" : "✨ 분석"}
             </button>
-            <button onClick={pickFile} disabled={busy}>
-              {busy ? "…" : "📎 파일 (녹취·PDF·텍스트)"}
+            <button 
+              onClick={pickFile} 
+              disabled={busy}
+              style={{
+                padding: "10px 18px",
+                backgroundColor: "var(--color-bg-surface)",
+                color: "var(--color-text-primary)",
+                border: "1px solid var(--color-border-default)",
+                borderRadius: 8,
+                cursor: busy ? "not-allowed" : "pointer",
+                fontSize: 14,
+                fontWeight: 500,
+                transition: "all 0.15s"
+              }}
+              onMouseEnter={(e) => {
+                if (!busy) {
+                  e.currentTarget.style.backgroundColor = "var(--color-bg-subtle)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "var(--color-bg-surface)";
+              }}
+            >
+              {busy ? "…" : "📎 파일 선택"}
             </button>
             {rows.length > 0 && !busy && (
-              <button onClick={reset} style={{ marginLeft: "auto" }}>
+              <button 
+                onClick={reset} 
+                style={{ 
+                  marginLeft: "auto",
+                  padding: "10px 18px",
+                  background: "transparent",
+                  color: "#737373",
+                  border: "1px solid var(--color-border-default)",
+                  cursor: "pointer",
+                  fontSize: 14,
+                  fontWeight: 500
+                }}
+              >
                 취소
               </button>
             )}
@@ -1019,6 +1082,7 @@ function HomeScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }
     display: "flex",
     justifyContent: "space-between",
     gap: 8,
+    fontWeight: 600,
   };
   const badge = (b: { label: string; color: string } | null) =>
     b ? (
@@ -1045,9 +1109,9 @@ function HomeScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }
 
   return (
     <div style={{ maxWidth: 620, margin: "24px auto", padding: "0 16px" }}>
-      <h2 style={{ marginTop: 0 }}>홈</h2>
+      <h2 style={{ marginTop: 0, fontSize: "1.5rem" }}>홈</h2>
       <EngineStrip />
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, margin: "8px 0" }} title="계약 수·만기 임박을 내가 직접 가입시킨 계약으로만">
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.875rem", margin: "8px 0" }} title="계약 수·만기 임박을 내가 직접 가입시킨 계약으로만">
         <input
           type="checkbox"
           checked={ownOnly}
@@ -1064,10 +1128,32 @@ function HomeScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }
         <p style={{ color: "#888" }}>불러오는 중…</p>
       ) : (
         <>
-          <div style={{ display: "flex", gap: 16, marginBottom: 16, fontSize: 14 }}>
-            <span>고객 <b>{data.counts.customers}</b></span>
-            <span>보험계약 <b>{data.counts.active_policies}</b>/{data.counts.policies}</span>
-            <span>상담 <b>{data.counts.consultations}</b></span>
+          {/* 2x2 통계 카드 그리드 - 반응형 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" style={{ marginBottom: 24 }}>
+            <StatCard
+              title="고객 수"
+              value={data.counts.customers}
+              subtitle="전체 고객"
+              icon="👥"
+            />
+            <StatCard
+              title="보험계약"
+              value={data.counts.active_policies}
+              subtitle={`전체 ${data.counts.policies}건`}
+              icon="📋"
+            />
+            <StatCard
+              title="상담 건수"
+              value={data.counts.consultations}
+              subtitle="누적 상담"
+              icon="💬"
+            />
+            <StatCard
+              title="이번 달 신규"
+              value={data.follow_ups.length + data.recent_consultations.slice(0, 5).length}
+              subtitle="후속 연락 · 최근 상담"
+              icon="📈"
+            />
           </div>
 
           <Card title="후속 연락 예정 (7일 내)" count={data.follow_ups.length}>
@@ -1221,10 +1307,11 @@ async function revealPath(path: string) {
 }
 
 const pboxStyle: React.CSSProperties = {
-  border: "1px solid #ddd",
+  border: "1px solid var(--color-border-default)",
   borderRadius: 8,
   padding: 12,
   marginBottom: 12,
+  background: "var(--color-bg-surface)",
 };
 
 function BackupBox() {
@@ -1574,37 +1661,61 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
     }
   };
 
-  const box: React.CSSProperties = { border: "1px solid #ddd", borderRadius: 8, padding: 12, marginBottom: 12 };
+  const box: React.CSSProperties = { 
+    border: "1px solid var(--color-border-default)", 
+    borderRadius: 8, 
+    padding: 12, 
+    marginBottom: 12,
+    background: "var(--color-bg-surface)",
+    boxShadow: "var(--shadow-sm)"
+  };
   const kv = (k: string, v: React.ReactNode) => (
-    <div style={{ display: "flex", gap: 8, fontSize: 13, padding: "2px 0" }}>
-      <span style={{ width: 130, color: "#888" }}>{k}</span>
-      <span>{v}</span>
+    <div style={{ display: "flex", gap: 8, fontSize: "0.875rem", padding: "6px 0" }}>
+      <span style={{ minWidth: 150, color: "var(--color-text-secondary)", fontWeight: 500 }}>{k}</span>
+      <span style={{ color: "var(--color-text-primary)" }}>{v}</span>
     </div>
   );
 
   return (
-    <div style={{ maxWidth: 620, margin: "24px auto", padding: "0 16px" }}>
-      <h2 style={{ marginTop: 0 }}>설정 · 진단</h2>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+    <div style={{ maxWidth: 760, margin: "24px auto", padding: "0 20px" }}>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ margin: "0 0 4px", fontSize: "1.375rem", fontWeight: 600, color: "var(--color-text-primary)" }}>설정 · 진단</h2>
+        <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--color-text-secondary)" }}>엔진 상태 확인 및 시스템 설정 관리</p>
+      </div>
+      
+      {/* 테마 설정 */}
+      <div style={{ 
+        border: "1px solid var(--color-border-default)", 
+        borderRadius: 8, 
+        padding: 16, 
+        marginBottom: 16,
+        background: "var(--color-bg-surface)",
+        boxShadow: "var(--shadow-sm)"
+      }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: "1rem", fontWeight: 600, color: "var(--color-text-primary)" }}>테마</h3>
+        <ThemeSelector />
+      </div>
+      
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <button
           onClick={() => void runUpdateCheck()}
           disabled={upd?.kind === "checking" || upd?.kind === "installing"}
         >
           {upd?.kind === "checking" ? "확인 중…" : "업데이트 확인"}
         </button>
-        {upd?.kind === "latest" && <span style={{ color: "#176b2c", fontSize: 13 }}>최신 버전입니다</span>}
+        {upd?.kind === "latest" && <span style={{ color: "#176b2c", fontSize: "0.875rem" }}>최신 버전입니다</span>}
         {upd?.kind === "unsupported" && (
-          <span style={{ color: "#888", fontSize: 13 }}>데스크톱 앱에서만 지원됩니다</span>
+          <span style={{ color: "#888", fontSize: "0.875rem" }}>데스크톱 앱에서만 지원됩니다</span>
         )}
         {upd?.kind === "installing" && (
-          <span style={{ color: "#888", fontSize: 13 }}>다운로드·설치 중… 창을 닫지 마세요</span>
+          <span style={{ color: "#888", fontSize: "0.875rem" }}>다운로드·설치 중… 창을 닫지 마세요</span>
         )}
         {upd?.kind === "error" && (
-          <span style={{ color: "#b00", fontSize: 13 }}>업데이트 실패: {upd.message}</span>
+          <span style={{ color: "#b00", fontSize: "0.875rem" }}>업데이트 실패: {upd.message}</span>
         )}
         {upd?.kind === "available" && (
           <>
-            <span style={{ fontSize: 13 }}>새 버전 {upd.version} 있음</span>
+            <span style={{ fontSize: "0.875rem" }}>새 버전 {upd.version} 있음</span>
             <button onClick={() => void runUpdateInstall(upd)}>지금 설치하고 재시작</button>
           </>
         )}
@@ -1615,21 +1726,21 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
       ) : (
         <>
           <div style={box}>
-            <b>엔진</b>
+            <div style={{ marginBottom: 8 }}><b>엔진</b></div>
             {kv("Local Engine", d.engine?.local_engine ?? "-")}
             {kv("Ollama", d.engine?.ollama === "connected" ? "연결됨 ✅" : "연결 안됨 ❌")}
             {kv("모델", (d.engine?.models ?? []).join(", ") || "-")}
           </div>
           <div style={box}>
-            <b>고객 DB 암호화</b>
+            <div style={{ marginBottom: 8 }}><b>고객 DB 암호화</b></div>
             {kv("방식", d.customer_db?.encryption)}
             {kv("키 보관", d.customer_db?.key_source)}
           </div>
           <div style={box}>
-            <b>주민등록번호 입력 (파일럿 토글)</b>
+            <div style={{ marginBottom: 8 }}><b>주민등록번호 입력 (파일럿 토글)</b></div>
             {kv("현재 상태", d.rrn_input?.enabled ? "켜짐" : "꺼짐")}
             {kv("적용 근거", d.rrn_input?.source === "env" ? "환경변수(잠김)" : d.rrn_input?.source === "local" ? "이 PC 설정" : "기본값(꺼짐)")}
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginTop: 6 }}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "0.875rem", marginTop: 6 }}>
               <input
                 type="checkbox"
                 checked={!!d.rrn_input?.enabled}
@@ -1639,17 +1750,17 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
               주민등록번호 입력·표시 기능 사용
             </label>
             {d.rrn_input?.locked && (
-              <p style={{ fontSize: 12, color: "#8a4b00", margin: "4px 0 0" }}>
+              <p style={{ fontSize: "0.75rem", color: "#8a4b00", margin: "4px 0 0" }}>
                 환경변수 RRN_INPUT_ENABLED 로 고정되어 있어 여기서 바꿀 수 없습니다.
                 개인정보보호법상 주민등록번호는 법령에 근거가 있을 때만 수집·보관할 수 있어, 배포 시 관리자가 정책으로 정합니다.
               </p>
             )}
-            <p style={{ fontSize: 12, color: "#888", margin: "4px 0 0" }}>
+            <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>
               끄면 입력란이 숨겨지고 응답에서도 제외됩니다. 이미 저장된 값은 암호화된 채 보존됩니다.
             </p>
           </div>
           <div style={box}>
-            <b>음성 인식 (Whisper)</b>
+            <div style={{ marginBottom: 8 }}><b>음성 인식 (Whisper)</b></div>
             {kv("모델", d.whisper?.model)}
             {kv("백엔드", d.whisper?.backend ?? "-")}
             {kv("상태", d.whisper?.downloaded ? `다운로드됨 (${d.whisper?.size_mb}MB)` : "미다운로드")}
@@ -1663,8 +1774,8 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
           </div>
 
           <div style={box}>
-            <b>만기 관리</b>
-            <p style={{ fontSize: 12, color: "#888", margin: "4px 0" }}>
+            <div style={{ marginBottom: 8 }}><b>만기 관리</b></div>
+            <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)", margin: "4px 0" }}>
               전 계약의 만기일·납입종료일을 보험기간(없으면 memo)에서 다시 계산합니다. 직접 입력한
               만기는 건드리지 않습니다. 여러 번 눌러도 안전합니다.
             </p>
@@ -1672,7 +1783,7 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
               {recompBusy ? "재계산 중…" : "만기 일괄 재계산"}
             </button>
             {recomp && (
-              <div style={{ marginTop: 8, fontSize: 13 }}>
+              <div style={{ marginTop: 8, fontSize: "0.875rem" }}>
                 <p style={{ margin: "4px 0" }}>
                   갱신 {recomp.updated ?? 0} · memo에서 보충 {recomp.filled_from_memo ?? 0} · 직접입력 유지{" "}
                   {recomp.skipped_manual ?? 0}
@@ -1685,7 +1796,7 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
                       생년월일이 없어 만기를 계산 못 한 계약 {recomp.need_birthdate.length}건 — 고객
                       생년월일을 채우세요:
                     </p>
-                    <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
+                    <table style={{ borderCollapse: "collapse", fontSize: "0.75rem", width: "100%" }}>
                       <thead>
                         <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
                           <th style={{ padding: 4 }}>고객</th>
@@ -1711,7 +1822,7 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
             )}
           </div>
           <div style={box}>
-            <b>데이터</b>
+            <div style={{ marginBottom: 8 }}><b>데이터</b></div>
             {kv("고객", d.data?.customers)}
             {kv("보험계약", `${d.data?.active_policies}/${d.data?.policies}`)}
             {kv("상담 이력", d.data?.consultations)}
@@ -1719,11 +1830,11 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
           </div>
 
           <div style={box}>
-            <b>내 계정</b>
+            <div style={{ marginBottom: 8 }}><b>내 계정</b></div>
             {kv("이메일", me?.email ?? getUser()?.email ?? "-")}
             {kv("가입일", me?.created_at ? me.created_at.slice(0, 10) : "-")}
             <details ref={passwordDetails} style={{ marginTop: 8 }}>
-              <summary style={{ cursor: "pointer", fontSize: 13 }}>비밀번호 변경</summary>
+              <summary style={{ cursor: "pointer", fontSize: "0.875rem" }}>비밀번호 변경</summary>
               <form onSubmit={submitPassword} style={{ marginTop: 8 }}>
                 <input
                   type="password"
@@ -1752,13 +1863,13 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
                 <button type="submit" disabled={passwordBusy}>
                   {passwordBusy ? "변경 중…" : "변경"}
                 </button>
-                {passwordErr && <p style={{ fontSize: 12, color: "#b00", margin: "6px 0 0" }}>{passwordErr}</p>}
+                {passwordErr && <p style={{ fontSize: "0.75rem", color: "#b00", margin: "6px 0 0" }}>{passwordErr}</p>}
               </form>
             </details>
           </div>
 
           <div style={box}>
-            <b>라이선스 · 기기</b>
+            <div style={{ marginBottom: 8 }}><b>라이선스 · 기기</b></div>
             {lic ? (
               <>
                 {kv("플랜", `${lic.plan}${lic.offline ? " (오프라인 확인)" : ""}`)}
@@ -1766,9 +1877,9 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
                 {kv("만료일", lic.expiry ?? "무기한")}
                 {kv("등록 기기", `${devices.length} / ${lic.device_limit}대`)}
                 {devices.map((v) => (
-                  <div key={v.id} style={{ fontSize: 12, paddingLeft: 130 }}>
+                  <div key={v.id} style={{ fontSize: "0.75rem", paddingLeft: 130 }}>
                     · {v.name || v.device_id.slice(0, 8)} ({v.app_version || "?"}){" "}
-                    <button style={{ fontSize: 11 }} onClick={async () => { await removeDevice(v.id); load(); }}>
+                    <button style={{ fontSize: "0.6875rem" }} onClick={async () => { await removeDevice(v.id); load(); }}>
                       해제
                     </button>
                   </div>
@@ -1779,7 +1890,7 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
             )}
           </div>
 
-          <h3 style={{ margin: "20px 0 8px", fontSize: 15 }}>데이터 관리</h3>
+          <h3 style={{ margin: "20px 0 8px", fontSize: "1rem" }}>데이터 관리</h3>
           <PilotTools />
 
           <details style={{ ...box }}>
@@ -1798,7 +1909,49 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
 }
 
 // 아키텍처 사이드바: 상담자 홈 / 고객 / 약관 / 상담(V0.2~) / 설정·진단
-type View = "home" | "newcustomer" | "customers" | "assistant" | "diagnostics";
+type View = "home" | "newcustomer" | "customers" | "coverage" | "assistant" | "diagnostics";
+
+function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) => void }) {
+  const { pendingTasks } = useAssistant();
+  
+  return (
+    <button
+      onClick={() => setView("assistant")}
+      style={{
+        padding: "6px 14px",
+        border: "1px solid var(--color-border-default)",
+        borderBottom: view === "assistant" ? "2px solid #2563eb" : "2px solid transparent",
+        background: "none",
+        fontWeight: view === "assistant" ? 600 : 400,
+        cursor: "pointer",
+        position: "relative",
+      }}
+    >
+      AI 문의
+      {pendingTasks > 0 && (
+        <span
+          style={{
+            position: "absolute",
+            top: 4,
+            right: 4,
+            background: "#ef4444",
+            color: "#fff",
+            fontSize: 10,
+            fontWeight: 600,
+            borderRadius: "50%",
+            width: 16,
+            height: 16,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {pendingTasks}
+        </span>
+      )}
+    </button>
+  );
+}
 
 function App() {
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
@@ -1910,80 +2063,93 @@ function App() {
     setAuth("out");
   };
 
-  const tab = (key: View, label: string) => (
-    <button
-      onClick={() => guardedSetView(key)}
-      style={{
-        padding: "6px 14px",
-        border: "none",
-        borderBottom: view === key ? "2px solid #2563eb" : "2px solid transparent",
-        background: "none",
-        fontWeight: view === key ? 600 : 400,
-        cursor: "pointer",
-      }}
-    >
-      {label}
-    </button>
-  );
+  const tab = (key: View, label: string) => {
+    // AI 문의 탭은 별도 컴포넌트 사용 (배지 표시)
+    if (key === "assistant") {
+      return <AssistantTabButton key={key} view={view} setView={(v) => guardedSetView(v)} />;
+    }
+    
+    return (
+      <button
+        key={key}
+        onClick={() => guardedSetView(key)}
+        style={{
+          padding: "6px 14px",
+          border: "1px solid var(--color-border-default)",
+          borderBottom: view === key ? "2px solid #2563eb" : "2px solid transparent",
+          background: "none",
+          fontWeight: view === key ? 600 : 400,
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    );
+  };
 
   return (
-    <div>
-      {(offline || licenseErr) && (
-        <div style={{ background: licenseErr ? "#fde8e8" : "#fff7e6", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
-          {licenseErr ?? "오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다."}
-        </div>
-      )}
-      <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid #ddd", padding: "8px 12px 0", alignItems: "center", position: "sticky", top: 0, background: "#fff", zIndex: 20 }}>
-        {tab("home", "홈")}
-        {tab("newcustomer", "새 고객")}
-        {tab("customers", "고객 목록")}
-        {tab("assistant", "AI 문의")}
-        {tab("diagnostics", "설정·진단")}
-        <span style={{ marginLeft: "auto", fontSize: 12, color: "#888" }}>
-          {getUser()?.email}{" "}
-          <button onClick={doLogout} style={{ fontSize: 12 }}>
-            로그아웃
-          </button>
-        </span>
-      </nav>
-      {expiringCount > 0 && !bannerDismissed && (
-        <div style={{ background: "#fff3e0", color: "#8a4b00", fontSize: 13, padding: "6px 12px", display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #f0d9b5" }}>
-          <span
-            onClick={openExpiryView}
-            style={{ cursor: "pointer", textDecoration: "underline" }}
-          >
-            만기 임박 계약 {expiringCount}건 — 고객 목록에서 확인
+    <AssistantProvider>
+      <div>
+        {(offline || licenseErr) && (
+          <div style={{ background: licenseErr ? "#fde8e8" : "#fff7e6", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
+            {licenseErr ?? "오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다."}
+          </div>
+        )}
+        <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--color-border-default)", padding: "8px 12px 0", alignItems: "center", position: "sticky", top: 0, background: "var(--color-bg-surface)", zIndex: 20 }}>
+          {tab("home", "홈")}
+          {tab("newcustomer", "새 고객")}
+          {tab("customers", "고객 목록")}
+          {tab("coverage", "보장분석")}
+          {tab("assistant", "AI 문의")}
+          {tab("diagnostics", "설정·진단")}
+          <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 8 }}>
+            <ThemeToggle />
+            {getUser()?.email}{" "}
+            <button onClick={doLogout} style={{ fontSize: 12 }}>
+              로그아웃
+            </button>
           </span>
-          <button
-            onClick={() => setBannerDismissed(true)}
-            style={{ marginLeft: "auto", fontSize: 12, border: "none", background: "none", cursor: "pointer", color: "#8a4b00" }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-      {view === "home" && <HomeScreen onOpenCustomer={openCustomer} />}
-      {view === "newcustomer" && (
-        <CustomersScreen
-          screen="new"
-          onOpenCustomer={openCustomer}
-          onDraftChange={handleDraftChange}
-        />
-      )}
-      {view === "customers" && (
-        <CustomersScreen
-          screen="list"
-          focusCustomer={focusCustomer}
-          focusListView={focusListView}
-          onOpenCustomer={openCustomer}
-          onFocusConsumed={() => setFocusCustomer(null)}
-          onListViewConsumed={() => setFocusListView(null)}
-          onDraftChange={handleDraftChange}
-        />
-      )}
-      {view === "assistant" && <AssistantScreen onOpenCustomer={openCustomer} />}
-      {view === "diagnostics" && <DiagnosticsScreen onOpenCustomer={openCustomer} />}
-    </div>
+        </nav>
+        {expiringCount > 0 && !bannerDismissed && (
+          <div style={{ background: "var(--color-bg-surface)", color: "#8a4b00", fontSize: 13, padding: "6px 12px", display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #f0d9b5" }}>
+            <span
+              onClick={openExpiryView}
+              style={{ cursor: "pointer", textDecoration: "underline" }}
+            >
+              만기 임박 계약 {expiringCount}건 — 고객 목록에서 확인
+            </span>
+            <button
+              onClick={() => setBannerDismissed(true)}
+              style={{ marginLeft: "auto", fontSize: 12, border: "1px solid var(--color-border-default)", background: "none", cursor: "pointer", color: "#8a4b00" }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {view === "home" && <HomeScreen onOpenCustomer={openCustomer} />}
+        {view === "newcustomer" && (
+          <CustomersScreen
+            screen="new"
+            onOpenCustomer={openCustomer}
+            onDraftChange={handleDraftChange}
+          />
+        )}
+        {view === "customers" && (
+          <CustomersScreen
+            screen="list"
+            focusCustomer={focusCustomer}
+            focusListView={focusListView}
+            onOpenCustomer={openCustomer}
+            onFocusConsumed={() => setFocusCustomer(null)}
+            onListViewConsumed={() => setFocusListView(null)}
+            onDraftChange={handleDraftChange}
+          />
+        )}
+        {view === "coverage" && <CoverageAnalysisScreen />}
+        {view === "assistant" && <AssistantScreen onOpenCustomer={openCustomer} />}
+        {view === "diagnostics" && <DiagnosticsScreen onOpenCustomer={openCustomer} />}
+      </div>
+    </AssistantProvider>
   );
 }
 

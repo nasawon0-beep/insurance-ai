@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { track } from "./usage";
+import { ThemeProvider } from "./ThemeContext";
+import "./styles/index.css";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -38,8 +40,10 @@ class ErrorBoundary extends React.Component<
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </ThemeProvider>
   </React.StrictMode>,
 );

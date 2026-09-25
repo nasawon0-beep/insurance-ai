@@ -6,7 +6,7 @@ Local Engine - 최소 헬스체크 서버 (작업 C)
 
 이후 whisper/ 등이 여기에 라우터로 붙게 된다.
 parser/ (POST /parse/pdf), rag/ (POST /rag/index, GET /rag/search, GET /rag/ask),
-database/ (고객 관리 /customers, /policies) 가 이미 붙었다.
+database/ (고객 관리 /customers, /policies, /coverage-analysis) 가 이미 붙었다.
 지금은 절대 0.0.0.0으로 열지 않는다 (문서 42번 원칙).
 """
 from contextlib import asynccontextmanager
@@ -18,7 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -28,7 +28,8 @@ import json
 
 from parser import router as parser_router
 from rag import router as rag_router
-from database import router as customer_router
+from database import coverage, router as customer_router
+from database.db import connect
 from database.uploads import MAX_AUDIO
 from whisper.router import router as whisper_router
 from auth import router as auth_router
@@ -231,6 +232,52 @@ def _startup_maintenance() -> None:
 app = FastAPI(title="Insurance AI Local Engine", lifespan=_lifespan)
 app.state.api_secret = API_SECRET
 app.state.api_secret_header = API_SECRET_HEADER
+
+
+def get_db():
+    conn = connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.post("/customers/{customer_id}/coverage-analysis/recalculate")
+async def recalculate_coverage_analysis(
+    customer_id: str,
+    body: dict = Body(default_factory=dict),
+    conn=Depends(get_db),
+):
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    body = body or {}
+    mode = body.get("mode") or "full"
+    result = coverage.analyze(
+        conn,
+        customer_id,
+        audience=body.get("audience") or "internal",
+        persist=bool(body.get("persist", True)),
+        force_recalculate=bool(body.get("force", True)),
+        profile=body.get("profile") or {},
+        mode=mode,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+
+    run_id = result.get("run_id") or f"run-{secrets.token_hex(16)}"
+    items = result.get("coverage_items") or result.get("categories") or []
+    return {
+        "run_id": run_id,
+        "customer_id": customer_id,
+        "status": "completed",
+        "mode": mode,
+        "started_at": started_at,
+        "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "items_count": len(items),
+        "links": {
+            "result": f"/customers/{customer_id}/coverage-analysis?run_id={run_id}"
+        },
+    }
+
 app.include_router(parser_router)
 app.include_router(rag_router)
 app.include_router(customer_router)

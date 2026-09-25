@@ -9,6 +9,8 @@ import {
   type PolicyDraft,
 } from "./PolicyList";
 import { rrnEnabled } from "./auth";
+import { expandCoverageRowsWithCatalog } from "./coverageCatalog";
+import { parseCoverageJson } from "./coverageRows";
 import { track } from "./usage";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
@@ -201,7 +203,15 @@ async function api(path: string, init?: RequestInit) {
   return res.status === 204 ? null : res.json();
 }
 
-const inputStyle: React.CSSProperties = { padding: 6, width: "100%", boxSizing: "border-box" };
+const inputStyle: React.CSSProperties = {
+  padding: 6,
+  width: "100%",
+  boxSizing: "border-box",
+  backgroundColor: "var(--color-bg-surface)",
+  color: "var(--color-text-primary)",
+  border: "1px solid var(--color-border-default)",
+  borderRadius: 4,
+};
 const badge = (bg: string): React.CSSProperties => ({
   background: bg,
   color: "#fff",
@@ -663,8 +673,8 @@ export default function CustomersScreen({
         style={{
           padding: "8px 10px",
           cursor: "pointer",
-          borderBottom: "1px solid #eee",
-          background: c.id === selectedId ? "#eef4ff" : undefined,
+          borderBottom: "1px solid var(--color-border-default)",
+          background: c.id === selectedId ? "var(--color-bg-base)" : "var(--color-bg-surface)",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
@@ -698,6 +708,15 @@ export default function CustomersScreen({
       setPolicyChecked((prev) => prev.filter((_, i) => failedIdx.has(i)));
     }
     return r;
+  };
+
+  const recalculateCoverageIfNeeded = async (cid: string, docType?: string | null) => {
+    if (docType !== "보장분석") return false;
+    await api(`/customers/${cid}/coverage-analysis/recalculate`, {
+      method: "POST",
+      body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
+    });
+    return true;
   };
 
   const saveCustomer = async () => {
@@ -752,6 +771,7 @@ export default function CustomersScreen({
           }
         }
         const pol = await savePolicyFor(created.id);
+        const coverageRecalculated = await recalculateCoverageIfNeeded(created.id, pendingDocType);
         await refreshList();
         if (rrnError) {
           // 고객은 만들어졌지만 주민번호 형식이 틀림 — 화면을 떠나지 말고 고치게 한다.
@@ -764,7 +784,8 @@ export default function CustomersScreen({
           setNotice(
             `${created.name} 등록 완료` +
               (rrnSaved ? " · 주민번호 저장됨" : "") +
-              (pol.saved ? ` · 보험계약 ${pol.saved}건 추가` : ""),
+              (pol.saved ? ` · 보험계약 ${pol.saved}건 추가` : "") +
+              (coverageRecalculated ? " · 보장분석 자동 실행" : ""),
           );
           onOpenCustomer?.(created.id);
         } else {
@@ -793,6 +814,7 @@ export default function CustomersScreen({
           consultSaved = true;
         }
         const pol = await savePolicyFor(selectedId);
+        const coverageRecalculated = await recalculateCoverageIfNeeded(selectedId, pendingDocType);
         await refreshList();
         if (selectedIdRef.current !== selectedId) return;
         const fresh = await reloadDetail(selectedId);
@@ -810,6 +832,7 @@ export default function CustomersScreen({
         else if (rrnSaved) done.push("주민번호 갱신됨");
         if (consultSaved) done.push("보장분석 상담 1건 추가");
         if (pol.saved) done.push(`보험계약 ${pol.saved}건 추가`);
+        if (coverageRecalculated) done.push("보장분석 자동 실행");
         if (!done.length && !rrnError) done.push("저장됨");
         setNotice(done.join(" · "));
         if (pol.failures.length)
@@ -936,7 +959,11 @@ export default function CustomersScreen({
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "audio/*,.m4a,.mp3,.wav,.aac,.aiff,.pdf,.txt,.csv,.md,text/plain";
-    input.onchange = () => setStagedIntake(input.files?.[0] ?? null); // 바로 분석 안 함
+    input.onchange = () => {
+      const selected = input.files?.[0] ?? null;
+      input.value = "";
+      setStagedIntake(selected); // 바로 분석 안 함
+    };
     input.click();
   };
 
@@ -947,7 +974,7 @@ export default function CustomersScreen({
     setError(null);
     setNotice(null);
     setBulkBusy(true);
-    const res = { created: 0, merged: 0, skipped: 0, failed: 0 };
+    const res = { created: 0, merged: 0, skipped: 0, failed: 0, coverageAnalyses: 0 };
     let lastErr: string | null = null;
     // 주민번호는 던져넣기와 동일하게 항상 별도 PATCH (본 payload 와 분리).
     const saveRrn = async (cid: string, rd: string) => {
@@ -984,6 +1011,7 @@ export default function CustomersScreen({
           await saveRrn(ex.id, rd);
           if (row.consultation)
             await api(`/customers/${ex.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
+          if (await recalculateCoverageIfNeeded(ex.id, row.doc_type)) res.coverageAnalyses++;
           res.merged++;
         } else {
           const payload: Record<string, unknown> = {
@@ -1000,6 +1028,7 @@ export default function CustomersScreen({
           await saveRrn(created.id, rd);
           if (row.consultation)
             await api(`/customers/${created.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
+          if (await recalculateCoverageIfNeeded(created.id, row.doc_type)) res.coverageAnalyses++;
           res.created++;
         }
       } catch (e) {
@@ -1012,6 +1041,7 @@ export default function CustomersScreen({
     await refreshList();
     setNotice(
       `일괄 처리 완료 — 신규 ${res.created} · 보완 ${res.merged} · 건너뜀 ${res.skipped}` +
+        (res.coverageAnalyses ? ` · 보장분석 ${res.coverageAnalyses}건 자동 실행` : "") +
         (res.failed ? ` · 실패 ${res.failed}` : ""),
     );
     if (lastErr) setError(lastErr);
@@ -1107,9 +1137,9 @@ export default function CustomersScreen({
                 flex: "1 1 auto",
                 fontSize: 12,
                 padding: "4px 6px",
-                border: "1px solid " + (statusFilter === v ? "#2563eb" : "#ccc"),
-                background: statusFilter === v ? "#2563eb" : "#fff",
-                color: statusFilter === v ? "#fff" : "#333",
+                border: "1px solid " + (statusFilter === v ? "var(--primary-600)" : "var(--color-border-default)"),
+                background: statusFilter === v ? "var(--primary-600)" : "var(--color-bg-surface)",
+                color: statusFilter === v ? "#fff" : "var(--color-text-primary)",
                 borderRadius: 4,
                 cursor: "pointer",
               }}
@@ -1181,9 +1211,9 @@ export default function CustomersScreen({
                 flex: 1,
                 fontSize: 12,
                 padding: "4px 6px",
-                border: "1px solid " + (listMode === v ? "#c60" : "#ccc"),
-                background: listMode === v ? "#fff3e0" : "#fff",
-                color: listMode === v ? "#8a4b00" : "#333",
+                border: "1px solid " + (listMode === v ? "#c60" : "var(--color-border-default)"),
+                background: listMode === v ? "#2a1f1a" : "var(--color-bg-surface)",
+                color: listMode === v ? "#ff9500" : "var(--color-text-primary)",
                 borderRadius: 4,
                 cursor: "pointer",
               }}
@@ -1193,7 +1223,7 @@ export default function CustomersScreen({
           ))}
         </div>
 
-        <div style={{ border: "1px solid #ddd", borderRadius: 6, maxHeight: 560, overflowY: "auto" }}>
+        <div style={{ border: "1px solid var(--color-border-default)", borderRadius: 6, maxHeight: 560, overflowY: "auto", background: "var(--color-bg-surface)" }}>
           {listMode === "expiry" ? (
             !mgmt ? (
               <p style={{ padding: 8, color: "#888" }}>불러오는 중…</p>
@@ -1208,7 +1238,7 @@ export default function CustomersScreen({
                     setMode("edit");
                     setSelectedId(p.customer_id);
                   }}
-                  style={{ padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid #eee" }}
+                  style={{ padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid var(--color-border-default)", background: "var(--color-bg-surface)" }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
                     <span>{p.customer_name ?? "(고객)"}</span>
@@ -1235,7 +1265,7 @@ export default function CustomersScreen({
                     setMode("edit");
                     setSelectedId(b.id);
                   }}
-                  style={{ padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid #eee" }}
+                  style={{ padding: "8px 10px", cursor: "pointer", borderBottom: "1px solid var(--color-border-default)", background: "var(--color-bg-surface)" }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
                     <span>
@@ -1258,7 +1288,7 @@ export default function CustomersScreen({
               {sort === "name"
                 ? GROUP_ORDER.filter((g) => list.some((c) => chosungOf(c.name) === g)).map((g) => (
                     <div key={g}>
-                      <div style={{ position: "sticky", top: 0, background: "#eef1f5", padding: "2px 10px", fontSize: 12, fontWeight: 700, color: "#555" }}>
+                      <div style={{ position: "sticky", top: 0, background: "var(--color-bg-base)", padding: "2px 10px", fontSize: 12, fontWeight: 700, color: "var(--color-text-secondary)", borderBottom: "1px solid var(--color-border-default)" }}>
                         {g}
                       </div>
                       {list.filter((c) => chosungOf(c.name) === g).map(renderRow)}
@@ -1275,7 +1305,7 @@ export default function CustomersScreen({
       <div style={{ flex: 1, minWidth: 0 }}>
         {error && <p style={{ color: "#b00", whiteSpace: "pre-line" }}>오류: {error}</p>}
         {notice && (
-          <p style={{ background: "#fff7e6", color: "#8a4b00", padding: "6px 10px", borderRadius: 6, fontSize: 13 }}>
+          <p style={{ background: "var(--color-bg-surface)", color: "#8a4b00", padding: "6px 10px", borderRadius: 6, fontSize: 13 }}>
             {notice}
           </p>
         )}
@@ -1288,8 +1318,8 @@ export default function CustomersScreen({
                 position: "sticky",
                 top: 40,
                 zIndex: 5,
-                background: "#fff",
-                borderBottom: "1px solid #e5e7eb",
+                background: "var(--color-bg-surface)",
+                borderBottom: "1px solid var(--color-border-default)",
                 padding: mode === "edit" && detail ? "8px 0 0" : "8px 0",
                 marginBottom: 8,
                 display: "flex",
@@ -1302,7 +1332,7 @@ export default function CustomersScreen({
                 {mode === "edit" && detail && statusChip(detail.effective_status)}
                 <button
                   onClick={saveCustomer}
-                  style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px", cursor: "pointer" }}
+                  style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "1px solid var(--color-border-default)", borderRadius: 5, padding: "6px 16px", cursor: "pointer" }}
                 >
                   {mode === "new" ? "등록" : "변경사항 저장"}
                 </button>
@@ -1314,7 +1344,7 @@ export default function CustomersScreen({
                 {mode === "edit" && pendingDelete && (
                   <span style={{ fontSize: 12, color: "#b00" }}>
                     보험계약·상담 이력까지 삭제됩니다.{" "}
-                    <button onClick={deleteCustomer} style={{ color: "#fff", background: "#b00", border: "none", borderRadius: 4, padding: "2px 8px" }}>
+                    <button onClick={deleteCustomer} style={{ color: "#fff", background: "#b00", border: "1px solid var(--color-border-default)", borderRadius: 4, padding: "2px 8px" }}>
                       삭제 확인
                     </button>{" "}
                     <button onClick={() => setPendingDelete(false)}>취소</button>
@@ -1341,7 +1371,7 @@ export default function CustomersScreen({
                   ] as [DetailTab, string, number | null][]).map(([tab, label, count]) => {
                     const on = activeTab === tab;
                     return (
-                      <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={on} tabIndex={on ? 0 : -1} onClick={() => setActiveTab(tab)} style={{ flex: "0 0 auto", background: "none", border: "none", borderBottom: "2px solid " + (on ? "#2563eb" : "transparent"), color: on ? "#2563eb" : "#555", fontWeight: on ? 700 : 400, fontSize: 13, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" }}>
+                      <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={on} tabIndex={on ? 0 : -1} onClick={() => setActiveTab(tab)} style={{ flex: "0 0 auto", background: "none", border: "1px solid var(--color-border-default)", borderBottom: "2px solid " + (on ? "#2563eb" : "transparent"), color: on ? "#2563eb" : "#555", fontWeight: on ? 700 : 400, fontSize: 13, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" }}>
                         {label}{count !== null && <span style={{ marginLeft: 4, fontSize: 12, fontWeight: 400, color: on ? "#2563eb" : "#888" }}>{count}</span>}
                       </button>
                     );
@@ -1368,14 +1398,14 @@ export default function CustomersScreen({
                 style={{
                   marginBottom: 14,
                   padding: 10,
-                  border: dragOver ? "2px dashed #2563eb" : "1px dashed #bbb",
+                  border: dragOver ? "2px dashed var(--primary-600)" : "1px dashed var(--color-border-default)",
                   borderRadius: 8,
-                  background: dragOver ? "#eef4ff" : "#fbfbfd",
+                  background: "var(--color-bg-surface)",
                 }}
               >
                 <div style={{ fontSize: 13, fontWeight: 600 }}>빠른 등록</div>
                 {stagedIntake ? (
-                  <div style={{ border: "1px solid #2563eb", borderRadius: 8, padding: 10, background: "#fff", marginTop: 6 }}>
+                  <div style={{ border: "1px solid #2563eb", borderRadius: 8, padding: 10, background: "var(--color-bg-surface)", marginTop: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                       <span style={{ fontWeight: 600, color: "#161" }}>📎 {stagedIntake.name}</span>
                       <button onClick={() => setStagedIntake(null)} disabled={audioIntakeBusy} style={{ fontSize: 12 }}>
@@ -1395,7 +1425,7 @@ export default function CustomersScreen({
                       <button
                         onClick={() => analyzeFile(stagedIntake)}
                         disabled={audioIntakeBusy}
-                        style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px" }}
+                        style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "1px solid var(--color-border-default)", borderRadius: 5, padding: "6px 16px" }}
                       >
                         {audioIntakeBusy ? "분석 중…" : "이 파일 분석"}
                       </button>
@@ -1480,7 +1510,7 @@ export default function CustomersScreen({
                   </div>
                 )}
                 {dupMatch && (
-                  <div style={{ marginTop: 8, background: "#fff7e6", color: "#8a4b00", padding: "8px 10px", borderRadius: 6, fontSize: 13 }}>
+                  <div style={{ marginTop: 8, background: "var(--color-bg-surface)", color: "#8a4b00", padding: "8px 10px", borderRadius: 6, fontSize: 13 }}>
                     <div style={{ marginBottom: 6 }}>
                       {dupMatch.reason === "name+birthdate"
                         ? `이름·생년월일이 같은 「${dupMatch.name}」 고객이 이미 있습니다. 동일인입니다.`
@@ -1723,8 +1753,6 @@ export default function CustomersScreen({
             <div role="tabpanel" id="panel-coverage" aria-labelledby="tab-coverage" style={{ display: activeTab === "coverage" ? undefined : "none" }}>
               <CoveragePanel
                 key={detail.id}
-                customerId={detail.id}
-                policyCount={detail.policies.length}
                 consultations={detail.consultations}
                 wrap={wrap}
               />
@@ -1888,6 +1916,16 @@ function PoliciesSection({
     </>
   );
 
+  const policyCellStyle = {
+    padding: 8,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    borderRight: "1px solid #eee",
+  };
+  const policyLastCellStyle = { ...policyCellStyle, borderRight: "none" };
+  const policyBadgeStyle = { marginLeft: 6, fontSize: 11, borderRadius: 4, padding: "1px 5px" };
+
   return (
     <div style={{ marginTop: 22 }}>
       <h3>
@@ -1898,11 +1936,20 @@ function PoliciesSection({
         </span>
       </h3>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, tableLayout: "fixed", width: "100%" }}>
+          <colgroup>
+            <col style={{ width: 120 }} />
+            <col style={{ width: "auto" }} />
+            <col style={{ width: 130 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 140 }} />
+            <col style={{ width: 90 }} />
+            <col style={{ width: 200 }} />
+          </colgroup>
           <thead>
             <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-              {["보험사", "상품명", "증권번호", "월납", "만기", "상태", "약관", ""].map((h) => (
-                <th key={h} style={{ padding: 4 }}>
+              {["보험사", "상품명", "증권번호", "월납", "만기", "상태", "관리"].map((h, i) => (
+                <th key={h} style={i === 6 ? policyLastCellStyle : policyCellStyle}>
                   {h}
                 </th>
               ))}
@@ -1912,10 +1959,10 @@ function PoliciesSection({
             {detail.policies.map((p) =>
               editId === p.id ? (
                 <tr key={p.id} style={{ background: "#fafafa" }}>
-                  <td colSpan={8} style={{ padding: 6 }}>
+                  <td colSpan={7} style={{ padding: 6 }}>
                    <div
                     style={{
-                      background: "#fff7e6",
+                      background: "var(--color-bg-surface)",
                       borderLeft: "3px solid #f59e0b",
                       borderRadius: 4,
                       padding: "8px 10px",
@@ -1967,28 +2014,28 @@ function PoliciesSection({
                 </tr>
               ) : (
                 <tr key={p.id} style={{ borderBottom: "1px solid #eee" }}>
-                  <td style={{ padding: 4 }}>{p.insurer || "-"}</td>
-                  <td style={{ padding: 4 }}>
+                  <td style={policyCellStyle} title={p.insurer || undefined}>{p.insurer || "-"}</td>
+                  <td style={policyCellStyle} title={p.product_name || undefined}>
                     {p.product_name || "-"}
                     {p.is_own ? (
-                      <span style={{ marginLeft: 6, fontSize: 10, color: "#1a7a2e", background: "#e7f6e9", borderRadius: 4, padding: "1px 5px" }}>
+                      <span style={{ ...policyBadgeStyle, color: "#1a7a2e", background: "#e7f6e9" }}>
                         내 계약
                       </span>
                     ) : p.is_own === false ? (
-                      <span style={{ marginLeft: 6, fontSize: 10, color: "#888", background: "#eee", borderRadius: 4, padding: "1px 5px" }}>
+                      <span style={{ ...policyBadgeStyle, color: "#888", background: "#eee" }}>
                         타사/미확인
                       </span>
                     ) : null}
                     {p.policyholder_name ? (
-                      <span style={{ marginLeft: 6, fontSize: 10, color: "#7c3aed", background: "#f1e9fe", borderRadius: 4, padding: "1px 5px" }}>
+                      <span style={{ ...policyBadgeStyle, color: "#7c3aed", background: "#f1e9fe" }}>
                         계약자: {p.policyholder_name}
                         {p.policyholder_rel ? ` (${p.policyholder_rel})` : ""}
                       </span>
                     ) : null}
                   </td>
-                  <td style={{ padding: 4 }}>{p.policy_number || "-"}</td>
-                  <td style={{ padding: 4 }}>{p.premium != null ? p.premium.toLocaleString() : "-"}</td>
-                  <td style={{ padding: 4, whiteSpace: "nowrap" }}>
+                  <td style={policyCellStyle} title={p.policy_number || undefined}>{p.policy_number || "-"}</td>
+                  <td style={policyCellStyle}>{p.premium != null ? p.premium.toLocaleString() : "-"}</td>
+                  <td style={policyCellStyle} title={p.payment_end_date ? `${p.end_date || "-"} (납입 ${p.payment_end_date})` : p.end_date || undefined}>
                     {p.end_date || "-"}
                     {expiryBadge(p.end_date)}
                     {p.end_date && (
@@ -1998,21 +2045,21 @@ function PoliciesSection({
                       </span>
                     )}
                     {p.payment_end_date && (
-                      <div style={{ color: "#888", fontSize: 11 }}>납입종료 {p.payment_end_date}</div>
+                      <span style={{ color: "#888", fontSize: 11 }}>{` (납입 ${p.payment_end_date})`}</span>
                     )}
                     {(() => {
                       const pct = policyProgressPct(p.start_date, p.end_date);
                       if (pct == null) return null;
                       const color = pct >= 90 ? "#b00" : pct >= 70 ? "#c60" : "#9aa4b2";
                       return (
-                        <div title={`가입일~만기 진행 ${pct}%`} style={{ marginTop: 3, height: 4, background: "#eef1f5", borderRadius: 2, width: 90 }}>
+                        <span title={`가입일~만기 진행 ${pct}%`} style={{ display: "inline-block", marginLeft: 6, height: 4, background: "#eef1f5", borderRadius: 2, width: 48, verticalAlign: "middle" }}>
                           <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 2 }} />
-                        </div>
+                        </span>
                       );
                     })()}
                   </td>
-                  <td style={{ padding: 4 }}>{STATUS_LABEL[p.status] ?? p.status}</td>
-                  <td style={{ padding: 4, whiteSpace: "nowrap" }}>
+                  <td style={policyCellStyle}>{STATUS_LABEL[p.status] ?? p.status}</td>
+                  <td style={policyLastCellStyle}>
                     {p.document_id ? (
                       <>
                         <span style={{ color: "#161" }}>연결됨</span>{" "}
@@ -2028,14 +2075,13 @@ function PoliciesSection({
                     ) : (
                       <button onClick={() => attachDoc(p.id)}>약관 PDF 연결</button>
                     )}
-                  </td>
-                  <td style={{ padding: 4, whiteSpace: "nowrap" }}>
+                    {" "}
                     <button onClick={() => startEdit(p)}>수정</button>{" "}
                     {pendingPolicyDelete === p.id ? (
-                      <span style={{ fontSize: 12, color: "#b00" }}>
+                      <span style={{ fontSize: 11, color: "#b00" }}>
                         삭제할까요?{" "}
                         <button
-                          style={{ color: "#fff", background: "#b00", border: "none", borderRadius: 4, padding: "2px 8px" }}
+                          style={{ color: "#fff", background: "#b00", border: "1px solid var(--color-border-default)", borderRadius: 4, padding: "2px 8px" }}
                           onClick={wrap(async () => {
                             setPendingPolicyDelete(null);
                             await api(`/policies/${p.id}`, { method: "DELETE" });
@@ -2295,7 +2341,7 @@ function ConsultationsSection({
                   <span style={{ fontSize: 12, color: "#b00" }}>
                     삭제할까요?{" "}
                     <button
-                      style={{ color: "#fff", background: "#b00", border: "none", borderRadius: 4, padding: "2px 8px" }}
+                      style={{ color: "#fff", background: "#b00", border: "1px solid var(--color-border-default)", borderRadius: 4, padding: "2px 8px" }}
                       onClick={wrap(async () => {
                         setPendingConsultDelete(null);
                         await api(`/consultations/${k.id}`, { method: "DELETE" });
@@ -2389,29 +2435,6 @@ function ConsultationsSection({
   );
 }
 
-type CoverageResult = {
-  overall: string;
-  categories: {
-    name: string;
-    status: string;
-    detail: string;
-    policies: string[];
-    evidence_pages: number[];
-  }[];
-  gaps: string[];
-  overlaps: string[];
-  recommendations: string[];
-  analyzed_policies: number;
-  has_documents: boolean;
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  충분: "#161",
-  중복: "#c60",
-  부족: "#c60",
-  없음: "#b00",
-};
-
 function AuditPanel({ customerId, active }: { customerId: string; active: boolean }) {
   const [items, setItems] = useState<AuditItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -2449,33 +2472,16 @@ function AuditPanel({ customerId, active }: { customerId: string; active: boolea
 }
 
 function CoveragePanel({
-  customerId,
-  policyCount,
   consultations,
   wrap,
 }: {
-  customerId: string;
-  policyCount: number;
   consultations: Consultation[];
   wrap: Wrap;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState<CoverageResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const latest = consultations.find((c) => c.coverage_json);
-
-  const run = async () => {
-    setBusy(true);
-    setError(null);
-    setRes(null);
-    try {
-      setRes(await api(`/customers/${customerId}/coverage-analysis`));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const latestCoverage = latest ? parseCoverageJson(latest.coverage_json) : null;
+  const rows = latestCoverage?.rows ?? [];
+  const latestCoverageJson = latestCoverage && !latestCoverage.corrupt ? JSON.stringify(expandCoverageRowsWithCatalog(rows)) : latest?.coverage_json ?? null;
 
   return (
     <div
@@ -2487,13 +2493,13 @@ function CoveragePanel({
         background: "#fbfbfd",
       }}
     >
-      {latest && (
+      {latest ? (
         <>
           <h4 style={{ marginTop: 0 }}>
             저장된 보장분석 — {latest.title || "(제목 없음)"} · {(latest.consulted_at || "").slice(0, 10)}
           </h4>
           <CoverageTableEditableSafe
-            json={latest.coverage_json}
+            json={latestCoverageJson}
             onCommit={wrap(async (newRows: CoverageRow[]) => {
               await api(`/consultations/${latest.id}`, {
                 method: "PATCH",
@@ -2501,68 +2507,11 @@ function CoveragePanel({
               });
             }, true)}
           />
-          <hr style={{ margin: "20px 0" }} />
         </>
-      )}
-      <h3 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 10 }}>
-        보장 분석
-        <button onClick={run} disabled={busy || policyCount === 0} style={{ fontSize: 13, fontWeight: 400 }}>
-          {busy ? "분석 중... (~1분)" : "분석 실행"}
-        </button>
-      </h3>
-      {policyCount === 0 && <p style={{ color: "#888", fontSize: 13 }}>보험계약을 먼저 등록하세요.</p>}
-      {error && <p style={{ color: "#b00", whiteSpace: "pre-line" }}>오류: {error}</p>}
-
-      {res && (
-        <div style={{ fontSize: 13 }}>
-          <p style={{ whiteSpace: "pre-wrap" }}>{res.overall}</p>
-          <p style={{ color: "#888", fontSize: 12 }}>
-            계약 {res.analyzed_policies}건 분석 · {res.has_documents ? "약관 근거 포함" : "약관 미첨부 (상품명 기준 개략)"}
-          </p>
-
-          {res.categories.length > 0 && (
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 6 }}>
-                <thead>
-                  <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-                    <th style={{ padding: 4 }}>카테고리</th>
-                    <th style={{ padding: 4 }}>상태</th>
-                    <th style={{ padding: 4 }}>내용</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {res.categories.map((c, i) => (
-                    <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
-                      <td style={{ padding: 4, whiteSpace: "nowrap" }}>{c.name}</td>
-                      <td style={{ padding: 4, color: STATUS_COLOR[c.status] ?? "#333", fontWeight: 600 }}>
-                        {c.status}
-                      </td>
-                      <td style={{ padding: 4 }}>
-                        {c.detail}
-                        {c.evidence_pages?.length > 0 && (
-                          <span style={{ color: "#888" }}> (p.{c.evidence_pages.join(", ")})</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {(["gaps", "overlaps", "recommendations"] as const).map((k) =>
-            res[k].length > 0 ? (
-              <div key={k} style={{ marginTop: 8 }}>
-                <b>{k === "gaps" ? "보완 필요" : k === "overlaps" ? "중복 조정" : "제안"}</b>
-                <ul style={{ margin: "4px 0" }}>
-                  {res[k].map((x, i) => (
-                    <li key={i}>{x}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null,
-          )}
-        </div>
+      ) : (
+        <p style={{ color: "#888", fontSize: 13 }}>
+          보장분석 데이터가 없습니다. 던져넣기나 고객 등록 시 보장분석 PDF를 업로드하세요.
+        </p>
       )}
     </div>
   );
@@ -2614,7 +2563,7 @@ function AskPanel({ customerId, hasDocs }: { customerId: string; hasDocs: boolea
       {res && (
         <div style={{ marginTop: 10 }}>
           {res.disclaimer && res.basis === "policy_summary" && (
-            <div style={{ background: "#fff8e1", borderLeft: "4px solid #f0a020", padding: "8px 10px", fontSize: 12, margin: "6px 0" }}>
+            <div style={{ background: "var(--color-bg-surface)", borderLeft: "4px solid #f0a020", padding: "8px 10px", fontSize: 12, margin: "6px 0" }}>
               ⚠ {res.disclaimer}
             </div>
           )}

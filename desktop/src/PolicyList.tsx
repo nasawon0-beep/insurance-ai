@@ -139,6 +139,18 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
   충분: { bg: "#e7ecfb", fg: "#2352cc" },
 };
 
+function parseCoverageAmount(value: string | null): number {
+  const amount = Number(String(value ?? "").replace(/[^\d]/g, ""));
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function recalculateCoveragePct(row: CoverageRow): CoverageRow {
+  const current = parseCoverageAmount(row.current);
+  const recommended = parseCoverageAmount(row.recommended);
+  const pct = recommended > 0 ? Math.round((current / recommended) * 100) : 0;
+  return { ...row, pct };
+}
+
 /** 보장분석서의 '보장현황'을 표로. 미가입 → 부족 → 충분 순으로 정렬해서 보여준다. */
 export function CoverageTable({ rows }: { rows: CoverageRow[] }) {
   if (!rows.length) return null;
@@ -210,16 +222,16 @@ export function CoverageTableEditable({
   if (!rows.length) return null;
 
   const startEditing = () => {
-    const order: Record<string, number> = { 미가입: 0, 부족: 1, 충분: 2 };
-    const sorted = [...rows].sort(
-      (a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.pct - b.pct,
-    );
-    setDraft(sorted.map((row) => ({ ...row })));
+    setDraft(rows.map((row) => ({ ...row })));
     setErr(null);
     setEditing(true);
   };
   const update = (index: number, patch: Partial<CoverageRow>) => {
-    setDraft((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    setDraft((current) => current.map((row, i) => {
+      if (i !== index) return row;
+      const next = { ...row, ...patch };
+      return patch.current !== undefined || patch.recommended !== undefined ? recalculateCoveragePct(next) : next;
+    }));
   };
   const save = async () => {
     setErr(null);
@@ -281,7 +293,7 @@ export function CoverageTableEditable({
                       {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
                     </select>
                   </td>
-                  <td style={{ padding: "4px 8px" }}><input type="number" min={0} max={100} style={{ ...input, width: 70 }} value={row.pct} onChange={(e) => { const value = Number(e.target.value); update(i, { pct: Number.isNaN(value) ? 0 : value }); }} /></td>
+                  <td style={{ padding: "4px 8px", textAlign: "right" }}>{row.pct}%</td>
                   <td style={{ padding: "4px 8px" }}><input type="text" style={input} value={row.current ?? ""} onChange={(e) => update(i, { current: e.target.value })} /></td>
                   <td style={{ padding: "4px 8px" }}><input type="text" style={input} value={row.recommended ?? ""} onChange={(e) => update(i, { recommended: e.target.value })} /></td>
                   <td style={{ padding: "4px 8px" }}><button style={{ fontSize: 12, color: "#b00" }} onClick={() => setDraft((current) => current.filter((_, j) => j !== i))}>삭제</button></td>
