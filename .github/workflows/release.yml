@@ -20,6 +20,30 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build control-server
+        run: |
+          cd control-server
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pyinstaller control-server.spec
+          mkdir -p ../desktop/src-tauri/binaries
+          cp dist/control-server.exe ../desktop/src-tauri/binaries/control-server-x86_64-pc-windows-msvc.exe
+        shell: bash
+
+      - name: Build local-engine
+        run: |
+          cd local-engine
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pyinstaller local-engine.spec
+          cp dist/local-engine.exe ../desktop/src-tauri/binaries/local-engine-x86_64-pc-windows-msvc.exe
+        shell: bash
+
       - name: Install dependencies
         run: npm ci
 
@@ -63,6 +87,28 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build control-server
+        run: |
+          cd control-server
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pyinstaller control-server.spec
+          mkdir -p ../desktop/src-tauri/binaries
+          cp dist/control-server ../desktop/src-tauri/binaries/control-server-aarch64-apple-darwin
+
+      - name: Build local-engine
+        run: |
+          cd local-engine
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pyinstaller local-engine.spec
+          cp dist/local-engine ../desktop/src-tauri/binaries/local-engine-aarch64-apple-darwin
 
       - name: Install dependencies
         run: npm ci
