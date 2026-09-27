@@ -1,3 +1,5 @@
+mod ollama;
+
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -146,7 +148,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            ollama::check_ollama_installed,
+            ollama::install_ollama,
+        ])
         .setup(|app| {
             let updater_app = app.handle().clone();
             std::thread::spawn(move || {

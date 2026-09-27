@@ -7,6 +7,7 @@ import CoverageAnalysisScreen from "./CoverageAnalysis";
 import { AssistantProvider, useAssistant } from "./AssistantContext";
 import { CoverageTable, PolicyList, savePolicies, type PolicyDraft } from "./PolicyList";
 import { StatCard } from "./components/DashboardCards";
+import OnboardingScreen from "./components/OnboardingScreen";
 import { ThemeToggle, ThemeSelector } from "./components/ThemeToggle";
 import {
   changePassword,
@@ -1955,6 +1956,9 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
 
 function App() {
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
+  const [needsOnboarding, setNeedsOnboarding] = useState(
+    () => localStorage.getItem("iai.ollamaOnboardingDone") !== "1" && localStorage.getItem("iai.ollamaOnboardingSkipped") !== "1",
+  );
   const [offline, setOffline] = useState(false);
   const [licenseErr, setLicenseErr] = useState<string | null>(null);
   const [view, setView] = useState<View>("home");
@@ -2040,6 +2044,9 @@ function App() {
   }
   if (auth === "out") {
     return <LoginScreen onLogin={boot} />;
+  }
+  if (needsOnboarding) {
+    return <OnboardingScreen onComplete={() => setNeedsOnboarding(false)} />;
   }
 
   // 현재 화면(주로 "새 고객"의 던져넣기·보장분석 결과)을 떠나도 되는지 확인.
