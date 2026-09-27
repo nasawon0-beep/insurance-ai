@@ -24,6 +24,7 @@ datas = [
     ("ocr/models", "ocr/models"),
     ("database/coverage-rag-queries.json", "database"),
     ("database/coverage-recommended-amounts.json", "database"),
+    ("database/import_data.py", "database"),
 ]
 # pdf-ocr 는 macOS Vision 헬퍼(Mach-O) — macOS 빌드에서, 존재할 때만.
 if sys.platform == "darwin" and os.path.exists("ocr/pdf-ocr"):
