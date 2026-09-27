@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import os
 import re
 import sqlite3
 import uuid
@@ -145,8 +147,20 @@ def _base_weight(group: str, name: str) -> int:
 
 
 def load_coverage_catalog(path: str | None = None) -> list[dict[str, Any]]:
-    rag_path = path or os.environ.get("COVERAGE_RAG_QUERIES_PATH", "/tmp/coverage-rag-queries.json")
-    amounts_path = os.environ.get("COVERAGE_RECOMMENDED_AMOUNTS_PATH", "/tmp/coverage-recommended-amounts.json")
+    # PyInstaller 번들 경로 지원
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 패키징된 경우
+        base_path = sys._MEIPASS
+        default_rag = os.path.join(base_path, "database", "coverage-rag-queries.json")
+        default_amounts = os.path.join(base_path, "database", "coverage-recommended-amounts.json")
+    else:
+        # 개발 환경
+        base_path = os.path.dirname(os.path.dirname(__file__))
+        default_rag = os.path.join(base_path, "database", "coverage-rag-queries.json")
+        default_amounts = os.path.join(base_path, "database", "coverage-recommended-amounts.json")
+    
+    rag_path = path or os.environ.get("COVERAGE_RAG_QUERIES_PATH", default_rag)
+    amounts_path = os.environ.get("COVERAGE_RECOMMENDED_AMOUNTS_PATH", default_amounts)
     rag = _load_json(rag_path)
     amounts = _load_json(amounts_path)["recommended_amounts"]
     out: list[dict[str, Any]] = []

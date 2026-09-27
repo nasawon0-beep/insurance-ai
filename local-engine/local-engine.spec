@@ -20,7 +20,11 @@ packages = [
     "numpy",
 ]
 # 한국어 OCR 인식 모델은 항상 번들 (README: "번들 필수 — 다운로드 아님", 주로 Windows/Linux 용).
-datas = [("ocr/models", "ocr/models")]
+datas = [
+    ("ocr/models", "ocr/models"),
+    ("database/coverage-rag-queries.json", "database"),
+    ("database/coverage-recommended-amounts.json", "database"),
+]
 # pdf-ocr 는 macOS Vision 헬퍼(Mach-O) — macOS 빌드에서, 존재할 때만.
 if sys.platform == "darwin" and os.path.exists("ocr/pdf-ocr"):
     datas += [("ocr/pdf-ocr", "ocr")]
