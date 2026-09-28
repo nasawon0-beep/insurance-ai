@@ -11,9 +11,9 @@ test("Tauri updater is configured for the GitHub Pages update manifest", () => {
 
   assert.match(cargo, /tauri-plugin-updater\s*=\s*"2/);
   assert.deepEqual(config.plugins?.updater?.endpoints, [
-    "https://nasawon0-beep.github.io/insurance-ai-updates/api/windows.json",
+    "https://pub-855f021354cb406a915ee4c5d955e20b.r2.dev/windows/latest.json",
   ]);
-  assert.equal(config.plugins?.updater?.pubkey, "");
+  assert.ok(config.plugins?.updater?.pubkey?.length > 50); // 서명 키 있음
   assert.equal(config.bundle?.createUpdaterArtifacts, true);
 });
 
