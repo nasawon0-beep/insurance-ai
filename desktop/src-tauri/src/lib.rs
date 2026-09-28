@@ -7,7 +7,6 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
-use tauri_plugin_updater::UpdaterExt;
 
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
@@ -147,7 +146,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             greet,
             ollama::check_ollama_installed,
@@ -156,23 +154,6 @@ pub fn run() {
             ollama::download_model,
         ])
         .setup(|app| {
-            let updater_app = app.handle().clone();
-            std::thread::spawn(move || {
-                // 프로덕션 패키지 실행 후 5초 뒤 업데이트 manifest 를 확인한다.
-                // 설치 여부와 재시작 확인 다이얼로그는 프론트엔드(App.tsx)가 담당한다.
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                tauri::async_runtime::block_on(async move {
-                    match updater_app.updater() {
-                        Ok(updater) => match updater.check().await {
-                            Ok(Some(_)) => eprintln!("[updater] 업데이트 사용 가능"),
-                            Ok(None) => eprintln!("[updater] 최신 버전"),
-                            Err(e) => eprintln!("[updater] 확인 실패: {e}"),
-                        },
-                        Err(e) => eprintln!("[updater] 초기화 실패: {e}"),
-                    }
-                });
-            });
-
             let config_dir = app.path().app_config_dir()?;
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
