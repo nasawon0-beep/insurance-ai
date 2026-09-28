@@ -9,7 +9,17 @@
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
-  "plugins": {},
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://pub-855f021354cb406a915ee4c5d955e20b.r2.dev/windows/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0QTI3NjMwREI4NzkyRTQKUldUa2tvZmJNSGFpbEVvRHFjSkluOWpNc3BGTGRVODllcERZTlVmVmNPeEtjSHlHcDlkUlE2dEQK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "app": {
     "windows": [
       {
@@ -25,6 +35,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/control-server",
       "binaries/local-engine"

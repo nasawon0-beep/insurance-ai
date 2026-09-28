@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
+use tauri_plugin_updater::UpdaterExt;
 
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
@@ -146,6 +147,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             greet,
             ollama::check_ollama_installed,
