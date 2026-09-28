@@ -91,10 +91,14 @@ jobs:
           # Upload MSI to R2
           MSI_FILE=$(ls desktop/src-tauri/target/release/bundle/msi/*.msi | head -1)
           MSI_FILENAME=$(basename "$MSI_FILE")
+          SIG_FILE="${MSI_FILE}.sig"
+          SIG_FILENAME="${MSI_FILENAME}.sig"
           
           rclone copy "$MSI_FILE" r2:${{ secrets.R2_BUCKET_NAME }}/windows/v${{ steps.version.outputs.VERSION }}/ --progress
+          rclone copy "$SIG_FILE" r2:${{ secrets.R2_BUCKET_NAME }}/windows/v${{ steps.version.outputs.VERSION }}/ --progress
           
           echo "✅ Uploaded to R2: $MSI_FILENAME"
+          echo "✅ Uploaded to R2: $SIG_FILENAME"
           echo "📦 Public URL: ${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/$MSI_FILENAME"
 
       - name: Create Release
