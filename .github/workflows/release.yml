@@ -65,6 +65,33 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Upload to Cloudflare R2
+        shell: bash
+        run: |
+          # Install rclone
+          curl https://rclone.org/install.sh | sudo bash
+          
+          # Configure rclone for R2
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          acl = public-read
+          EOF
+          
+          # Upload MSI to R2
+          MSI_FILE=$(ls desktop/src-tauri/target/release/bundle/msi/*.msi | head -1)
+          MSI_FILENAME=$(basename "$MSI_FILE")
+          
+          rclone copy "$MSI_FILE" r2:${{ secrets.R2_BUCKET_NAME }}/windows/v${{ steps.version.outputs.VERSION }}/ --progress
+          
+          echo "✅ Uploaded to R2: $MSI_FILENAME"
+          echo "📦 Public URL: ${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/$MSI_FILENAME"
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -78,6 +105,9 @@ jobs:
             - Ollama 자동 설치
             - AI 모델 자동 다운로드
             - 자동 업데이트 지원
+            
+            **다운로드:**
+            - Cloudflare R2: ${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/Insurance.AI_2.2.0_x64_en-US.msi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -171,10 +201,12 @@ jobs:
             "status": "available",
             "latestVersion": "v${{ steps.version.outputs.VERSION }}",
             "releaseDate": "$(date +%Y-%m-%d)",
-            "downloadUrl": "https://github.com/nasawon0-beep/insurance-ai/releases/download/v${{ steps.version.outputs.VERSION }}-windows/Insurance.AI_${{ steps.version.outputs.VERSION }}_x64.msi",
-            "fileName": "Insurance.AI_${{ steps.version.outputs.VERSION }}_x64.msi",
+            "downloadUrl": "${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/Insurance.AI_2.2.0_x64_en-US.msi",
+            "fileName": "Insurance.AI_2.2.0_x64_en-US.msi",
             "changelog": [
-              "자동 빌드 테스트"
+              "Ollama 자동 설치",
+              "AI 모델 자동 다운로드 (bge-m3, qwen2.5)",
+              "자동 업데이트 지원"
             ]
           }
           EOF
