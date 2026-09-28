@@ -59,6 +59,8 @@ jobs:
         run: |
           cd desktop
           npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Get version
         id: version
