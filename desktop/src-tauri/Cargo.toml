@@ -22,7 +22,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
+# tauri-plugin-updater = "2"  # TODO: Re-enable with signing keys
 fs2 = "0.4"
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }

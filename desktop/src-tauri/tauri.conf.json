@@ -9,16 +9,7 @@
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
-  "plugins": {
-    "updater": {
-      "endpoints": [
-        "https://nasawon0-beep.github.io/insurance-ai-updates/api/windows.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
-    }
-  },
+  "plugins": {},
   "app": {
     "windows": [
       {
