@@ -14,7 +14,10 @@
       "endpoints": [
         "https://nasawon0-beep.github.io/insurance-ai-updates/api/windows.json"
       ],
-      "pubkey": ""
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "app": {
