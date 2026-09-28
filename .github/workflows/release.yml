@@ -85,7 +85,7 @@ jobs:
           access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
           secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
           endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          acl = public-read
+          no_check_bucket = true
           EOF
           
           # Upload MSI to R2
