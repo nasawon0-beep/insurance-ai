@@ -25,7 +25,6 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/control-server",
       "binaries/local-engine"
