@@ -111,75 +111,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build control-server
-        run: |
-          cd control-server
-          pip install -r requirements.txt
-          pip install pyinstaller
-          pyinstaller control-server.spec
-          mkdir -p ../desktop/src-tauri/binaries
-          cp dist/control-server ../desktop/src-tauri/binaries/control-server-aarch64-apple-darwin
-
-      - name: Build local-engine
-        run: |
-          cd local-engine
-          pip install -r requirements.txt
-          pip install pyinstaller
-          pyinstaller local-engine.spec
-          cp dist/local-engine ../desktop/src-tauri/binaries/local-engine-aarch64-apple-darwin
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install desktop dependencies
-        run: |
-          cd desktop
-          npm ci
-
-      - name: Build macOS
-        run: |
-          cd desktop
-          npm run tauri build
-        env:
-          CI: true
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: desktop/src-tauri/target/release/bundle/dmg/*.dmg
-          tag_name: v${{ steps.version.outputs.VERSION }}-macos
-          name: macOS v${{ steps.version.outputs.VERSION }}
-          body: |
-            - 보장분석 기능
-            - 자동 업데이트 지원
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   update-metadata:
-    needs: [build-windows, build-macos]
+    needs: [build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout updates repo
@@ -207,23 +140,6 @@ jobs:
               "Ollama 자동 설치",
               "AI 모델 자동 다운로드 (bge-m3, qwen2.5)",
               "자동 업데이트 지원"
-            ]
-          }
-          EOF
-
-      - name: Update macos.json
-        run: |
-          cat > api/macos.json <<EOF
-          {
-            "platform": "macos",
-            "name": "macOS",
-            "status": "available",
-            "latestVersion": "v${{ steps.version.outputs.VERSION }}",
-            "releaseDate": "$(date +%Y-%m-%d)",
-            "downloadUrl": "https://github.com/nasawon0-beep/insurance-ai/releases/download/v${{ steps.version.outputs.VERSION }}-macos/Insurance.AI_${{ steps.version.outputs.VERSION }}_aarch64.dmg",
-            "fileName": "Insurance.AI_${{ steps.version.outputs.VERSION }}_aarch64.dmg",
-            "changelog": [
-              "자동 빌드 테스트"
             ]
           }
           EOF
