@@ -170,6 +170,100 @@
   text-align: right;
 }
 
+.onboarding-steps {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 24px 0 32px;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+}
+
+.onboarding-step.completed,
+.onboarding-model.completed {
+  opacity: 0.75;
+}
+
+.onboarding-step.completed .icon,
+.onboarding-model.completed .icon {
+  color: #10b981;
+}
+
+.onboarding-step.active {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+  border-color: #667eea;
+}
+
+.onboarding-step.active .icon,
+.onboarding-model.downloading .icon {
+  color: #667eea;
+  animation: onboarding-pulse 2s infinite;
+}
+
+.onboarding-step.pending,
+.onboarding-model.pending {
+  opacity: 0.5;
+}
+
+.onboarding-step .time {
+  margin-left: auto;
+  color: #71717a;
+  font-size: 0.88rem;
+}
+
+.onboarding-current-task {
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+.onboarding-model-name {
+  margin: 0 0 12px;
+  color: #fafafa;
+  font-size: 1.12rem;
+  font-weight: 700;
+}
+
+.onboarding-progress-text {
+  margin: 10px 0 0;
+  color: #a1a1aa;
+  font-size: 0.93rem;
+}
+
+.onboarding-models-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.onboarding-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #18181b;
+  border-radius: 6px;
+  color: #fafafa;
+  font-size: 0.88rem;
+}
+
+.onboarding-eta {
+  margin: 0 0 24px;
+  color: #a1a1aa;
+  font-size: 0.88rem;
+  text-align: center;
+}
+
 .onboarding-progress-sr {
   position: absolute;
   width: 1px;

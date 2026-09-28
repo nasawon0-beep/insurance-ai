@@ -1967,6 +1967,10 @@ function App() {
   const [focusListView, setFocusListView] = useState<{ view: "expiry" | "birthday"; nonce: number } | null>(null);
   const [expiringCount, setExpiringCount] = useState(0);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState<Extract<UpdateCheck, { kind: "available" }> | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
   // CustomersScreen 은 탭 전환("새 고객"↔"고객 목록"↔"AI 문의" 등) 때마다 통째로
   // unmount/mount 되므로, 미저장 분석 초안·분석 진행 여부는 그 화면이 직접 올려보낸 값을 여기서 지킨다.
   // hasDraft(확인 후 이동 가능)와 isAnalyzing(이동 자체를 막음)을 분리해, 내부 목록 이동 가드
@@ -1979,6 +1983,49 @@ function App() {
     hasDraftRef.current = s.hasDraft;
     isAnalyzingRef.current = s.isAnalyzing;
   }, []);
+
+  const checkForUpdates = useCallback(async () => {
+    try {
+      const result = await checkForUpdate();
+      if (result.kind === "available") {
+        setUpdateAvailable(result);
+        setShowUpdateDialog(true);
+      }
+    } catch (error) {
+      console.error("업데이트 확인 실패:", error);
+    }
+  }, []);
+
+  const downloadAndInstall = useCallback(async () => {
+    if (!updateAvailable) return;
+
+    setDownloading(true);
+    setDownloadProgress(0);
+
+    try {
+      await installUpdate(updateAvailable.update, (event: any) => {
+        switch (event.event) {
+          case "Started":
+            setDownloadProgress(0);
+            break;
+          case "Progress": {
+            const downloaded = Number(event.data?.downloaded ?? 0);
+            const contentLength = Number(event.data?.contentLength ?? 0);
+            const percent = contentLength > 0 ? Math.round((downloaded / contentLength) * 100) : 0;
+            setDownloadProgress(Math.max(0, Math.min(100, percent)));
+            break;
+          }
+          case "Finished":
+            setDownloadProgress(100);
+            break;
+        }
+      });
+    } catch (error) {
+      console.error("업데이트 실패:", error);
+      alert("업데이트 설치 실패: " + (error instanceof Error ? error.message : String(error)));
+      setDownloading(false);
+    }
+  }, [updateAvailable]);
 
   const boot = useCallback(async () => {
     void loadEngineSettings();
@@ -2003,27 +2050,15 @@ function App() {
   }, [boot]);
 
   useEffect(() => {
-    // 앱 실행(프로세스) 당 1회만. 로그인 완료 5초 뒤 자동 확인한다.
+    // 앱 실행(프로세스) 당 1회만. 앱 시작 3초 뒤 백그라운드에서 자동 확인한다.
     // 실제 manifest/서명 검증은 패키지된 Tauri 앱에서만 동작할 수 있다.
-    if (auth !== "in" || updateCheckStartedRef.current) return;
+    if (updateCheckStartedRef.current) return;
     updateCheckStartedRef.current = true;
     const timer = window.setTimeout(() => {
-      void (async () => {
-        const result = await checkForUpdate();
-        if (result.kind !== "available") return;
-        const ok = window.confirm(
-          `업데이트 ${result.version} 버전이 있습니다.\n지금 다운로드·설치하고 앱을 재시작할까요?`,
-        );
-        if (!ok) return;
-        try {
-          await installUpdate(result.update);
-        } catch (e) {
-          window.alert(`업데이트 설치 실패: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      })();
-    }, 5000);
+      void checkForUpdates();
+    }, 3000);
     return () => window.clearTimeout(timer);
-  }, [auth]);
+  }, [checkForUpdates]);
 
   // 앱 로드 시 만기 임박(30일) 계약 수 확인 → 상단 배너
   useEffect(() => {
@@ -2046,7 +2081,7 @@ function App() {
     return <LoginScreen onLogin={boot} />;
   }
   if (needsOnboarding) {
-    return <OnboardingScreen onComplete={() => setNeedsOnboarding(false)} />;
+    return <OnboardingScreen onComplete={() => setNeedsOnboarding(false)} onOllamaInstalled={() => undefined} />;
   }
 
   // 현재 화면(주로 "새 고객"의 던져넣기·보장분석 결과)을 떠나도 되는지 확인.
@@ -2113,6 +2148,35 @@ function App() {
   return (
     <AssistantProvider>
       <div>
+        {showUpdateDialog && updateAvailable && (
+          <div className="update-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+            <div className="update-dialog">
+              <h2 id="update-dialog-title">🎉 새 버전 출시!</h2>
+              <p className="version">
+                v{updateAvailable.update.currentVersion} → v{updateAvailable.version}
+              </p>
+              <p className="message">{updateAvailable.notes || "새로운 기능과 개선 사항이 추가되었습니다."}</p>
+
+              {downloading ? (
+                <div className="download-progress" role="status" aria-live="polite">
+                  <div className="progress-bar" aria-hidden="true">
+                    <div className="progress-fill" style={{ width: `${downloadProgress}%` }} />
+                  </div>
+                  <p>{downloadProgress}% 다운로드 중...</p>
+                </div>
+              ) : (
+                <div className="actions">
+                  <button onClick={downloadAndInstall} className="primary">
+                    지금 업데이트
+                  </button>
+                  <button onClick={() => setShowUpdateDialog(false)} className="secondary">
+                    나중에
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         {(offline || licenseErr) && (
           <div style={{ background: licenseErr ? "#fde8e8" : "#fff7e6", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
             {licenseErr ?? "오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다."}

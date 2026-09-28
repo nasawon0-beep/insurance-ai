@@ -1,10 +1,11 @@
 use futures_util::StreamExt;
+use regex::Regex;
 use serde::Serialize;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Window};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 #[cfg(windows)]
 const WINDOWS_DOWNLOAD_URL: &str =
@@ -13,6 +14,8 @@ const WINDOWS_DOWNLOAD_URL: &str =
 const MACOS_DOWNLOAD_URL: &str =
     "https://github.com/ollama/ollama/releases/download/v0.1.29/Ollama-darwin.zip";
 const PROGRESS_EVENT: &str = "ollama-install-progress";
+const MODEL_PROGRESS_EVENT: &str = "model-download-progress";
+const REQUIRED_MODELS: [&str; 2] = ["bge-m3:latest", "qwen2.5:7b"];
 
 #[derive(Clone, Serialize)]
 struct OllamaInstallProgress {
@@ -33,6 +36,24 @@ impl OllamaInstallProgress {
             message: message.into(),
         }
     }
+}
+
+#[derive(Clone, Serialize)]
+struct ModelDownloadProgress {
+    model: String,
+    status: &'static str,
+    progress: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    downloaded: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<String>,
+    message: String,
+}
+
+struct ProgressInfo {
+    percent: u32,
+    downloaded: String,
+    total: String,
 }
 
 #[derive(Debug)]
@@ -104,6 +125,99 @@ pub async fn check_ollama_installed() -> Result<bool, String> {
             .map(|status| status.success())
             .unwrap_or(false))
     }
+}
+
+#[tauri::command]
+pub async fn check_models_installed() -> Result<Vec<String>, String> {
+    let output = Command::new("ollama")
+        .arg("list")
+        .output()
+        .map_err(|_| "Ollama가 실행되지 않았습니다".to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(map_ollama_error_message(&stderr, "모델 확인 실패"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_installed_models(&stdout))
+}
+
+#[tauri::command]
+pub async fn download_model(model_name: String, window: Window) -> Result<(), String> {
+    emit_model_progress(
+        &window,
+        ModelDownloadProgress {
+            model: model_name.clone(),
+            status: "pulling",
+            progress: 0,
+            downloaded: None,
+            total: None,
+            message: format!("{} 다운로드 시작...", model_name),
+        },
+    )?;
+
+    let mut child = tokio::process::Command::new("ollama")
+        .arg("pull")
+        .arg(&model_name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "Ollama가 실행되지 않았습니다".to_string())?;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    if let Some(stdout) = child.stdout.take() {
+        stream_pull_output(stdout, tx.clone());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        stream_pull_output(stderr, tx.clone());
+    }
+    drop(tx);
+
+    let mut output_lines = Vec::new();
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => {
+                break status.map_err(|error| format!("대기 실패: {error}"))?;
+            }
+            Some(chunk) = rx.recv() => {
+                for line in chunk.split(['\r', '\n']).map(str::trim).filter(|line| !line.is_empty()) {
+                    output_lines.push(line.to_string());
+                    handle_model_pull_line(&window, &model_name, line)?;
+                }
+            }
+        }
+    };
+
+    if !status.success() {
+        let message = map_ollama_error_message(&output_lines.join("\n"), "다운로드 실패");
+        let _ = emit_model_progress(
+            &window,
+            ModelDownloadProgress {
+                model: model_name,
+                status: "error",
+                progress: 0,
+                downloaded: None,
+                total: None,
+                message: message.clone(),
+            },
+        );
+        return Err(message);
+    }
+
+    emit_model_progress(
+        &window,
+        ModelDownloadProgress {
+            model: model_name,
+            status: "completed",
+            progress: 100,
+            downloaded: None,
+            total: None,
+            message: "완료".to_string(),
+        },
+    )?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -297,6 +411,162 @@ fn emit_progress(
         .map_err(|error| OllamaInstallError::UnknownError(error.to_string()))
 }
 
+fn parse_installed_models(stdout: &str) -> Vec<String> {
+    let installed: Vec<&str> = stdout
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+
+    REQUIRED_MODELS
+        .iter()
+        .filter(|model| installed.contains(model))
+        .map(|model| (*model).to_string())
+        .collect()
+}
+
+fn parse_ollama_progress(line: &str) -> Option<ProgressInfo> {
+    let re = Regex::new(r"(\d+)%.*?(\d+\.?\d*)\s*([KMGT]?B)(?:\s*/\s*(\d+\.?\d*)\s*([KMGT]?B))?")
+        .ok()?;
+    let captures = re.captures(line)?;
+    let percent = captures.get(1)?.as_str().parse().ok()?;
+    let downloaded = format!("{}{}", captures.get(2)?.as_str(), captures.get(3)?.as_str());
+    let total = match (captures.get(4), captures.get(5)) {
+        (Some(size), Some(unit)) => format!("{}{}", size.as_str(), unit.as_str()),
+        _ => downloaded.clone(),
+    };
+
+    Some(ProgressInfo {
+        percent,
+        downloaded,
+        total,
+    })
+}
+
+fn stream_pull_output<R>(mut reader: R, sender: tokio::sync::mpsc::UnboundedSender<String>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 1024];
+        let mut pending = Vec::new();
+        loop {
+            let read = match reader.read(&mut buffer).await {
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            if read == 0 {
+                break;
+            }
+
+            for byte in &buffer[..read] {
+                if *byte == b'\r' || *byte == b'\n' {
+                    if !pending.is_empty() {
+                        let line = String::from_utf8_lossy(&pending).to_string();
+                        let _ = sender.send(line);
+                        pending.clear();
+                    }
+                } else {
+                    pending.push(*byte);
+                }
+            }
+        }
+
+        if !pending.is_empty() {
+            let line = String::from_utf8_lossy(&pending).to_string();
+            let _ = sender.send(line);
+        }
+    });
+}
+
+fn handle_model_pull_line(window: &Window, model_name: &str, line: &str) -> Result<(), String> {
+    let normalized = line.replace('\r', "");
+
+    if let Some(progress_info) = parse_ollama_progress(&normalized) {
+        return emit_model_progress(
+            window,
+            ModelDownloadProgress {
+                model: model_name.to_string(),
+                status: "downloading",
+                progress: progress_info.percent,
+                downloaded: Some(progress_info.downloaded.clone()),
+                total: Some(progress_info.total.clone()),
+                message: format!(
+                    "다운로드 중... {} / {}",
+                    progress_info.downloaded, progress_info.total
+                ),
+            },
+        );
+    }
+
+    if normalized.contains("pulling manifest") {
+        return emit_model_progress(
+            window,
+            ModelDownloadProgress {
+                model: model_name.to_string(),
+                status: "pulling",
+                progress: 0,
+                downloaded: None,
+                total: None,
+                message: "manifest 받는 중...".to_string(),
+            },
+        );
+    }
+
+    if normalized.contains("verifying") {
+        return emit_model_progress(
+            window,
+            ModelDownloadProgress {
+                model: model_name.to_string(),
+                status: "verifying",
+                progress: 100,
+                downloaded: None,
+                total: None,
+                message: "검증 중...".to_string(),
+            },
+        );
+    }
+
+    if normalized.contains("success") {
+        return emit_model_progress(
+            window,
+            ModelDownloadProgress {
+                model: model_name.to_string(),
+                status: "completed",
+                progress: 100,
+                downloaded: None,
+                total: None,
+                message: "완료".to_string(),
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn emit_model_progress(window: &Window, payload: ModelDownloadProgress) -> Result<(), String> {
+    window
+        .emit(MODEL_PROGRESS_EVENT, payload)
+        .map_err(|error| format!("진행 이벤트 전송 실패: {error}"))
+}
+
+fn map_ollama_error_message(stderr: &str, default_message: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("no space") || lower.contains("not enough space") {
+        "디스크 공간 부족".to_string()
+    } else if lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+    {
+        "다운로드 실패: 네트워크 확인".to_string()
+    } else if stderr.trim().is_empty() {
+        default_message.to_string()
+    } else {
+        format!("{}: {}", default_message, stderr.trim())
+    }
+}
+
 #[cfg(any(windows, test))]
 fn windows_ollama_path_from_userprofile(userprofile: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(userprofile)
@@ -334,6 +604,51 @@ fn is_disk_space_error(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_installed_models_skips_header_and_reads_names() {
+        let stdout = "NAME              ID          SIZE    MODIFIED\n\
+bge-m3:latest     abc123      600 MB  2 days ago\n\
+qwen2.5:7b        def456      4.7 GB  1 day ago\n";
+
+        assert_eq!(
+            parse_installed_models(stdout),
+            vec!["bge-m3:latest".to_string(), "qwen2.5:7b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_installed_models_only_returns_required_models() {
+        let stdout = "NAME              ID          SIZE    MODIFIED\n\
+qwen2.5:32b      abc123      19 GB   2 days ago\n\
+bge-m3:latest    def456      1.2 GB  1 day ago\n";
+
+        assert_eq!(
+            parse_installed_models(stdout),
+            vec!["bge-m3:latest".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_ollama_progress_reads_partial_download_line() {
+        let info =
+            parse_ollama_progress("pulling 8c17c2940df...  45% ▕███████▌        ▏ 2.1 GB / 4.7 GB")
+                .expect("progress line should parse");
+
+        assert_eq!(info.percent, 45);
+        assert_eq!(info.downloaded, "2.1GB");
+        assert_eq!(info.total, "4.7GB");
+    }
+
+    #[test]
+    fn parse_ollama_progress_uses_downloaded_as_total_when_only_one_size_exists() {
+        let info = parse_ollama_progress("pulling 8c17c2940df... 100% ▕████████████████▏ 4.7 GB")
+            .expect("completed layer line should parse");
+
+        assert_eq!(info.percent, 100);
+        assert_eq!(info.downloaded, "4.7GB");
+        assert_eq!(info.total, "4.7GB");
+    }
 
     #[test]
     fn windows_ollama_path_uses_userprofile() {

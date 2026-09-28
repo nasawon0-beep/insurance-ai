@@ -12,7 +12,8 @@ test("Windows deployment script builds, releases, and updates GitHub Pages metad
   assert.equal(script.startsWith("#!/bin/bash\nset -e"), true);
   assert.match(script, /Usage: \.\/deploy-windows\.sh 2\.3\.0/);
   assert.match(script, /cd desktop[\s\S]*CI=true npm run tauri build/);
-  assert.match(script, /gh release create v\$\{VERSION\}-windows[\s\S]*--title "Windows v\$\{VERSION\}"/);
+  assert.match(script, /PLATFORM="windows"/);
+  assert.match(script, /gh release create v\$\{VERSION\}-\$\{PLATFORM\}[\s\S]*--title "\$\{PLATFORM\^\} v\$\{VERSION\}"/);
   assert.match(script, /cd ~\/insurance-ai-updates/);
   assert.match(script, /api\/windows\.json <<EOF[\s\S]*"version": "\$\{VERSION\}"/);
   assert.match(script, /"url": "\$\{DOWNLOAD_URL\}"/);

@@ -152,6 +152,8 @@ pub fn run() {
             greet,
             ollama::check_ollama_installed,
             ollama::install_ollama,
+            ollama::check_models_installed,
+            ollama::download_model,
         ])
         .setup(|app| {
             let updater_app = app.handle().clone();

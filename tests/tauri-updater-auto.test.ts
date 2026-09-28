@@ -11,19 +11,20 @@ test("Tauri updater is configured for the GitHub Pages update manifest", () => {
 
   assert.match(cargo, /tauri-plugin-updater\s*=\s*"2/);
   assert.deepEqual(config.plugins?.updater?.endpoints, [
-    "https://nasangwon.github.io/insurance-ai-updates/api/windows.json",
+    "https://nasawon0-beep.github.io/insurance-ai-updates/api/windows.json",
   ]);
   assert.equal(config.plugins?.updater?.pubkey, "");
-  assert.equal(config.bundle?.createUpdaterArtifacts, false);
+  assert.equal(config.bundle?.createUpdaterArtifacts, true);
 });
 
-test("desktop startup schedules one updater check after five seconds and asks before install", () => {
+test("desktop startup schedules one updater check after three seconds and shows install dialog", () => {
   const app = read("desktop/src/App.tsx");
   const rust = read("desktop/src-tauri/src/lib.rs");
 
-  assert.match(app, /setTimeout\([\s\S]*5000\)/);
-  assert.match(app, /window\.confirm\([\s\S]*업데이트[\s\S]*설치/);
-  assert.match(app, /installUpdate\(result\.update\)/);
+  assert.match(app, /setTimeout\([\s\S]*3000\)/);
+  assert.match(app, /showUpdateDialog\s*&&\s*updateAvailable/);
+  assert.match(app, /download-progress/);
+  assert.match(app, /installUpdate\(updateAvailable\.update/);
   assert.match(app, /clearTimeout\(timer\)/);
 
   assert.match(rust, /use tauri_plugin_updater::UpdaterExt;/);

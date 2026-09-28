@@ -23,10 +23,9 @@ export async function checkForUpdate(): Promise<UpdateCheck> {
   }
 }
 
-// 성공하면 앱을 재시작하므로 반환되지 않는다. 실패하면 throw.
-export async function installUpdate(update: Update): Promise<never> {
-  await update.downloadAndInstall();
+// 성공하면 앱을 재시작한다. 실패하면 throw.
+export async function installUpdate(update: Update, onEvent?: (event: any) => void): Promise<void> {
+  await update.downloadAndInstall(onEvent);
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
-  throw new Error("relaunch 이후 도달 불가");
 }

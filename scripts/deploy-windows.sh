@@ -24,10 +24,22 @@ CI=true npm run tauri build
 
 echo "📦 GitHub Release 생성 중..."
 cd ..
-gh release create v${VERSION}-windows \
-  desktop/src-tauri/target/release/bundle/msi/*.msi \
-  --title "Windows v${VERSION}" \
-  --notes "$(cat CHANGELOG.md 2>/dev/null || echo '- 보장분석 기능 추가')"
+
+# Mac/Windows 자동 감지
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  # macOS
+  BUNDLE_FILE="desktop/src-tauri/target/release/bundle/dmg/Insurance AI_${VERSION}_aarch64.dmg"
+  PLATFORM="macos"
+else
+  # Windows
+  BUNDLE_FILE="desktop/src-tauri/target/release/bundle/msi/Insurance AI_${VERSION}_x64.msi"
+  PLATFORM="windows"
+fi
+
+gh release create v${VERSION}-${PLATFORM} \
+  "${BUNDLE_FILE}" \
+  --title "${PLATFORM^} v${VERSION}" \
+  --notes "$(cat CHANGELOG.md 2>/dev/null || echo '- 보장분석 기능 추가\n- 자동 업데이트 지원')"
 
 echo "📝 업데이트 정보 갱신 중..."
 cd ~/insurance-ai-updates

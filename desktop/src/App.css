@@ -63,3 +63,104 @@
   display: flex;
   justify-content: center;
 }
+
+.update-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+}
+
+.update-dialog {
+  background: #171717;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.update-dialog h2 {
+  font-size: 24px;
+  margin-bottom: 16px;
+  color: #fafafa;
+}
+
+.update-dialog .version {
+  font-size: 18px;
+  color: #667eea;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.update-dialog .message {
+  color: #a1a1aa;
+  line-height: 1.6;
+  margin-bottom: 24px;
+  white-space: pre-wrap;
+}
+
+.download-progress {
+  margin-bottom: 16px;
+}
+
+.download-progress .progress-bar {
+  height: 8px;
+  background: #27272a;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.download-progress .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  transition: width 0.3s ease;
+}
+
+.download-progress p {
+  text-align: center;
+  color: #a1a1aa;
+  font-size: 14px;
+}
+
+.update-dialog .actions {
+  display: flex;
+  gap: 12px;
+}
+
+.update-dialog button {
+  flex: 1;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.update-dialog button.primary {
+  background: #667eea;
+  color: white;
+}
+
+.update-dialog button.primary:hover {
+  background: #5568d3;
+}
+
+.update-dialog button.secondary {
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+.update-dialog button.secondary:hover {
+  background: #3f3f46;
+}
