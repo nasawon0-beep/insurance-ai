@@ -70,8 +70,11 @@ jobs:
       - name: Upload to Cloudflare R2
         shell: bash
         run: |
-          # Install rclone
-          curl https://rclone.org/install.sh | sudo bash
+          # Install rclone (Windows)
+          curl -O https://downloads.rclone.org/rclone-current-windows-amd64.zip
+          unzip -q rclone-current-windows-amd64.zip
+          RCLONE_DIR=$(find . -name "rclone-v*-windows-amd64" -type d)
+          export PATH="$PWD/$RCLONE_DIR:$PATH"
           
           # Configure rclone for R2
           mkdir -p ~/.config/rclone
