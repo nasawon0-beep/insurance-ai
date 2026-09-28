@@ -68,11 +68,15 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: desktop/src-tauri/target/release/bundle/msi/*.msi
+          files: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/msi/*.msi.zip
+            desktop/src-tauri/target/release/bundle/msi/*.msi.zip.sig
           tag_name: v${{ steps.version.outputs.VERSION }}-windows
           name: Windows v${{ steps.version.outputs.VERSION }}
           body: |
-            - 보장분석 기능
+            - Ollama 자동 설치
+            - AI 모델 자동 다운로드
             - 자동 업데이트 지원
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
