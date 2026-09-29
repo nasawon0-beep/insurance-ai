@@ -1,6 +1,12 @@
 name: Release Build
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version without v prefix (example: 2.2.8)'
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -10,10 +16,30 @@ permissions:
 
 jobs:
   build-windows:
+    if: github.event_name == 'workflow_dispatch' || !endsWith(github.ref_name, '-windows')
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            echo "Use plain semver like 2.2.8. Do not use v2.2.8-windows as a trigger tag." >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved VERSION=$VERSION"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -47,7 +73,7 @@ jobs:
           cp dist/local-engine.exe ../desktop/src-tauri/binaries/local-engine-x86_64-pc-windows-msvc.exe
         shell: bash
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: npm ci
 
       - name: Install desktop dependencies
@@ -55,108 +81,40 @@ jobs:
           cd desktop
           npm ci
 
-      - name: Build Windows
+      - name: Verify app version
+        shell: bash
+        run: |
+          node -e "const p=require('./desktop/package.json'); if (p.version !== '${{ steps.version.outputs.VERSION }}') { console.error('desktop/package.json version mismatch', p.version); process.exit(1); }"
+          node -e "const c=require('./desktop/src-tauri/tauri.conf.json'); if (c.version !== '${{ steps.version.outputs.VERSION }}') { console.error('tauri.conf.json version mismatch', c.version); process.exit(1); }"
+
+      - name: Build Windows signed bundles
         run: |
           cd desktop
           npm run tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Get version
-        id: version
-        shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Upload to Cloudflare R2
-        shell: bash
+      - name: List bundle outputs
+        shell: pwsh
         run: |
-          # Install rclone (Windows)
-          curl -O https://downloads.rclone.org/rclone-current-windows-amd64.zip
-          unzip -q rclone-current-windows-amd64.zip
-          RCLONE_DIR=$(find . -name "rclone-v*-windows-amd64" -type d)
-          export PATH="$PWD/$RCLONE_DIR:$PATH"
-          
-          # Configure rclone for R2
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
-          secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          endpoint = https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          no_check_bucket = true
-          EOF
-          
-          # Upload MSI to R2
-          MSI_FILE=$(ls desktop/src-tauri/target/release/bundle/msi/*.msi | head -1)
-          MSI_FILENAME=$(basename "$MSI_FILE")
-          SIG_FILE="${MSI_FILE}.sig"
-          SIG_FILENAME="${MSI_FILENAME}.sig"
-          
-          rclone copy "$MSI_FILE" r2:${{ secrets.R2_BUCKET_NAME }}/windows/v${{ steps.version.outputs.VERSION }}/ --progress
-          rclone copy "$SIG_FILE" r2:${{ secrets.R2_BUCKET_NAME }}/windows/v${{ steps.version.outputs.VERSION }}/ --progress
-          
-          echo "✅ Uploaded to R2: $MSI_FILENAME"
-          echo "✅ Uploaded to R2: $SIG_FILENAME"
-          echo "📦 Public URL: ${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/$MSI_FILENAME"
+          Get-ChildItem desktop\src-tauri\target\release\bundle -Recurse | Select-Object FullName, Length
 
-      - name: Create Release
+      - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            desktop/src-tauri/target/release/bundle/msi/*.msi
-            desktop/src-tauri/target/release/bundle/msi/*.msi.zip
-            desktop/src-tauri/target/release/bundle/msi/*.msi.zip.sig
           tag_name: v${{ steps.version.outputs.VERSION }}-windows
           name: Windows v${{ steps.version.outputs.VERSION }}
           body: |
-            - Ollama 자동 설치
-            - AI 모델 자동 다운로드
-            - 자동 업데이트 지원
-            
-            **다운로드:**
-            - Cloudflare R2: ${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/Insurance.AI_2.2.0_x64_en-US.msi
+            Windows signed build v${{ steps.version.outputs.VERSION }}
+
+            변경사항:
+            - 실행파일명 Insurance AI.exe 적용
+            - updater endpoint GitHub Pages 사용
+            - Tauri updater 서명 산출물 포함
+          overwrite_files: true
+          files: |
+            desktop/src-tauri/target/release/bundle/msi/*
+            desktop/src-tauri/target/release/bundle/nsis/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  update-metadata:
-    needs: [build-windows]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout updates repo
-        uses: actions/checkout@v4
-        with:
-          repository: nasawon0-beep/insurance-ai-updates
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Update windows.json
-        run: |
-          cat > api/windows.json <<EOF
-          {
-            "platform": "windows",
-            "name": "Windows",
-            "status": "available",
-            "latestVersion": "v${{ steps.version.outputs.VERSION }}",
-            "releaseDate": "$(date +%Y-%m-%d)",
-            "downloadUrl": "${{ secrets.R2_PUBLIC_URL }}/windows/v${{ steps.version.outputs.VERSION }}/Insurance.AI_2.2.0_x64_en-US.msi",
-            "fileName": "Insurance.AI_2.2.0_x64_en-US.msi",
-            "changelog": [
-              "Ollama 자동 설치",
-              "AI 모델 자동 다운로드 (bge-m3, qwen2.5)",
-              "자동 업데이트 지원"
-            ]
-          }
-          EOF
-
-      - name: Commit and push
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add api/*.json
-          git commit -m "Auto-update to v${{ steps.version.outputs.VERSION }}"
-          git push
