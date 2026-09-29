@@ -100,20 +100,30 @@ jobs:
           Get-ChildItem desktop\src-tauri\target\release\bundle -Recurse | Select-Object FullName, Length
 
       - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version.outputs.VERSION }}-windows
-          name: Windows v${{ steps.version.outputs.VERSION }}
-          body: |
-            Windows signed build v${{ steps.version.outputs.VERSION }}
-
-            변경사항:
-            - 실행파일명 Insurance AI.exe 적용
-            - updater endpoint GitHub Pages 사용
-            - Tauri updater 서명 산출물 포함
-          overwrite_files: true
-          files: |
-            desktop/src-tauri/target/release/bundle/msi/*
-            desktop/src-tauri/target/release/bundle/nsis/*
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.VERSION }}-windows"
+          TITLE="Windows v${{ steps.version.outputs.VERSION }}"
+          BODY_FILE="release-body.md"
+
+          cat > "$BODY_FILE" <<'EOF'
+          Windows signed build v${{ steps.version.outputs.VERSION }}
+
+          변경사항:
+          - 실행파일명 Insurance AI.exe 적용
+          - updater endpoint GitHub Pages 사용
+          - Tauri updater 서명 산출물 포함
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$BODY_FILE"
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file "$BODY_FILE" --target "$GITHUB_SHA"
+          fi
+
+          gh release upload "$TAG" \
+            desktop/src-tauri/target/release/bundle/msi/* \
+            desktop/src-tauri/target/release/bundle/nsis/* \
+            --clobber
