@@ -149,6 +149,21 @@ export function logout() {
   [LS.token, LS.user, LS.license, "iai.settings"].forEach((k) => localStorage.removeItem(k));
 }
 
+/** control-server가 뜰 때까지 최대 maxMs 동안 대기 */
+async function waitForControlServer(maxMs = 5000, intervalMs = 500): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${CONTROL_URL}/health`, { method: "GET" });
+      if (res.ok) return true;
+    } catch {
+      // 아직 안 뜸
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
 /** 온라인이면 서버 라이선스, 오프라인이면 저장된 서명 블롭(유예 내) */
 export async function resolveLicense(): Promise<{
   state: LicenseState;
@@ -156,6 +171,8 @@ export async function resolveLicense(): Promise<{
 } | null> {
   let onlineError: unknown = null;
   try {
+    // control-server 준비 대기 (앱 시작 직후 타이밍 문제 방지)
+    await waitForControlServer(5000);
     const lic = await call("/license");
     localStorage.setItem(LS.license, JSON.stringify(lic.signed));
     return { state: lic, offline: false };
