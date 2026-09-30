@@ -8,6 +8,17 @@ type Preview = {
   columns: string[];
   row_count: number;
   sample_rows: Record<string, string>[];
+  auto_mapping?: Record<string, string>;
+  import_analysis?: {
+    header_row?: number | null;
+    data_start_row?: number | null;
+    registrable_count: number;
+    needs_review_count: number;
+    excluded_count: number;
+    excluded_rows: { row: number; reason: string }[];
+    review_rows: { row: number; reason: string }[];
+    column_mapping: Record<string, any>;
+  };
 };
 type Result = {
   encoding: string;
@@ -35,8 +46,8 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 const GUESS: Record<string, RegExp> = {
-  name: /이름|성명|고객명|name/i,
-  phone: /전화|휴대|핸드폰|연락처|phone|mobile|tel/i,
+  name: /이름|성명|성함|고객명|name/i,
+  phone: /전화|휴대|핸드폰|연락처|H\.P|\bHP\b|phone|mobile|tel/i,
   birth_date: /생년월일|생일|birth|dob/i,
   gender: /성별|gender|sex/i,
   email: /이메일|메일|email/i,
@@ -85,9 +96,10 @@ export default function ImportWizard() {
         }
         const p: Preview = await r.json();
         setPreview(p);
-        // 헤더 이름으로 자동 매핑 추정
-        const auto: Record<string, string> = {};
+        // 엔진 자동 매핑 우선, 없으면 헤더 이름으로 추정
+        const auto: Record<string, string> = { ...(p.auto_mapping ?? {}) };
         for (const fld of fields) {
+          if (auto[fld]) continue;
           const hit = p.columns.find((c) => GUESS[fld]?.test(c));
           if (hit) auto[fld] = hit;
         }
@@ -147,6 +159,51 @@ export default function ImportWizard() {
           <div style={{ fontSize: 12, color: "#666" }}>
             인코딩 {preview.encoding} · {preview.row_count}행 · 컬럼 {preview.columns.length}개
           </div>
+          {preview.import_analysis && (
+            <div style={{ marginTop: 8, padding: 8, border: "1px solid #ddd", borderRadius: 6 }}>
+              <b>검수 요약</b>
+              <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>
+                헤더 {preview.import_analysis.header_row ?? "?"}행 · 데이터 시작{" "}
+                {preview.import_analysis.data_start_row ?? "?"}행 · 등록 가능{" "}
+                {preview.import_analysis.registrable_count}명 · 확인 필요{" "}
+                {preview.import_analysis.needs_review_count}행 · 제외{" "}
+                {preview.import_analysis.excluded_count}행
+              </div>
+              {preview.import_analysis.review_rows.length > 0 && (
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ cursor: "pointer", color: "#8a4b00" }}>
+                    확인 필요 행 {preview.import_analysis.review_rows.length}건
+                  </summary>
+                  <ul style={{ margin: "4px 0", fontSize: 12 }}>
+                    {preview.import_analysis.review_rows.slice(0, 10).map((r) => (
+                      <li key={r.row}>{r.row}행: {r.reason}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {preview.import_analysis.excluded_rows.length > 0 && (
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ cursor: "pointer", color: "#666" }}>
+                    제외된 행 {preview.import_analysis.excluded_rows.length}건
+                  </summary>
+                  <ul style={{ margin: "4px 0", fontSize: 12 }}>
+                    {preview.import_analysis.excluded_rows.slice(0, 10).map((r) => (
+                      <li key={r.row}>{r.row}행: {r.reason}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {(preview.import_analysis.column_mapping.policy_candidates?.length > 0 ||
+                preview.import_analysis.column_mapping.memo_candidates?.length > 0) && (
+                <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>
+                  계약/메모 후보: {[
+                    ...(preview.import_analysis.column_mapping.policy_candidates ?? []).map((c: any) => `${c.column}(계약 후보)`),
+                    ...(preview.import_analysis.column_mapping.memo_candidates ?? []).map((c: any) => `${c.column}(메모 후보)`),
+                  ].join(", ")}
+                </div>
+              )}
+            </div>
+          )}
           <table style={{ borderCollapse: "collapse", marginTop: 8 }}>
             <tbody>
               {Object.entries(FIELD_LABELS)
@@ -194,6 +251,33 @@ export default function ImportWizard() {
           <button onClick={commit} disabled={busy} style={{ marginTop: 10, fontWeight: 600 }}>
             {busy ? "가져오는 중…" : "가져오기 실행"}
           </button>
+          {preview.sample_rows.length > 0 && (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer" }}>샘플 미리보기 {preview.sample_rows.length}건</summary>
+              <div style={{ overflowX: "auto", marginTop: 4 }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {preview.columns.slice(0, 10).map((c) => (
+                        <th key={c} style={{ border: "1px solid #ddd", padding: "2px 4px" }}>{c}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.sample_rows.slice(0, 10).map((row, i) => (
+                      <tr key={i}>
+                        {preview.columns.slice(0, 10).map((c) => (
+                          <td key={c} style={{ border: "1px solid #ddd", padding: "2px 4px" }}>
+                            {String(row[c] ?? "")}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
         </div>
       )}
 

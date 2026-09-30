@@ -306,9 +306,9 @@ def classify_column_rule(column_name: str) -> Optional[str]:
     name_lower = column_name.lower().strip()
     
     # 매핑 규칙
-    if any(kw in name_lower for kw in ["이름", "name", "고객명", "성명"]):
+    if any(kw in name_lower for kw in ["이름", "name", "고객명", "성명", "성함"]):
         return "name"
-    if any(kw in name_lower for kw in ["전화", "phone", "연락", "휴대폰", "mobile", "tel"]):
+    if any(kw in name_lower for kw in ["전화", "phone", "연락", "휴대폰", "핸드폰", "h.p", "hp", "mobile", "tel"]):
         return "phone"
     if any(kw in name_lower for kw in ["생년월일", "생일", "birth", "birthday"]):
         return "birth_date"

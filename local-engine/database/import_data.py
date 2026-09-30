@@ -58,6 +58,125 @@ def _validate_headers(headers: list[str]) -> None:
         )
 
 
+_HEADER_KEYWORDS = (
+    "이름", "성함", "성명", "고객명", "name",
+    "전화", "h.p", "hp", "휴대폰", "핸드폰", "mobile", "phone", "tel",
+    "주민번호", "주민등록번호", "rrn",
+    "주소", "address", "직업", "가입회사", "보험사", "가입상품", "상품", "고지사항", "비고", "메모",
+)
+_SUMMARY_ROW_RE = re.compile(r"^(합계|총계|소계|total)$", re.IGNORECASE)
+
+
+def _header_score(values: list[str]) -> int:
+    score = 0
+    for value in values:
+        header = str(value or "").strip().lower()
+        if not header:
+            continue
+        if any(keyword in header for keyword in _HEADER_KEYWORDS):
+            score += 1
+    return score
+
+
+def _unique_xlsx_headers(values: list[str]) -> tuple[list[str], list[int]]:
+    headers: list[str] = []
+    indexes: list[int] = []
+    seen: dict[str, int] = {}
+    for index, value in enumerate(values):
+        header = str(value or "").strip()
+        if not header:
+            continue
+        count = seen.get(header, 0) + 1
+        seen[header] = count
+        headers.append(header if count == 1 else f"{header}_{count}")
+        indexes.append(index)
+    return headers, indexes
+
+
+def _classify_column(header: str) -> tuple[Optional[str], str]:
+    text = str(header or "").strip().lower()
+    if not text:
+        return None, "review"
+    if any(kw in text for kw in ["이름", "성함", "성명", "고객명", "name"]):
+        return "name", "high"
+    if any(kw in text for kw in ["전화", "h.p", "hp", "휴대폰", "핸드폰", "연락", "mobile", "phone", "tel"]):
+        return "phone", "high"
+    if any(kw in text for kw in ["생년월일", "생일", "birth", "dob"]):
+        return "birth_date", "high"
+    if any(kw in text for kw in ["성별", "gender", "sex"]):
+        return "gender", "high"
+    if any(kw in text for kw in ["주소", "address", "addr"]):
+        return "address", "high"
+    if any(kw in text for kw in ["직업", "occupation", "job"]):
+        return "occupation", "high"
+    if any(kw in text for kw in ["가입회사", "보험사", "보험회사", "회사"]):
+        return "policy", "review"
+    if any(kw in text for kw in ["가입상품", "상품", "보장", "보험명"]):
+        return "policy", "review"
+    if any(kw in text for kw in ["고지사항", "비고", "메모", "특이사항", "note", "memo"]):
+        return "memo", "review"
+    return None, "review"
+
+
+def _column_mapping_analysis(cols: list[str]) -> dict:
+    mapping: dict = {"policy_candidates": [], "memo_candidates": [], "needs_review": []}
+    used_fields = set()
+    for col in cols:
+        kind, confidence = _classify_column(col)
+        item = {"column": col, "confidence": confidence}
+        if kind in {"name", "phone", "birth_date", "gender", "address", "occupation"}:
+            if kind not in used_fields:
+                mapping[kind] = item
+                used_fields.add(kind)
+            else:
+                mapping["needs_review"].append({**item, "reason": f"{kind} 후보가 여러 개입니다."})
+        elif kind == "policy":
+            mapping["policy_candidates"].append(item)
+        elif kind == "memo":
+            mapping["memo_candidates"].append(item)
+        else:
+            mapping["needs_review"].append({**item, "reason": "자동 매핑 확신 낮음"})
+    return mapping
+
+
+def _row_values(row: dict) -> list[str]:
+    return [str(v).strip() for v in row.values() if str(v or "").strip()]
+
+
+def _excluded_row_reason(row: dict) -> Optional[str]:
+    values = _row_values(row)
+    if not values:
+        return None
+    first = values[0].strip()
+    if _SUMMARY_ROW_RE.search(first):
+        return f"{first} 행"
+    return None
+
+
+def _preview_analysis(rows: list[dict], cols: list[str], meta: dict) -> dict:
+    column_mapping = _column_mapping_analysis(cols)
+    name_col = (column_mapping.get("name") or {}).get("column")
+    review_rows = []
+    registrable_count = 0
+    for index, row in enumerate(rows):
+        rownum = getattr(row, "source_row", None) or index + 2
+        name = str(row.get(name_col) or "").strip() if name_col else ""
+        if name:
+            registrable_count += 1
+        else:
+            review_rows.append({"row": rownum, "reason": "이름 후보가 비어 있어 확인 필요"})
+    return {
+        "header_row": meta.get("header_row"),
+        "data_start_row": meta.get("data_start_row"),
+        "registrable_count": registrable_count,
+        "needs_review_count": len(review_rows),
+        "excluded_count": len(meta.get("excluded_rows") or []),
+        "excluded_rows": meta.get("excluded_rows") or [],
+        "review_rows": review_rows[:50],
+        "column_mapping": column_mapping,
+    }
+
+
 def decode(raw: bytes) -> tuple[str, str]:
     for enc in _ENCODINGS:
         try:
@@ -68,12 +187,12 @@ def decode(raw: bytes) -> tuple[str, str]:
     return raw.decode("utf-8", "replace"), "utf-8 (일부 손실)"
 
 
-def _rows(text: str) -> list[dict]:
+def _rows(text: str) -> tuple[list[dict], list[str]]:
     reader = csv.DictReader(io.StringIO(text))
-    return list(reader), (reader.fieldnames or [])
+    return list(reader), list(reader.fieldnames or [])
 
 
-def _xlsx_rows(raw: bytes) -> tuple[list[dict], list[str]]:
+def _xlsx_rows(raw: bytes) -> tuple[list[dict], list[str], dict]:
     try:
         workbook = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     except Exception as e:  # noqa: BLE001 — openpyxl/ZIP/XML 형식 오류를 하나로 번역
@@ -82,9 +201,13 @@ def _xlsx_rows(raw: bytes) -> tuple[list[dict], list[str]]:
         if not workbook.worksheets:
             raise _InvalidImport("엑셀 파일에 시트가 없습니다.")
         sheet = workbook.worksheets[0]
-        headers = None
-        rows = []
-        for source_row, raw_values in enumerate(sheet.iter_rows(values_only=True), start=1):
+        all_rows = list(sheet.iter_rows(values_only=True))
+        header_row_index = None
+        header_values = None
+        best_score = 0
+        first_non_empty_index = None
+        first_non_empty_values = None
+        for source_row, raw_values in enumerate(all_rows, start=1):
             numeric = {i for i, v in enumerate(raw_values) if isinstance(v, (int, float)) and not isinstance(v, bool)}
             values = [
                 "" if v is None else v.isoformat()[:10] if isinstance(v, (date, datetime)) else str(v)
@@ -92,14 +215,45 @@ def _xlsx_rows(raw: bytes) -> tuple[list[dict], list[str]]:
             ]
             if not any(values):
                 continue
-            if headers is None:
-                headers = values
-                continue
-            numeric_columns = {headers[i] for i in numeric if i < len(headers)}
-            rows.append(_ParsedRow(zip(headers, values), numeric_columns=numeric_columns, source_row=source_row))
-        if headers is None:
+            if first_non_empty_index is None:
+                first_non_empty_index = source_row
+                first_non_empty_values = values
+            score = _header_score(values)
+            if score > best_score:
+                best_score = score
+                header_row_index = source_row
+                header_values = values
+        if header_values is None:
+            header_row_index = first_non_empty_index
+            header_values = first_non_empty_values
+        if header_values is None or header_row_index is None:
             raise _InvalidImport("엑셀 파일의 첫 시트에 헤더(첫 행)가 없습니다.")
-        return rows, headers
+        headers, header_indexes = _unique_xlsx_headers(header_values)
+        if not headers:
+            raise _InvalidImport("엑셀 파일의 첫 시트에 헤더(첫 행)가 없습니다.")
+        rows = []
+        excluded_rows = []
+        for source_row, raw_values in enumerate(all_rows[header_row_index:], start=header_row_index + 1):
+            values = [
+                "" if v is None else v.isoformat()[:10] if isinstance(v, (date, datetime)) else str(v)
+                for v in raw_values
+            ]
+            if not any(values):
+                continue
+            numeric = {i for i, v in enumerate(raw_values) if isinstance(v, (int, float)) and not isinstance(v, bool)}
+            numeric_columns = {headers[pos] for pos, original_index in enumerate(header_indexes) if original_index in numeric}
+            row = {header: values[original_index] if original_index < len(values) else "" for header, original_index in zip(headers, header_indexes)}
+            excluded_reason = _excluded_row_reason(row)
+            if excluded_reason:
+                excluded_rows.append({"row": source_row, "reason": excluded_reason})
+                continue
+            rows.append(_ParsedRow(row, numeric_columns=numeric_columns, source_row=source_row))
+        data_start_row = getattr(rows[0], "source_row", None) if rows else None
+        return rows, headers, {
+            "header_row": header_row_index,
+            "data_start_row": data_start_row,
+            "excluded_rows": excluded_rows[:50],
+        }
     except _InvalidImport:
         raise
     except Exception as e:  # noqa: BLE001 — 스트리밍 중 발생한 ZIP/XML 오류 포함
@@ -108,26 +262,30 @@ def _xlsx_rows(raw: bytes) -> tuple[list[dict], list[str]]:
         workbook.close()
 
 
-def _parse(raw: bytes, file_format: str) -> tuple[list[dict], list[str], str]:
+def _parse(raw: bytes, file_format: str) -> tuple[list[dict], list[str], str, dict]:
     if file_format == "xlsx":
-        rows, cols = _xlsx_rows(raw)
+        rows, cols, meta = _xlsx_rows(raw)
         enc = "xlsx"
     else:
         text, enc = decode(raw)
         rows, cols = _rows(text)
+        meta = {"header_row": 1, "data_start_row": 2 if rows else None, "excluded_rows": []}
+        if not cols:
+            raise _InvalidImport("파일에 헤더(첫 행)가 없습니다.")
+        _validate_headers(list(cols))
     if not cols:
         raise _InvalidImport("파일에 헤더(첫 행)가 없습니다.")
-    _validate_headers(list(cols))
-    return rows, cols, enc
+    return rows, cols, enc, meta
 
 
 def preview(raw: bytes, sample: int = 5, file_format: str = "csv") -> dict:
-    rows, cols, enc = _parse(raw, file_format)
+    rows, cols, enc, meta = _parse(raw, file_format)
     return {
         "encoding": enc,
         "columns": list(cols),
         "row_count": len(rows),
         "sample_rows": rows[:sample],
+        "import_analysis": _preview_analysis(rows, list(cols), meta),
     }
 
 
@@ -191,7 +349,7 @@ def commit(
     rrn_enabled: bool = False,
     file_format: str = "csv",
 ) -> dict:
-    rows, cols, enc = _parse(raw, file_format)
+    rows, cols, enc, _meta = _parse(raw, file_format)
 
     # 매핑 정리: {고객필드: CSV컬럼}. 값이 실제 컬럼에 있어야 유효.
     field_map = {

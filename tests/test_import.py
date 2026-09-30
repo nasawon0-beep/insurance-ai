@@ -210,6 +210,58 @@ def test_xlsx_preview_and_commit(client):
     assert customer["birth_date"] == "1990-01-02"
 
 
+def test_xlsx_preview_detects_header_after_title_and_uniques_duplicate_columns(client):
+    raw = _xlsx_bytes([
+        [None, None, None, None, None, None, None],
+        [None, None, "고객리스트", None, None, None, None],
+        [None, "성함", "주민번호", "직업", "H.P", "주소", "가입회사", "가입회사"],
+        [1, "테스트고객", "900101-1234567", "직업", "010-1111-2222", "서울", "A보험", "B보험"],
+    ])
+    r = client.post("/import/preview", files={"file": ("book.xlsx", raw, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["columns"] == ["성함", "주민번호", "직업", "H.P", "주소", "가입회사", "가입회사_2"]
+    assert len(body["columns"]) == len(set(body["columns"]))
+    assert body["auto_mapping"]["name"] == "성함"
+    assert body["auto_mapping"]["phone"] == "H.P"
+    assert body["row_count"] == 1
+    analysis = body["import_analysis"]
+    assert analysis["header_row"] == 3
+    assert analysis["data_start_row"] == 4
+    assert analysis["registrable_count"] == 1
+    assert analysis["needs_review_count"] == 0
+    assert analysis["excluded_count"] == 0
+    assert analysis["column_mapping"]["name"]["column"] == "성함"
+    assert analysis["column_mapping"]["phone"]["column"] == "H.P"
+    assert analysis["column_mapping"]["policy_candidates"][0]["column"] == "가입회사"
+    assert analysis["column_mapping"]["policy_candidates"][0]["confidence"] == "review"
+
+
+def test_xlsx_preview_reports_complex_sheet_review_summary(client):
+    raw = _xlsx_bytes([
+        ["2026년 고객 관리대장", None, None, None, None, None, None, None],
+        [None, None, None, None, None, None, None, None],
+        ["번호", "고객명", "핸드폰", "직업", "주소", "가입회사", "가입상품", "고지사항"],
+        [1, "정상고객", "010-1111-2222", "회사원", "서울", "A보험", "종합", "확인"],
+        [2, None, None, None, None, None, None, "메모만 있는 행"],
+        ["합계", None, None, None, None, None, None, None],
+        [3, "전화확인필요", None, "자영업", "부산", "B보험", "운전", None],
+    ])
+    r = client.post("/import/preview", files={"file": ("complex.xlsx", raw, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    analysis = r.json()["import_analysis"]
+    assert analysis["header_row"] == 3
+    assert analysis["data_start_row"] == 4
+    assert analysis["registrable_count"] == 2
+    assert analysis["needs_review_count"] == 1
+    assert analysis["excluded_count"] == 1
+    assert analysis["excluded_rows"][0]["row"] == 6
+    assert "합계" in analysis["excluded_rows"][0]["reason"]
+    assert analysis["review_rows"][0]["row"] == 5
+    assert "이름" in analysis["review_rows"][0]["reason"]
+    assert analysis["column_mapping"]["memo_candidates"][0]["column"] == "고지사항"
+
+
 def test_xlsx_date_cell_is_normalized(client):
     raw = _xlsx_bytes([["이름", "생년월일"], ["날짜고객", datetime(1992, 3, 4, 15, 30)]])
     r = client.post(
@@ -247,12 +299,12 @@ def test_xlsx_other_numeric_phone_is_not_silently_saved(client):
     assert "텍스트로 다시 저장" in r.json()["failed"][0]["reason"]
 
 
-@pytest.mark.parametrize("headers", [["이름", "전화", "전화"], ["이름", None]])
-def test_xlsx_invalid_headers_return_400(client, headers):
+@pytest.mark.parametrize("headers, expected", [(["이름", "전화", "전화"], ["이름", "전화", "전화_2"]), (["이름", None], ["이름"])])
+def test_xlsx_empty_or_duplicate_headers_are_tolerated(client, headers, expected):
     raw = _xlsx_bytes([headers, ["고객", "01011112222", "01022223333"][:len(headers)]])
     r = client.post("/import/preview", files={"file": ("book.xlsx", raw, "application/octet-stream")})
-    assert r.status_code == 400
-    assert "헤더(첫 행)" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+    assert r.json()["columns"] == expected
 
 
 def test_corrupt_xlsx_returns_4xx_for_preview_and_commit(client):
