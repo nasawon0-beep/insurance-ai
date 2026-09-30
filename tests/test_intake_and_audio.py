@@ -424,6 +424,53 @@ def test_capture_text_falls_back_to_rule_parse_when_llm_fails(client, monkeypatc
     assert any("AI 분석 대신 기본 정보만 추출" in w for w in b["items"][0]["warnings"])
 
 
+def test_bulk_falls_back_to_rule_parse_with_rrn_when_llm_fails(client, monkeypatch):
+    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
+    from database import intake
+
+    def fail_llm(*a, **k):
+        raise ConnectionError("ollama unavailable")
+
+    monkeypatch.setattr(intake, "_call_llm", fail_llm)
+
+    r = client.post("/customers/intake/bulk", json={"text": "홍길동 910201-1234567"})
+    assert r.status_code == 200, r.text
+    fields = r.json()["items"][0]["fields"]
+    assert fields["name"] == "홍길동"
+    assert fields["birth_date"] == "1991-02-01"
+    assert fields["gender"] == "M"
+    assert fields["rrn"] == "9102011234567"
+
+
+def test_capture_text_fallback_extracts_phone_and_rrn_when_llm_fails(client, monkeypatch):
+    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
+    from database import intake
+
+    def fail_llm(*a, **k):
+        raise ConnectionError("ollama unavailable")
+
+    monkeypatch.setattr(intake, "_call_llm", fail_llm)
+
+    r = client.post("/capture", data={"text": "홍길동 01012345678 910201-1234567"})
+    assert r.status_code == 200, r.text
+    fields = r.json()["items"][0]["fields"]
+    assert fields["name"] == "홍길동"
+    assert fields["phone"] == "010-1234-5678"
+    assert fields["birth_date"] == "1991-02-01"
+    assert fields["gender"] == "M"
+    assert fields["rrn"] == "9102011234567"
+
+
+def test_capture_xlsx_guides_user_to_import_wizard(client):
+    r = client.post(
+        "/capture",
+        files={"file": ("customers.xlsx", b"not-a-text-file\x00\xff", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert r.status_code == 415
+    assert "엑셀 파일(.xlsx)은 여기서 지원하지 않습니다" in r.json()["detail"]
+    assert "고객 목록" in r.json()["detail"] and "일괄 등록" in r.json()["detail"]
+
+
 def test_capture_text_multiple(client, monkeypatch):
     cid = client.post("/customers", json={"name": "기존", "phone": "010-3434-5656"}).json()["id"]
     _mock_bulk(monkeypatch, [

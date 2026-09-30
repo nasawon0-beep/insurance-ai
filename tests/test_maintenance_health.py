@@ -31,6 +31,20 @@ def _health(main):
     return TestClient(main.app).get("/health")
 
 
+def test_api_secret_allows_windows_webview_null_origin(maintenance_env):
+    main, _ = maintenance_env
+    response = TestClient(main.app).get("/api-secret", headers={"Origin": "null"})
+    assert response.status_code == 200
+    assert response.json()["secret"]
+
+
+def test_api_secret_allows_native_clients_without_origin(maintenance_env):
+    main, _ = maintenance_env
+    response = TestClient(main.app).get("/api-secret")
+    assert response.status_code == 200
+    assert response.json()["secret"]
+
+
 def test_backup_failure_is_reported_and_health_stays_up(maintenance_env, monkeypatch):
     main, dbp = maintenance_env
     from database import backup

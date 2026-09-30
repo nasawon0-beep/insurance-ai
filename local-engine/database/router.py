@@ -444,6 +444,11 @@ def _pdf_extract_text(data: bytes, max_pages: int = 16) -> str:
 
 def _document_to_text(data: bytes, filename: Optional[str], kind: str) -> str:
     """PDF/텍스트 파일 바이트 → 평문 (고객정보 추출용). 오디오는 여기 오지 않는다."""
+    if os.path.splitext((filename or "").lower())[1] in {".xlsx", ".xls"}:
+        raise HTTPException(
+            status_code=415,
+            detail="엑셀 파일(.xlsx)은 여기서 지원하지 않습니다. 상단 '고객 목록' → '일괄 등록' 메뉴를 이용해 주세요.",
+        )
     if kind == "pdf":
         try:
             text_joined = _pdf_extract_text(data)

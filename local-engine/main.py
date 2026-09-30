@@ -58,6 +58,8 @@ ALLOWED_ORIGINS = [
     "http://tauri.localhost",
     "https://tauri.localhost",
     "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "null",
 ]
 
 
@@ -357,7 +359,8 @@ OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 
 @app.get("/api-secret")
 def api_secret(request: Request):
-    if request.headers.get("origin") not in ALLOWED_ORIGINS:
+    origin = request.headers.get("origin")
+    if origin not in (None, *ALLOWED_ORIGINS):
         return JSONResponse(status_code=403, content={"detail": "Forbidden origin"})
     return {"secret": API_SECRET}
 

@@ -23,7 +23,7 @@ _RRN_IN_TEXT = re.compile(r"\b(\d{6})[-\s]?(\d{7})\b")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PHONE_IN_TEXT = re.compile(r"(?<!\d)(01[016-9])[-\s.]?(\d{3,4})[-\s.]?(\d{4})(?!\d)")
 _KOREAN_NAME = re.compile(r"^[가-힣]{2,5}$")
-_FALLBACK_WARNING = "AI 분석 대신 기본 정보만 추출했습니다. 저장 전에 이름·전화번호를 확인하세요."
+_FALLBACK_WARNING = "AI 분석 대신 기본 정보만 추출했습니다. 저장 전에 내용을 확인하세요."
 
 
 def _rrn_from_source(fields: dict, source_text: Optional[str]) -> None:
@@ -115,7 +115,7 @@ def _fallback_name_from_segment(segment: str) -> Optional[str]:
 def _fallback_extract_multiple(text: str) -> list[dict]:
     """Ollama 없이도 처리 가능한 최소 안전망.
 
-    단순한 `이름 전화번호` / `이름 전화번호 메모` 입력은 모델 호출 전후 상태와 무관하게
+    단순한 `이름 전화번호`, `이름 주민번호`, `이름 전화번호 주민번호` 입력은 모델 호출 전후 상태와 무관하게
     미리보기할 수 있어야 한다. 주민번호 등 민감값은 기존 `_normalize` 정책을 그대로 거친다.
     """
     source = (text or "").strip()
@@ -123,27 +123,33 @@ def _fallback_extract_multiple(text: str) -> list[dict]:
         return []
 
     rows: list[dict] = []
-    seen: set[tuple[Optional[str], Optional[str]]] = set()
+    seen: set[tuple[Optional[str], Optional[str], Optional[str]]] = set()
     chunks = [c.strip() for c in re.split(r"[\n;]+", source) if c.strip()] or [source]
     for chunk in chunks:
-        matches = list(_PHONE_IN_TEXT.finditer(chunk))
-        if not matches:
+        phone_match = _PHONE_IN_TEXT.search(chunk)
+        rrn_match = _RRN_IN_TEXT.search(chunk)
+        if not phone_match and not rrn_match:
             continue
-        for match in matches:
-            phone = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
-            name = _fallback_name_from_segment(chunk)
-            if not name:
-                continue
-            memo = _PHONE_IN_TEXT.sub(" ", chunk)
-            memo = memo.replace(name, " ", 1).strip(" ,·\n\t") or None
-            raw = _empty_fields()
-            raw.update({"name": name, "phone": phone, "memo": memo})
-            normalized = _normalize(raw, chunk)
-            normalized.setdefault("warnings", []).append(_FALLBACK_WARNING)
-            key = (normalized["fields"].get("name"), normalized["fields"].get("phone"))
-            if key not in seen:
-                seen.add(key)
-                rows.append(normalized)
+        name = _fallback_name_from_segment(chunk)
+        if not name:
+            continue
+        phone = f"{phone_match.group(1)}-{phone_match.group(2)}-{phone_match.group(3)}" if phone_match else None
+        rrn = (rrn_match.group(1) + rrn_match.group(2)) if rrn_match else None
+        memo = _PHONE_IN_TEXT.sub(" ", chunk)
+        memo = _RRN_IN_TEXT.sub(" ", memo)
+        memo = memo.replace(name, " ", 1).strip(" ,·\n\t") or None
+        raw = _empty_fields()
+        raw.update({"name": name, "phone": phone, "rrn": rrn, "memo": memo})
+        normalized = _normalize(raw, chunk)
+        normalized.setdefault("warnings", []).append(_FALLBACK_WARNING)
+        key = (
+            normalized["fields"].get("name"),
+            normalized["fields"].get("phone"),
+            normalized["fields"].get("rrn"),
+        )
+        if key not in seen:
+            seen.add(key)
+            rows.append(normalized)
     return rows
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
