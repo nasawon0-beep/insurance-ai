@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
-use tauri_plugin_updater::UpdaterExt;
+
 
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
@@ -141,6 +141,87 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn spawn_local_engine(
+    app: &tauri::AppHandle,
+    config_dir: &Path,
+    data_dir: &Path,
+    lock_path_str: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = app.state::<SidecarChildren>();
+    if state
+        .local_engine
+        .lock()
+        .expect("local-engine child lock")
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let (mut engine_events, engine_child) = app
+        .shell()
+        .sidecar("local-engine")?
+        .env("CUSTOMER_DB_PATH", data_dir.join("customers.sqlite3"))
+        .env("RAG_DB_PATH", data_dir.join("rag-index.sqlite3"))
+        .env("WHISPER_MODEL_DIR", data_dir.join("whisper-models"))
+        .env("CUSTOMER_DB_KEYFILE", config_dir.join("customer-db.key"))
+        // whisper 모델(1.5GB+)은 부팅 시 받지 않는다 — 첫 STT 사용 시 자체 UI 로 다운로드
+        .env("WHISPER_PREWARM", "0")
+        // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
+        .env("APP_LOCK_FILE", lock_path_str)
+        .spawn()?;
+    #[cfg(windows)]
+    if let Some(sidecar_job) = app.try_state::<SidecarJob>() {
+        sidecar_job.assign(engine_child.pid())?;
+    }
+    *state
+        .local_engine
+        .lock()
+        .expect("local-engine child lock") = Some(engine_child);
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = engine_events.recv().await {
+            match event {
+                CommandEvent::Stdout(l) | CommandEvent::Stderr(l) => {
+                    eprintln!("[local-engine] {}", String::from_utf8_lossy(&l).trim_end())
+                }
+                CommandEvent::Terminated(p) => {
+                    eprintln!(
+                        "[local-engine] 종료됨 code={:?} signal={:?}",
+                        p.code, p.signal
+                    );
+                    if let Some(state) = app_handle.try_state::<SidecarChildren>() {
+                        let _ = state
+                            .local_engine
+                            .lock()
+                            .expect("local-engine child lock")
+                            .take();
+                    }
+                }
+                CommandEvent::Error(e) => eprintln!("[local-engine] 오류: {e}"),
+                _ => {}
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn ensure_local_engine(app: tauri::AppHandle) -> Result<(), String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("설정 폴더 확인 실패: {e}"))?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("데이터 폴더 확인 실패: {e}"))?;
+    fs::create_dir_all(&data_dir).map_err(|e| format!("데이터 폴더 생성 실패: {e}"))?;
+    let lock_path_str = data_dir.join("app.lock").to_string_lossy().into_owned();
+    spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str)
+        .map_err(|e| format!("local-engine 시작 실패: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -154,6 +235,7 @@ pub fn run() {
             ollama::install_ollama,
             ollama::check_models_installed,
             ollama::download_model,
+            ensure_local_engine,
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
@@ -188,6 +270,8 @@ pub fn run() {
                 .spawn()?;
             #[cfg(windows)]
             sidecar_job.assign(child.pid())?;
+            #[cfg(windows)]
+            app.manage(sidecar_job);
             // sidecar 출력을 앱 stderr 로 흘려 진단 가능하게 하고 조기 종료를 표면화한다.
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = events.recv().await {
@@ -207,41 +291,11 @@ pub fn run() {
                     }
                 }
             });
-            let (mut engine_events, engine_child) = app
-                .shell()
-                .sidecar("local-engine")?
-                .env("CUSTOMER_DB_PATH", data_dir.join("customers.sqlite3"))
-                .env("RAG_DB_PATH", data_dir.join("rag-index.sqlite3"))
-                .env("WHISPER_MODEL_DIR", data_dir.join("whisper-models"))
-                .env("CUSTOMER_DB_KEYFILE", config_dir.join("customer-db.key"))
-                // whisper 모델(1.5GB+)은 부팅 시 받지 않는다 — 첫 STT 사용 시 자체 UI 로 다운로드
-                .env("WHISPER_PREWARM", "0")
-                // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
-                .env("APP_LOCK_FILE", &lock_path_str)
-                .spawn()?;
-            #[cfg(windows)]
-            sidecar_job.assign(engine_child.pid())?;
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = engine_events.recv().await {
-                    match event {
-                        CommandEvent::Stdout(l) | CommandEvent::Stderr(l) => {
-                            eprintln!("[local-engine] {}", String::from_utf8_lossy(&l).trim_end())
-                        }
-                        CommandEvent::Terminated(p) => eprintln!(
-                            "[local-engine] 종료됨 code={:?} signal={:?}",
-                            p.code, p.signal
-                        ),
-                        CommandEvent::Error(e) => eprintln!("[local-engine] 오류: {e}"),
-                        _ => {}
-                    }
-                }
-            });
             app.manage(SidecarChildren {
                 control_server: Mutex::new(Some(child)),
-                local_engine: Mutex::new(Some(engine_child)),
+                local_engine: Mutex::new(None),
             });
-            #[cfg(windows)]
-            app.manage(sidecar_job);
+            spawn_local_engine(app.handle(), &config_dir, &data_dir, &lock_path_str)?;
             Ok(())
         })
         .build(tauri::generate_context!())

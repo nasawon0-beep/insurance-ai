@@ -27,6 +27,20 @@ test("desktop startup schedules one updater check after three seconds and shows 
   assert.match(app, /installUpdate\(updateAvailable\.update/);
   assert.match(app, /clearTimeout\(timer\)/);
 
-  assert.match(rust, /use tauri_plugin_updater::UpdaterExt;/);
   assert.match(rust, /tauri_plugin_updater::Builder::new\(\)\.build\(\)/);
+});
+
+test("onboarding completion reconnects local-engine without manual app restart", () => {
+  const app = read("desktop/src/App.tsx");
+  const rust = read("desktop/src-tauri/src/lib.rs");
+
+  assert.match(app, /finishOnboardingAndConnectEngine/);
+  assert.match(app, /엔진 연결 중/);
+  assert.match(app, /invoke\("ensure_local_engine"\)/);
+  assert.match(app, /engineFetch\("\/health"\)/);
+  assert.match(app, /앱 재시작/);
+
+  assert.match(rust, /ensure_local_engine/);
+  assert.match(rust, /tauri::generate_handler!\[[\s\S]*ensure_local_engine/);
+  assert.match(rust, /local_engine[\s\S]*\.lock\(\)/);
 });

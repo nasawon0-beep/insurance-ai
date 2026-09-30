@@ -23,6 +23,7 @@ import {
 } from "./auth";
 import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
+import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
@@ -1980,6 +1981,7 @@ function App() {
   const [updateAvailable, setUpdateAvailable] = useState<Extract<UpdateCheck, { kind: "available" }> | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [engineReconnect, setEngineReconnect] = useState<{ status: "idle" | "connecting" | "error"; error?: string }>({ status: "idle" });
   // CustomersScreen 은 탭 전환("새 고객"↔"고객 목록"↔"AI 문의" 등) 때마다 통째로
   // unmount/mount 되므로, 미저장 분석 초안·분석 진행 여부는 그 화면이 직접 올려보낸 값을 여기서 지킨다.
   // hasDraft(확인 후 이동 가능)와 isAnalyzing(이동 자체를 막음)을 분리해, 내부 목록 이동 가드
@@ -2054,6 +2056,47 @@ function App() {
     setAuth("in");
   }, []);
 
+  const waitForEngineHealth = useCallback(async () => {
+    let lastError = "local-engine 연결 확인 실패";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        const response = await engineFetch("/health");
+        if (response.ok) {
+          const health = await response.json();
+          if (health?.local_engine === "ok") return;
+          lastError = `local-engine 상태: ${health?.local_engine ?? "unknown"}`;
+        } else {
+          lastError = `local-engine health HTTP ${response.status}`;
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error(lastError);
+  }, []);
+
+  const finishOnboardingAndConnectEngine = useCallback(async () => {
+    setNeedsOnboarding(false);
+    setEngineReconnect({ status: "connecting" });
+    try {
+      await invoke("ensure_local_engine");
+      await waitForEngineHealth();
+      void loadEngineSettings();
+      setEngineReconnect({ status: "idle" });
+    } catch (error) {
+      setEngineReconnect({
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [waitForEngineHealth]);
+
+  const relaunchApp = useCallback(async () => {
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    await relaunch();
+  }, []);
+
   useEffect(() => {
     boot();
   }, [boot]);
@@ -2090,7 +2133,29 @@ function App() {
     return <LoginScreen onLogin={boot} />;
   }
   if (needsOnboarding) {
-    return <OnboardingScreen onComplete={() => setNeedsOnboarding(false)} onOllamaInstalled={() => undefined} />;
+    return <OnboardingScreen onComplete={() => void finishOnboardingAndConnectEngine()} onOllamaInstalled={() => undefined} />;
+  }
+  if (engineReconnect.status !== "idle") {
+    return (
+      <div style={{ maxWidth: 520, margin: "80px auto", padding: 24, textAlign: "center" }}>
+        {engineReconnect.status === "connecting" ? (
+          <>
+            <h2>엔진 연결 중…</h2>
+            <p style={{ color: "#666" }}>초기 설정을 반영하고 local-engine 연결을 확인하고 있습니다.</p>
+          </>
+        ) : (
+          <>
+            <h2>local-engine 연결 실패</h2>
+            <p style={{ color: "#b00" }}>{engineReconnect.error ?? "엔진 연결을 확인할 수 없습니다."}</p>
+            <p style={{ color: "#666" }}>다시 연결을 먼저 시도해 주세요. 계속 실패하면 앱 재시작을 실행할 수 있습니다.</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={() => void finishOnboardingAndConnectEngine()}>다시 연결</button>
+              <button onClick={() => void relaunchApp()}>앱 재시작</button>
+            </div>
+          </>
+        )}
+      </div>
+    );
   }
 
   // 현재 화면(주로 "새 고객"의 던져넣기·보장분석 결과)을 떠나도 되는지 확인.
