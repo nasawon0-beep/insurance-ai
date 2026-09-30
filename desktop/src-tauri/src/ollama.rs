@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use regex::Regex;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Window};
@@ -103,9 +103,7 @@ impl OllamaInstallError {
 pub async fn check_ollama_installed() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        return Ok(std::env::var("USERPROFILE")
-            .map(|userprofile| windows_ollama_path_from_userprofile(&userprofile).exists())
-            .unwrap_or(false));
+        return Ok(resolve_ollama_executable().is_some());
     }
 
     #[cfg(target_os = "macos")]
@@ -129,10 +127,7 @@ pub async fn check_ollama_installed() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn check_models_installed() -> Result<Vec<String>, String> {
-    let output = Command::new("ollama")
-        .arg("list")
-        .output()
-        .map_err(|_| "Ollama가 실행되지 않았습니다".to_string())?;
+    let output = ensure_ollama_ready().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -145,6 +140,8 @@ pub async fn check_models_installed() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn download_model(model_name: String, window: Window) -> Result<(), String> {
+    ensure_ollama_ready().await?;
+
     emit_model_progress(
         &window,
         ModelDownloadProgress {
@@ -157,7 +154,8 @@ pub async fn download_model(model_name: String, window: Window) -> Result<(), St
         },
     )?;
 
-    let mut child = tokio::process::Command::new("ollama")
+    let ollama = ollama_executable_for_command();
+    let mut child = tokio::process::Command::new(&ollama)
         .arg("pull")
         .arg(&model_name)
         .stdout(Stdio::piped())
@@ -277,7 +275,8 @@ async fn install_ollama_windows(window: &Window) -> Result<(), OllamaInstallErro
         tokio::process::Command::new(&installer_path).arg("/S"),
         "Ollama 설치 중...",
     )
-    .await
+    .await?;
+    wait_for_ollama_executable(window).await
 }
 
 #[cfg(target_os = "macos")]
@@ -550,6 +549,89 @@ fn emit_model_progress(window: &Window, payload: ModelDownloadProgress) -> Resul
         .map_err(|error| format!("진행 이벤트 전송 실패: {error}"))
 }
 
+async fn ensure_ollama_ready() -> Result<std::process::Output, String> {
+    match run_ollama_list().await {
+        Ok(output) if output.status.success() => return Ok(output),
+        Ok(_) | Err(_) => {}
+    }
+
+    start_ollama_server().await?;
+
+    let mut last_error = "Ollama가 실행되지 않았습니다".to_string();
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        match run_ollama_list().await {
+            Ok(output) if output.status.success() => return Ok(output),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                last_error = map_ollama_error_message(&stderr, "Ollama 준비 대기 중");
+            }
+            Err(error) => last_error = error,
+        }
+    }
+
+    Err(last_error)
+}
+
+async fn run_ollama_list() -> Result<std::process::Output, String> {
+    let ollama = ollama_executable_for_command();
+    tokio::process::Command::new(&ollama)
+        .arg("list")
+        .output()
+        .await
+        .map_err(|_| "Ollama 실행 파일을 찾을 수 없습니다".to_string())
+}
+
+async fn start_ollama_server() -> Result<(), String> {
+    let ollama = ollama_executable_for_command();
+    tokio::process::Command::new(&ollama)
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Ollama 서버를 시작할 수 없습니다".to_string())
+}
+
+fn ollama_executable_for_command() -> PathBuf {
+    resolve_ollama_executable().unwrap_or_else(|| PathBuf::from("ollama"))
+}
+
+fn resolve_ollama_executable() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let localappdata = std::env::var("LOCALAPPDATA").ok();
+        let userprofile = std::env::var("USERPROFILE").ok();
+        if let Some(path) = windows_ollama_path_candidates(localappdata.as_deref(), userprofile.as_deref())
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            return Some(path);
+        }
+    }
+
+    command_exists("ollama").then(|| PathBuf::from("ollama"))
+}
+
+#[cfg(windows)]
+async fn wait_for_ollama_executable(window: &Window) -> Result<(), OllamaInstallError> {
+    for _ in 0..60 {
+        if resolve_ollama_executable().is_some() {
+            emit_progress(
+                window,
+                OllamaInstallProgress::progress("installing", 99, "Ollama 실행 파일 확인 완료"),
+            )?;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    Err(OllamaInstallError::UnknownError(
+        "설치 후 Ollama 실행 파일을 찾을 수 없습니다".to_string(),
+    ))
+}
+
 fn map_ollama_error_message(stderr: &str, default_message: &str) -> String {
     let lower = stderr.to_lowercase();
     if lower.contains("no space") || lower.contains("not enough space") {
@@ -568,15 +650,47 @@ fn map_ollama_error_message(stderr: &str, default_message: &str) -> String {
 }
 
 #[cfg(any(windows, test))]
-fn windows_ollama_path_from_userprofile(userprofile: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(userprofile)
-        .join(".ollama")
-        .join("ollama.exe")
+fn windows_ollama_path_candidates(localappdata: Option<&str>, userprofile: Option<&str>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(localappdata) = localappdata.filter(|value| !value.trim().is_empty()) {
+        push_unique_path(
+            &mut paths,
+            PathBuf::from(localappdata)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+    if let Some(userprofile) = userprofile.filter(|value| !value.trim().is_empty()) {
+        let userprofile = PathBuf::from(userprofile);
+        push_unique_path(
+            &mut paths,
+            userprofile
+                .join("AppData")
+                .join("Local")
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+        push_unique_path(&mut paths, userprofile.join(".ollama").join("ollama.exe"));
+    }
+    paths
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, test))]
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
 fn command_exists(command: &str) -> bool {
-    Command::new("which")
+    #[cfg(windows)]
+    let checker = "where";
+    #[cfg(not(windows))]
+    let checker = "which";
+
+    Command::new(checker)
         .arg(command)
         .status()
         .map(|status| status.success())
@@ -651,20 +765,41 @@ bge-m3:latest    def456      1.2 GB  1 day ago\n";
     }
 
     #[test]
-    fn windows_ollama_path_uses_userprofile() {
-        let path = windows_ollama_path_from_userprofile("C:\\Users\\tester");
+    fn windows_ollama_path_candidates_include_real_installer_locations_before_legacy_path() {
+        let paths = windows_ollama_path_candidates(
+            Some("D:\\OllamaLocal"),
+            Some("C:\\Users\\tester"),
+        );
 
         assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some("ollama.exe")
+            paths,
+            vec![
+                std::path::PathBuf::from("D:\\OllamaLocal")
+                    .join("Programs")
+                    .join("Ollama")
+                    .join("ollama.exe"),
+                std::path::PathBuf::from("C:\\Users\\tester")
+                    .join("AppData")
+                    .join("Local")
+                    .join("Programs")
+                    .join("Ollama")
+                    .join("ollama.exe"),
+                std::path::PathBuf::from("C:\\Users\\tester")
+                    .join(".ollama")
+                    .join("ollama.exe"),
+            ]
         );
-        assert_eq!(
-            path.parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str()),
-            Some(".ollama")
+    }
+
+    #[test]
+    fn windows_ollama_path_candidates_deduplicate_localappdata_and_userprofile_paths() {
+        let paths = windows_ollama_path_candidates(
+            Some("C:\\Users\\tester\\AppData\\Local"),
+            Some("C:\\Users\\tester"),
         );
-        assert!(path.starts_with("C:\\Users\\tester"));
+
+        let unique: std::collections::HashSet<_> = paths.iter().collect();
+        assert_eq!(unique.len(), paths.len());
     }
 
     #[test]

@@ -1533,7 +1533,13 @@ function PilotTools() {
   );
 }
 
-function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }) {
+function DiagnosticsScreen({
+  onOpenCustomer,
+  onRestartOnboarding,
+}: {
+  onOpenCustomer: (id: string) => void;
+  onRestartOnboarding: () => void;
+}) {
   const [d, setD] = useState<Record<string, any> | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [lic, setLic] = useState<Record<string, any> | null>(null);
@@ -1731,6 +1737,9 @@ function DiagnosticsScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) =>
             {kv("Local Engine", d.engine?.local_engine ?? "-")}
             {kv("Ollama", d.engine?.ollama === "connected" ? "연결됨 ✅" : "연결 안됨 ❌")}
             {kv("모델", (d.engine?.models ?? []).join(", ") || "-")}
+            <button onClick={onRestartOnboarding} style={{ marginTop: 8 }}>
+              Ollama/AI 모델 초기 설정 다시 실행
+            </button>
           </div>
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>고객 DB 암호화</b></div>
@@ -2234,7 +2243,17 @@ function App() {
         )}
         {view === "coverage" && <CoverageAnalysisScreen />}
         {view === "assistant" && <AssistantScreen onOpenCustomer={openCustomer} />}
-        {view === "diagnostics" && <DiagnosticsScreen onOpenCustomer={openCustomer} />}
+        {view === "diagnostics" && (
+          <DiagnosticsScreen
+            onOpenCustomer={openCustomer}
+            onRestartOnboarding={() => {
+              localStorage.removeItem("iai.ollamaOnboardingDone");
+              localStorage.removeItem("iai.ollamaOnboardingSkipped");
+              localStorage.removeItem("iai.modelOnboardingSkipped");
+              setNeedsOnboarding(true);
+            }}
+          />
+        )}
       </div>
     </AssistantProvider>
   );
