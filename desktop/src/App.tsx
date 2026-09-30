@@ -26,6 +26,7 @@ import ImportWizard from "./ImportWizard";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch } from "./engine";
+import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
 
 type EngineStatus = {
@@ -326,9 +327,8 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
         headers,
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-        throw new Error("local-engine에 연결할 수 없습니다. 잠시 후 다시 분석하거나 앱 재시작을 시도해 주세요.");
+      if (isFetchNetworkError(e)) {
+        throw new Error(formatLocalEngineNetworkError(e));
       }
       throw e;
     }

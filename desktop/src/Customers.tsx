@@ -14,6 +14,7 @@ import { parseCoverageJson } from "./coverageRows";
 import { track } from "./usage";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
+import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { totalMonthlyPremium, expiringCount } from "./customerKpi";
 import { policyProgressPct } from "./policyProgress";
 import { computeMergeRows, memoAppend, type MergeRow } from "./mergeDiff";
@@ -199,9 +200,8 @@ async function api(path: string, init?: RequestInit) {
       ...init,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-      throw new Error("local-engine에 연결할 수 없습니다. 잠시 후 다시 분석하거나 앱 재시작을 시도해 주세요.");
+    if (isFetchNetworkError(e)) {
+      throw new Error(formatLocalEngineNetworkError(e));
     }
     throw e;
   }
@@ -220,6 +220,26 @@ const inputStyle: React.CSSProperties = {
   color: "var(--color-text-primary)",
   border: "1px solid var(--color-border-default)",
   borderRadius: 4,
+};
+const quickRegistrationPrimaryButtonStyle: React.CSSProperties = {
+  padding: "10px 18px",
+  background: "var(--primary-600)",
+  color: "#fff",
+  border: "1px solid var(--primary-600)",
+  borderRadius: 8,
+  fontWeight: 700,
+  fontSize: 14,
+  cursor: "pointer",
+};
+const quickRegistrationSecondaryButtonStyle: React.CSSProperties = {
+  padding: "10px 18px",
+  background: "var(--color-bg-surface)",
+  color: "var(--color-text-primary)",
+  border: "1px solid var(--color-border-default)",
+  borderRadius: 8,
+  fontWeight: 600,
+  fontSize: 14,
+  cursor: "pointer",
 };
 const badge = (bg: string): React.CSSProperties => ({
   background: bg,
@@ -1430,15 +1450,15 @@ export default function CustomersScreen({
                       onChange={(e) => setIntakeContext(e.target.value)}
                       autoFocus
                     />
-                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
                       <button
                         onClick={() => analyzeFile(stagedIntake)}
                         disabled={audioIntakeBusy}
-                        style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "1px solid var(--color-border-default)", borderRadius: 5, padding: "6px 16px" }}
+                        style={quickRegistrationPrimaryButtonStyle}
                       >
                         {audioIntakeBusy ? "분석 중…" : "이 파일 분석"}
                       </button>
-                      <button onClick={() => { setStagedIntake(null); setIntakeContext(""); }} disabled={audioIntakeBusy}>
+                      <button onClick={() => { setStagedIntake(null); setIntakeContext(""); }} disabled={audioIntakeBusy} style={quickRegistrationSecondaryButtonStyle}>
                         취소
                       </button>
                     </div>
@@ -1455,11 +1475,11 @@ export default function CustomersScreen({
                   value={intakeText}
                   onChange={(e) => setIntakeText(e.target.value)}
                 />
-                <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-                  <button onClick={parseIntake} disabled={intakeBusy || audioIntakeBusy}>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <button onClick={parseIntake} disabled={intakeBusy || audioIntakeBusy} style={quickRegistrationPrimaryButtonStyle}>
                     {intakeBusy ? "분석 중... (~30초)" : "분석"}
                   </button>
-                  <button onClick={pickIntakeFile} disabled={intakeBusy || audioIntakeBusy}>
+                  <button onClick={pickIntakeFile} disabled={intakeBusy || audioIntakeBusy} style={quickRegistrationSecondaryButtonStyle}>
                     {audioIntakeBusy ? "분석 중…" : "📎 파일 선택 (녹취·PDF·텍스트)"}
                   </button>
                   {pendingConsult != null && (

@@ -4,6 +4,7 @@
 import { CONTROL_URL } from "./config";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
+import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature";
 
 export { CONTROL_URL };
@@ -56,13 +57,21 @@ export function deviceId(): string {
 }
 
 async function call(path: string, init?: RequestInit) {
-  const res = await fetch(`${CONTROL_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
-    },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${CONTROL_URL}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+      },
+      ...init,
+    });
+  } catch (e) {
+    if (isFetchNetworkError(e)) {
+      throw new Error(formatControlServerNetworkError(e));
+    }
+    throw e;
+  }
   if (!res.ok) {
     const b = await res.json().catch(() => null);
     throw new Error(formatErrorDetail(b?.detail) ?? `HTTP ${res.status}`);

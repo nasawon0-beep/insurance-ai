@@ -166,6 +166,17 @@ test("home drop intake has a top-right save button without removing bottom save"
   assert.match(app, /<button onClick=\{run\} disabled=\{busy\} style=\{\{ marginTop: 6, fontWeight: 600 \}\}>/);
 });
 
+test("new customer quick registration analysis buttons remain visible buttons", () => {
+  const customers = read("desktop/src/Customers.tsx");
+  const quick = customers.slice(customers.indexOf("빠른 등록"));
+
+  assert.match(customers, /quickRegistrationPrimaryButtonStyle/);
+  assert.match(customers, /quickRegistrationSecondaryButtonStyle/);
+  assert.match(quick, /onClick=\{parseIntake\}[\s\S]*style=\{quickRegistrationPrimaryButtonStyle\}[\s\S]*"분석"/);
+  assert.match(quick, /onClick=\{pickIntakeFile\}[\s\S]*style=\{quickRegistrationSecondaryButtonStyle\}[\s\S]*파일 선택 \(녹취·PDF·텍스트\)/);
+  assert.match(quick, /onClick=\{\(\) => analyzeFile\(stagedIntake\)\}[\s\S]*이 파일 분석/);
+});
+
 test("customer policy table uses fixed readable columns and single-line expiry text", () => {
   const customers = read("desktop/src/Customers.tsx");
   const policyTable = customers.slice(customers.indexOf("const policyCellStyle"));

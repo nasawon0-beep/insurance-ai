@@ -44,3 +44,19 @@ test("onboarding completion reconnects local-engine without manual app restart",
   assert.match(rust, /tauri::generate_handler!\[[\s\S]*ensure_local_engine/);
   assert.match(rust, /local_engine[\s\S]*\.lock\(\)/);
 });
+
+test("offline license banner does not block local-engine analysis screens", () => {
+  const app = read("desktop/src/App.tsx");
+  const customers = read("desktop/src/Customers.tsx");
+
+  assert.match(app, /오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다/);
+  assert.match(app, /view === "home" && <HomeScreen/);
+  assert.match(app, /view === "newcustomer" && \([\s\S]*<CustomersScreen/);
+  assert.doesNotMatch(app, /offline[\s\S]{0,120}disabled=/);
+  assert.doesNotMatch(app, /licenseErr[\s\S]{0,120}disabled=/);
+
+  assert.match(app, /api\("\/capture", \{ method: "POST", body: fd \}\)/);
+  assert.match(customers, /api\("\/customers\/intake\/bulk", \{/);
+  assert.doesNotMatch(customers, /offline[\s\S]{0,120}parseIntake/);
+  assert.doesNotMatch(customers, /licenseErr[\s\S]{0,120}parseIntake/);
+});
