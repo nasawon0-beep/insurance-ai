@@ -319,10 +319,19 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     const headers = new Headers(init.headers);
     if (!(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
     if (batchRef.current) headers.set("X-Import-Batch", batchRef.current);
-    const r = await engineFetch(path, {
-      ...init,
-      headers,
-    });
+    let r: Response;
+    try {
+      r = await engineFetch(path, {
+        ...init,
+        headers,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+        throw new Error("local-engine에 연결할 수 없습니다. 잠시 후 다시 분석하거나 앱 재시작을 시도해 주세요.");
+      }
+      throw e;
+    }
     if (!r.ok) {
       const body = await r.json().catch(() => null);
       const d = body?.detail;

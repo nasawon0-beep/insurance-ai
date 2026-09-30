@@ -1100,14 +1100,22 @@ async def capture(
                 combined = combined.strip()[:_MAX_DOC_CHARS]
                 if not combined:
                     raise HTTPException(status_code=422, detail="파일에서 분석할 내용을 찾지 못했습니다.")
-                for it in _intake.extract_multiple(combined):
+                try:
+                    extracted = _intake.extract_multiple(combined)
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"텍스트 분석 실패: {e}")
+                for it in extracted:
                     items.append({
                         "fields": it["fields"],
                         "warnings": list(it["warnings"]),
                         "consultation": None,
                     })
     else:
-        for it in _intake.extract_multiple(ctx_prefix + text):
+        try:
+            extracted = _intake.extract_multiple(ctx_prefix + text)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"텍스트 분석 실패: {e}")
+        for it in extracted:
             items.append({
                 "fields": it["fields"],
                 "warnings": list(it["warnings"]),

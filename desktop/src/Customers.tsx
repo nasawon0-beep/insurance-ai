@@ -192,10 +192,19 @@ const EMPTY_CONSULT = {
 type ConsultForm = typeof EMPTY_CONSULT;
 
 async function api(path: string, init?: RequestInit) {
-  const res = await engineFetch(path, {
-    headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await engineFetch(path, {
+      headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
+      ...init,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+      throw new Error("local-engine에 연결할 수 없습니다. 잠시 후 다시 분석하거나 앱 재시작을 시도해 주세요.");
+    }
+    throw e;
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(formatErrorDetail(body?.detail) ?? `HTTP ${res.status}`);

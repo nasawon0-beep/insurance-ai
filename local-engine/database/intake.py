@@ -21,6 +21,9 @@ from . import rrn as rrn_util
 # memo 안에 섞여 들어온 주민번호 패턴 (6자리-7자리 또는 붙어있는 13자리)
 _RRN_IN_TEXT = re.compile(r"\b(\d{6})[-\s]?(\d{7})\b")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PHONE_IN_TEXT = re.compile(r"(?<!\d)(01[016-9])[-\s.]?(\d{3,4})[-\s.]?(\d{4})(?!\d)")
+_KOREAN_NAME = re.compile(r"^[가-힣]{2,5}$")
+_FALLBACK_WARNING = "AI 분석 대신 기본 정보만 추출했습니다. 저장 전에 이름·전화번호를 확인하세요."
 
 
 def _rrn_from_source(fields: dict, source_text: Optional[str]) -> None:
@@ -88,6 +91,60 @@ def _fix_gender(fields: dict) -> None:
             fields["gender"] = "M"
         elif g in "2468":
             fields["gender"] = "F"
+
+
+def _empty_fields() -> dict[str, Any]:
+    return {k: None for k in _FIELDS}
+
+
+def _fallback_name_from_segment(segment: str) -> Optional[str]:
+    """LLM 없이 '이름 + 전화번호' 같은 단순 입력에서 이름 후보를 찾는다."""
+    cleaned = _PHONE_IN_TEXT.sub(" ", segment)
+    cleaned = _RRN_IN_TEXT.sub(" ", cleaned)
+    cleaned = re.sub(r"[,:;|/()\[\]{}]", " ", cleaned)
+    skip = {"고객", "전화", "연락처", "휴대폰", "핸드폰", "번호", "성함", "이름"}
+    for token in re.split(r"\s+", cleaned.strip()):
+        token = token.strip()
+        if token in skip:
+            continue
+        if _KOREAN_NAME.match(token):
+            return token
+    return None
+
+
+def _fallback_extract_multiple(text: str) -> list[dict]:
+    """Ollama 없이도 처리 가능한 최소 안전망.
+
+    단순한 `이름 전화번호` / `이름 전화번호 메모` 입력은 모델 호출 전후 상태와 무관하게
+    미리보기할 수 있어야 한다. 주민번호 등 민감값은 기존 `_normalize` 정책을 그대로 거친다.
+    """
+    source = (text or "").strip()
+    if not source:
+        return []
+
+    rows: list[dict] = []
+    seen: set[tuple[Optional[str], Optional[str]]] = set()
+    chunks = [c.strip() for c in re.split(r"[\n;]+", source) if c.strip()] or [source]
+    for chunk in chunks:
+        matches = list(_PHONE_IN_TEXT.finditer(chunk))
+        if not matches:
+            continue
+        for match in matches:
+            phone = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+            name = _fallback_name_from_segment(chunk)
+            if not name:
+                continue
+            memo = _PHONE_IN_TEXT.sub(" ", chunk)
+            memo = memo.replace(name, " ", 1).strip(" ,·\n\t") or None
+            raw = _empty_fields()
+            raw.update({"name": name, "phone": phone, "memo": memo})
+            normalized = _normalize(raw, chunk)
+            normalized.setdefault("warnings", []).append(_FALLBACK_WARNING)
+            key = (normalized["fields"].get("name"), normalized["fields"].get("phone"))
+            if key not in seen:
+                seen.add(key)
+                rows.append(normalized)
+    return rows
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # 필드 추출·요약은 단순 작업이라 작은 모델로 (RAG 답변용 14b 와 분리)
@@ -205,11 +262,18 @@ def _normalize(raw: dict, source_text: Optional[str] = None) -> dict[str, Any]:
 def extract_multiple(text: str, model: Optional[str] = None) -> list[dict]:
     """여러 명치 텍스트 → [{fields, warnings}, ...]. LLM 1회 호출."""
     model = model or LLM_MODEL
-    raw = _call_llm(_BULK_PROMPT + text.strip(), model)
+    try:
+        raw = _call_llm(_BULK_PROMPT + text.strip(), model)
+    except Exception:
+        fallback = _fallback_extract_multiple(text)
+        if fallback:
+            return fallback
+        raise
     rows = raw.get("customers") if isinstance(raw, dict) else raw
     if not isinstance(rows, list):
-        return []
-    return [_normalize(r, text) for r in rows if isinstance(r, dict)]
+        return _fallback_extract_multiple(text)
+    normalized = [_normalize(r, text) for r in rows if isinstance(r, dict)]
+    return normalized or _fallback_extract_multiple(text)
 
 
 def extract_customer_fields(text: str, model: Optional[str] = None) -> dict[str, Any]:

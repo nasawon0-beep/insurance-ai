@@ -390,6 +390,40 @@ def test_capture_text_single_new(client, monkeypatch):
     assert it["fields"]["name"] == "신규자" and it["fields"]["phone"] == "010-1111-2222"
 
 
+def test_bulk_falls_back_to_rule_parse_when_llm_fails(client, monkeypatch):
+    from database import intake
+
+    def fail_llm(*a, **k):
+        raise ConnectionError("ollama unavailable")
+
+    monkeypatch.setattr(intake, "_call_llm", fail_llm)
+
+    r = client.post("/customers/intake/bulk", json={"text": "홍길동 01012345678"})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert len(b["items"]) == 1
+    assert b["items"][0]["fields"]["name"] == "홍길동"
+    assert b["items"][0]["fields"]["phone"] == "010-1234-5678"
+    assert any("AI 분석 대신 기본 정보만 추출" in w for w in b["items"][0]["warnings"])
+
+
+def test_capture_text_falls_back_to_rule_parse_when_llm_fails(client, monkeypatch):
+    from database import intake
+
+    def fail_llm(*a, **k):
+        raise ConnectionError("ollama unavailable")
+
+    monkeypatch.setattr(intake, "_call_llm", fail_llm)
+
+    r = client.post("/capture", data={"text": "홍길동 01012345678"})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert len(b["items"]) == 1
+    assert b["items"][0]["fields"]["name"] == "홍길동"
+    assert b["items"][0]["fields"]["phone"] == "010-1234-5678"
+    assert any("AI 분석 대신 기본 정보만 추출" in w for w in b["items"][0]["warnings"])
+
+
 def test_capture_text_multiple(client, monkeypatch):
     cid = client.post("/customers", json={"name": "기존", "phone": "010-3434-5656"}).json()["id"]
     _mock_bulk(monkeypatch, [
