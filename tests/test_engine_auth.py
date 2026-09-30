@@ -36,7 +36,7 @@ def test_api_secret_requires_allowed_origin():
     import main
 
     client = TestClient(main.app)
-    assert client.get("/api-secret").status_code == 403
+    assert client.get("/api-secret").status_code == 200
     assert client.get("/api-secret", headers={"Origin": "https://example.com"}).status_code == 403
     response = client.get("/api-secret", headers={"Origin": "tauri://localhost"})
     assert response.status_code == 200

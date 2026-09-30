@@ -45,6 +45,30 @@ test("onboarding completion reconnects local-engine without manual app restart",
   assert.match(rust, /local_engine[\s\S]*\.lock\(\)/);
 });
 
+test("local-engine auth falls back to Tauri secret bridge when /api-secret fetch fails", () => {
+  const engine = read("desktop/src/engine.ts");
+  const rust = read("desktop/src-tauri/src/lib.rs");
+
+  assert.match(engine, /fetch\(`\$\{LOCAL_ENGINE_URL\}\/api-secret`\)/);
+  assert.match(engine, /invoke<string>\("local_engine_api_secret"\)/);
+  assert.match(engine, /secretPromise\s*=\s*null/);
+
+  assert.match(rust, /INSURANCE_AI_API_SECRET_FILE/);
+  assert.match(rust, /local-engine-api\.secret/);
+  assert.match(rust, /fn local_engine_api_secret/);
+  assert.match(rust, /tauri::generate_handler!\[[\s\S]*local_engine_api_secret/);
+});
+
+test("license diagnostics distinguish online refresh failures and offline grace rejection", () => {
+  const auth = read("desktop/src/auth.ts");
+
+  assert.match(auth, /control-server network request failed/);
+  assert.match(auth, /license refresh failed; trying cached offline license/);
+  assert.match(auth, /offline license unavailable: no cached signed license/);
+  assert.match(auth, /offline license unavailable: grace check failed/);
+  assert.doesNotMatch(auth, /console\.warn\([\s\S]{0,240}getToken\(\)/);
+});
+
 test("offline license banner does not block local-engine analysis screens", () => {
   const app = read("desktop/src/App.tsx");
   const customers = read("desktop/src/Customers.tsx");

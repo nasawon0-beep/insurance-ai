@@ -68,12 +68,22 @@ async function call(path: string, init?: RequestInit) {
     });
   } catch (e) {
     if (isFetchNetworkError(e)) {
+      console.warn("control-server network request failed", {
+        url: `${CONTROL_URL}${path}`,
+        errorName: e instanceof Error ? e.name : typeof e,
+        message: e instanceof Error ? e.message : String(e),
+      });
       throw new Error(formatControlServerNetworkError(e));
     }
     throw e;
   }
   if (!res.ok) {
     const b = await res.json().catch(() => null);
+    console.warn("control-server HTTP request failed", {
+      url: `${CONTROL_URL}${path}`,
+      status: res.status,
+      detail: b?.detail ?? null,
+    });
     throw new Error(formatErrorDetail(b?.detail) ?? `HTTP ${res.status}`);
   }
   return res.status === 204 ? null : res.json();
@@ -144,17 +154,28 @@ export async function resolveLicense(): Promise<{
   state: LicenseState;
   offline: boolean;
 } | null> {
+  let onlineError: unknown = null;
   try {
     const lic = await call("/license");
     localStorage.setItem(LS.license, JSON.stringify(lic.signed));
     return { state: lic, offline: false };
-  } catch {
+  } catch (e) {
+    onlineError = e;
+    console.warn("license refresh failed; trying cached offline license", {
+      controlUrl: CONTROL_URL,
+      errorName: e instanceof Error ? e.name : typeof e,
+      message: e instanceof Error ? e.message : String(e),
+    });
     const raw = localStorage.getItem(LS.license);
-    if (!raw) return null;
+    if (!raw) {
+      console.warn("offline license unavailable: no cached signed license", { controlUrl: CONTROL_URL });
+      return null;
+    }
     let blob: SignedLicenseBlob;
     try {
       blob = JSON.parse(raw) as SignedLicenseBlob;
     } catch {
+      console.warn("offline license unavailable: cached signed license is not valid JSON", { controlUrl: CONTROL_URL });
       return null;
     }
     const licenseSecret =
@@ -166,11 +187,25 @@ export async function resolveLicense(): Promise<{
     try {
       currentUserId = getUser()?.id;
     } catch {
+      console.warn("offline license unavailable: cached user is not readable", { controlUrl: CONTROL_URL });
       return null;
     }
-    if (!(await verifyLicenseForUser(blob, licenseSecret, currentUserId))) return null;
+    if (!(await verifyLicenseForUser(blob, licenseSecret, currentUserId))) {
+      console.warn("offline license unavailable: signature or user check failed", { controlUrl: CONTROL_URL });
+      return null;
+    }
     const ageDays = (nowSec() - blob.signed_at) / 86400;
-    if (clockRolledBack() || ageDays > GRACE_DAYS || ageDays < 0) return null;
+    const rolledBack = clockRolledBack();
+    if (rolledBack || ageDays > GRACE_DAYS || ageDays < 0) {
+      console.warn("offline license unavailable: grace check failed", {
+        controlUrl: CONTROL_URL,
+        ageDays: Math.round(ageDays * 100) / 100,
+        graceDays: GRACE_DAYS,
+        clockRolledBack: rolledBack,
+        onlineError: onlineError instanceof Error ? onlineError.message : String(onlineError),
+      });
+      return null;
+    }
     return { state: blob.license as LicenseState, offline: true };
   }
 }

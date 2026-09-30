@@ -1,4 +1,5 @@
 import { LOCAL_ENGINE_URL } from "./config";
+import { invoke } from "@tauri-apps/api/core";
 
 export { LOCAL_ENGINE_URL };
 
@@ -24,6 +25,12 @@ async function getApiSecret(): Promise<string> {
         if (typeof body.secret !== "string" || !body.secret)
           throw new Error("Engine authentication failed: missing secret");
         return body.secret;
+      })
+      .catch(async (error) => {
+        console.warn("local-engine /api-secret fetch failed; trying Tauri secret bridge", error);
+        const bridged = await invoke<string>("local_engine_api_secret");
+        if (!bridged) throw new Error("Engine authentication failed: missing bridged secret");
+        return bridged;
       })
       .catch((error) => {
         secretPromise = null;

@@ -8,7 +8,6 @@ use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
-
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
     local_engine: Mutex<Option<CommandChild>>,
@@ -164,6 +163,11 @@ fn spawn_local_engine(
         .env("RAG_DB_PATH", data_dir.join("rag-index.sqlite3"))
         .env("WHISPER_MODEL_DIR", data_dir.join("whisper-models"))
         .env("CUSTOMER_DB_KEYFILE", config_dir.join("customer-db.key"))
+        // WebView 의 /api-secret fetch 가 Origin/TLS/CORS 계층에서 막혀도 Tauri 명령이 같은 파일을 읽어 로컬 API 인증을 복구할 수 있게 고정 경로를 넘긴다.
+        .env(
+            "INSURANCE_AI_API_SECRET_FILE",
+            data_dir.join("local-engine-api.secret"),
+        )
         // whisper 모델(1.5GB+)은 부팅 시 받지 않는다 — 첫 STT 사용 시 자체 UI 로 다운로드
         .env("WHISPER_PREWARM", "0")
         // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
@@ -173,10 +177,7 @@ fn spawn_local_engine(
     if let Some(sidecar_job) = app.try_state::<SidecarJob>() {
         sidecar_job.assign(engine_child.pid())?;
     }
-    *state
-        .local_engine
-        .lock()
-        .expect("local-engine child lock") = Some(engine_child);
+    *state.local_engine.lock().expect("local-engine child lock") = Some(engine_child);
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -222,6 +223,23 @@ fn ensure_local_engine(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("local-engine 시작 실패: {e}"))
 }
 
+#[tauri::command]
+fn local_engine_api_secret(app: tauri::AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("데이터 폴더 확인 실패: {e}"))?;
+    let path = data_dir.join("local-engine-api.secret");
+    let value = fs::read_to_string(path)
+        .map_err(|e| format!("local-engine 인증 파일을 읽을 수 없습니다: {e}"))?
+        .trim()
+        .to_owned();
+    if value.is_empty() {
+        return Err("local-engine 인증 파일이 비어 있습니다".to_owned());
+    }
+    Ok(value)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -236,6 +254,7 @@ pub fn run() {
             ollama::check_models_installed,
             ollama::download_model,
             ensure_local_engine,
+            local_engine_api_secret,
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
