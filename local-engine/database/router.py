@@ -107,10 +107,10 @@ def get_conn():
         conn.close()
 
 
-# ---------- RRN 파일럿 토글 하드 가드 ----------
+# ---------- RRN 항상 활성 ----------
 
 def _rrn_on(conn) -> bool:
-    return _settings.rrn_enabled(conn)
+    return True  # 주민번호 토글 제거 — 보험설계사 앱에서 항상 활성
 
 
 def _scrub_customer(c, enabled: bool):
@@ -1331,7 +1331,6 @@ def diagnostics(conn=Depends(get_conn)):
     except Exception as e:
         rag_info = {"error": str(e)}
 
-    rrn_enabled, rrn_source = _settings.rrn_setting(conn)
     try:
         backups = _backup.list_backups()
     except Exception:
@@ -1345,7 +1344,6 @@ def diagnostics(conn=Depends(get_conn)):
         },
         "whisper": winfo,
         "ocr": _ocr_info(),
-        "rrn_input": {"enabled": rrn_enabled, "source": rrn_source, "locked": _settings.rrn_locked_by_env()},
         "backups": {"count": len(backups), "latest": backups[0]["created_at"] if backups else None},
         "data": repo.dashboard_counts(conn),
         "rag": rag_info,
@@ -1358,8 +1356,7 @@ def diagnostics(conn=Depends(get_conn)):
 
 @router.get("/settings")
 def get_settings(conn=Depends(get_conn)):
-    enabled, source = _settings.rrn_setting(conn)
-    return {"rrn_input_enabled": enabled, "source": source}
+    return {"rrn_input_enabled": True, "source": "hardcoded"}
 
 
 @router.get("/capture/batches")
@@ -1422,27 +1419,8 @@ def undo_capture_batch(batch_id: str, request: Request, conn=Depends(get_conn)):
 
 @router.patch("/settings")
 async def patch_settings(request: Request, conn=Depends(get_conn)):
-    try:
-        raw = await request.json()
-    except Exception:
-        raise HTTPException(status_code=422, detail="JSON 본문이 필요합니다.")
-    if not isinstance(raw, dict) or "rrn_input_enabled" not in raw:
-        raise HTTPException(status_code=422, detail="rrn_input_enabled (bool) 이 필요합니다.")
-    if _settings.rrn_locked_by_env():
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": (
-                    "주민등록번호 입력 기능이 환경설정(RRN_INPUT_ENABLED)으로 고정되어 있어 "
-                    "앱에서 변경할 수 없습니다. 개인정보보호법상 주민등록번호는 법령에 근거가 "
-                    "있을 때만 수집·보관할 수 있어, 배포 시 관리자가 정책으로 결정합니다."
-                ),
-                "locked_by": "env",
-            },
-        )
-    _settings.set_rrn_enabled(conn, bool(raw["rrn_input_enabled"]))
-    enabled, source = _settings.rrn_setting(conn)
-    return {"rrn_input_enabled": enabled, "source": source}
+    # rrn_input_enabled 토글 제거 — 주민번호는 항상 활성
+    return {"rrn_input_enabled": True, "source": "hardcoded"}
 
 
 @router.post("/maintenance/backup")
