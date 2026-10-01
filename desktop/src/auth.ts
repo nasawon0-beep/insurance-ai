@@ -262,7 +262,7 @@ export function engineSettings(): { rrn_input_enabled?: boolean; source?: string
   }
 }
 
-/** 주민등록번호 입력 UI 를 그릴지 여부. 기본 false. */
+/** 주민등록번호 입력 UI 를 그릴지 여부. 항상 true (토글 제거됨). */
 export function rrnEnabled(): boolean {
-  return !!engineSettings().rrn_input_enabled;
+  return true;
 }

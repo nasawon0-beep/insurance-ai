@@ -1556,7 +1556,7 @@ function DiagnosticsScreen({
   const [devices, setDevices] = useState<any[]>([]);
   const [recompBusy, setRecompBusy] = useState(false);
   const [recomp, setRecomp] = useState<Record<string, any> | null>(null);
-  const [rrnBusy, setRrnBusy] = useState(false);
+
   const [me, setMe] = useState<{ id: string; email: string; created_at?: string } | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -1608,33 +1608,7 @@ function DiagnosticsScreen({
     load();
   }, [load]);
 
-  const toggleRrn = async (next: boolean) => {
-    setRrnBusy(true);
-    setErr(null);
-    try {
-      const r = await engineFetch("/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rrn_input_enabled: next }),
-      });
-      if (!r.ok) {
-        const b = await r.json().catch(() => null);
-        const locked = b?.detail?.locked_by === "env" || b?.detail === "locked";
-        throw new Error(
-          locked
-            ? (typeof b?.detail === "object" && b.detail.message) ||
-              "환경변수로 잠겨 있어 변경할 수 없습니다."
-            : `HTTP ${r.status}`
-        );
-      }
-      await loadEngineSettings(); // localStorage["iai.settings"] 갱신 → rrnEnabled() 반영
-      await load();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRrnBusy(false);
-    }
-  };
+
 
   const recomputeExpiry = async () => {
     setRecompBusy(true);
@@ -1756,29 +1730,7 @@ function DiagnosticsScreen({
             {kv("방식", d.customer_db?.encryption)}
             {kv("키 보관", d.customer_db?.key_source)}
           </div>
-          <div style={box}>
-            <div style={{ marginBottom: 8 }}><b>주민등록번호 입력 (파일럿 토글)</b></div>
-            {kv("현재 상태", d.rrn_input?.enabled ? "켜짐" : "꺼짐")}
-            {kv("적용 근거", d.rrn_input?.source === "env" ? "환경변수(잠김)" : d.rrn_input?.source === "local" ? "이 PC 설정" : "기본값(꺼짐)")}
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "0.875rem", marginTop: 6 }}>
-              <input
-                type="checkbox"
-                checked={!!d.rrn_input?.enabled}
-                disabled={rrnBusy || !!d.rrn_input?.locked}
-                onChange={(e) => toggleRrn(e.target.checked)}
-              />
-              주민등록번호 입력·표시 기능 사용
-            </label>
-            {d.rrn_input?.locked && (
-              <p style={{ fontSize: "0.75rem", color: "#8a4b00", margin: "4px 0 0" }}>
-                환경변수 RRN_INPUT_ENABLED 로 고정되어 있어 여기서 바꿀 수 없습니다.
-                개인정보보호법상 주민등록번호는 법령에 근거가 있을 때만 수집·보관할 수 있어, 배포 시 관리자가 정책으로 정합니다.
-              </p>
-            )}
-            <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)", margin: "4px 0 0" }}>
-              끄면 입력란이 숨겨지고 응답에서도 제외됩니다. 이미 저장된 값은 암호화된 채 보존됩니다.
-            </p>
-          </div>
+
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>음성 인식 (Whisper)</b></div>
             {kv("모델", d.whisper?.model)}
