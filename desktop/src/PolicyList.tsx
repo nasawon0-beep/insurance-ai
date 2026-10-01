@@ -173,7 +173,7 @@ export function CoverageTable({ rows }: { rows: CoverageRow[] }) {
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
           <thead>
-            <tr style={{ background: "#f2f5fb", textAlign: "left" }}>
+            <tr style={{ background: "var(--color-bg-hover)", textAlign: "left" }}>
               <th style={{ padding: "4px 8px" }}>항목</th>
               <th style={{ padding: "4px 8px" }}>상태</th>
               <th style={{ padding: "4px 8px", textAlign: "right" }}>충족률</th>
@@ -185,7 +185,7 @@ export function CoverageTable({ rows }: { rows: CoverageRow[] }) {
             {group.rows.map((r, i) => {
               const s = STATUS_STYLE[r.status] ?? { bg: "#eee", fg: "#555" };
               return (
-                <tr key={i} style={{ borderTop: "1px solid #e3e8f0" }}>
+                <tr key={i} style={{ borderTop: "1px solid var(--color-border-default)" }}>
                   <td style={{ padding: "4px 8px" }}>{r.name}</td>
                   <td style={{ padding: "4px 8px" }}>
                     <span style={{ background: s.bg, color: s.fg, borderRadius: 4, padding: "1px 6px", fontWeight: 600 }}>
@@ -194,7 +194,7 @@ export function CoverageTable({ rows }: { rows: CoverageRow[] }) {
                   </td>
                   <td style={{ padding: "4px 8px", textAlign: "right", color: s.fg }}>{r.pct}%</td>
                   <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.current ?? "-"}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "right", color: "#888" }}>{r.recommended ?? "-"}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: "var(--color-text-secondary)" }}>{r.recommended ?? "-"}</td>
                 </tr>
               );
             })}
@@ -271,7 +271,7 @@ export function CoverageTableEditable({
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
           <thead>
-            <tr style={{ background: "#f2f5fb", textAlign: "left" }}>
+            <tr style={{ background: "var(--color-bg-hover)", textAlign: "left" }}>
               <th style={{ padding: "4px 8px" }}>항목</th>
               <th style={{ padding: "4px 8px" }}>상태</th>
               <th style={{ padding: "4px 8px", textAlign: "right" }}>충족률</th>

@@ -1949,10 +1949,10 @@ function PoliciesSection({
 
   const policyCellStyle = {
     padding: 8,
-    whiteSpace: "nowrap",
+    whiteSpace: "nowrap" as const,
     overflow: "hidden",
     textOverflow: "ellipsis",
-    borderRight: "1px solid #eee",
+    borderRight: "1px solid var(--color-border-default)",
   };
   const policyLastCellStyle = { ...policyCellStyle, borderRight: "none" };
   const policyBadgeStyle = { marginLeft: 6, fontSize: 11, borderRadius: 4, padding: "1px 5px" };
@@ -1967,18 +1967,18 @@ function PoliciesSection({
         </span>
       </h3>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, tableLayout: "fixed", width: "100%" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 700 }}>
           <colgroup>
-            <col style={{ width: 120 }} />
-            <col style={{ width: "auto" }} />
             <col style={{ width: 130 }} />
-            <col style={{ width: 100 }} />
-            <col style={{ width: 140 }} />
+            <col style={{ minWidth: 140 }} />
+            <col style={{ width: 110 }} />
             <col style={{ width: 90 }} />
-            <col style={{ width: 200 }} />
+            <col style={{ width: 140 }} />
+            <col style={{ width: 80 }} />
+            <col style={{ width: 180 }} />
           </colgroup>
           <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
               {["보험사", "상품명", "증권번호", "월납", "만기", "상태", "관리"].map((h, i) => (
                 <th key={h} style={i === 6 ? policyLastCellStyle : policyCellStyle}>
                   {h}
