@@ -418,7 +418,7 @@ export default function CustomersScreen({
           (p, i) => policyChecked[i] !== false && (p.insurer || p.product_name || p.premium_won),
         ).length,
         hasConsult: pendingConsult != null,
-        hasRrn: rrnEnabled() && rc.digits.length > 0 && rc.ok,
+        hasRrn: rc.digits.length > 0 && rc.ok,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -452,14 +452,14 @@ export default function CustomersScreen({
       // 위의 전화/주소 등 갱신은 살아남게 한다.
       let rrnError: string | null = null;
       const rc = rrnCheck(rrnInput);
-      if (rrnEnabled() && rc.digits.length > 0 && rc.ok) {
+      if (rc.digits.length > 0 && rc.ok) {
         try {
           await api(`/customers/${dupMatch.id}`, { method: "PATCH", body: JSON.stringify({ rrn: rc.digits }) });
           done.push("주민번호 갱신");
         } catch (re) {
           rrnError = `주민번호는 저장하지 못했습니다: ${re instanceof Error ? re.message : String(re)}`;
         }
-      } else if (rrnEnabled() && rc.digits.length > 0) {
+      } else if (rc.digits.length > 0) {
         rrnError = `주민번호를 저장하지 않았습니다 — ${rc.msg}`;
       }
       if (pendingConsult) {
@@ -767,7 +767,6 @@ export default function CustomersScreen({
       let rrnSaved = false;
       let rrnError: string | null = null;
       const saveRrn = async (cid: string) => {
-        if (!rrnEnabled()) return; // 파일럿: 주민번호 입력 기능 OFF
         if (rrnDigits.length === 0) return;
         if (!rc.ok) {
           rrnError = `주민등록번호를 저장하지 않았습니다 — ${rc.msg}`;
@@ -1009,7 +1008,6 @@ export default function CustomersScreen({
     let lastErr: string | null = null;
     // 주민번호는 던져넣기와 동일하게 항상 별도 PATCH (본 payload 와 분리).
     const saveRrn = async (cid: string, rd: string) => {
-      if (!rrnEnabled()) return; // 파일럿: 주민번호 입력 기능 OFF
       if (rd.length !== 13) return;
       try {
         await api(`/customers/${cid}`, { method: "PATCH", body: JSON.stringify({ rrn: rd }) });
@@ -1715,26 +1713,20 @@ export default function CustomersScreen({
                 <span style={{ color: "#888", fontWeight: 400 }}>
                   (앞 6자리 생년월일 + 성별 1자리 + 뒤 6자리. 하이픈 무시. 암호화 저장)
                 </span>
-                {!rrnEnabled() && (
-                  <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 4, marginBottom: 4 }}>
-                    ⚠ 설정·진단에서 "주민등록번호 입력 기능"을 켜야 저장됩니다.
-                  </div>
-                )}
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <input
                     style={inputStyle}
                     placeholder={detail?.has_rrn ? "새 번호를 입력하면 갱신됩니다" : "예: 901010-1234567"}
                     value={rrnInput}
                     onChange={(e) => setRrnInput(e.target.value)}
-                    disabled={!rrnEnabled()}
                   />
-                  {mode === "edit" && detail?.has_rrn && rrnEnabled() && (
+                  {mode === "edit" && detail?.has_rrn && (
                     <button type="button" onClick={clearRrn} style={{ color: "#b00" }}>
                       삭제
                     </button>
                   )}
                 </div>
-                {rrnInput.replace(/\D/g, "").length > 0 && rrnEnabled() && (
+                {rrnInput.replace(/\D/g, "").length > 0 && (
                   <span
                     style={{
                       fontSize: 11,
