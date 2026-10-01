@@ -8,7 +8,6 @@ import {
   STATUS_LABEL,
   type PolicyDraft,
 } from "./PolicyList";
-import { rrnEnabled } from "./auth";
 import { expandCoverageRowsWithCatalog } from "./coverageCatalog";
 import { parseCoverageJson } from "./coverageRows";
 import { track } from "./usage";
