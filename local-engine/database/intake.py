@@ -150,6 +150,23 @@ def _fallback_extract_multiple(text: str) -> list[dict]:
         if key not in seen:
             seen.add(key)
             rows.append(normalized)
+
+    # 줄별로 찾지 못한 경우: 전체 텍스트를 하나의 청크로 재시도
+    # (멀티라인 문서에서 이름/전화/주민번호가 서로 다른 줄에 분산된 경우)
+    if not rows:
+        phone_match = _PHONE_IN_TEXT.search(source)
+        rrn_match = _RRN_IN_TEXT.search(source)
+        if phone_match or rrn_match:
+            name = _fallback_name_from_segment(source)
+            if name:
+                phone = f"{phone_match.group(1)}-{phone_match.group(2)}-{phone_match.group(3)}" if phone_match else None
+                rrn = (rrn_match.group(1) + rrn_match.group(2)) if rrn_match else None
+                raw = _empty_fields()
+                raw.update({"name": name, "phone": phone, "rrn": rrn})
+                normalized = _normalize(raw, source)
+                normalized.setdefault("warnings", []).append(_FALLBACK_WARNING)
+                rows.append(normalized)
+
     return rows
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -187,6 +204,35 @@ _PROMPT = """다음은 보험 상담자가 적어 보낸 고객 메모다. 아�
 """
 
 
+def _rule_based_extract(text: str) -> dict:
+    """Ollama 실패 시 규칙기반 fallback: 이름·전화·주민번호·생년월일 패턴 추출."""
+    import re
+    result = {k: None for k in _FIELDS}
+
+    # 전화번호
+    phone_m = re.search(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}", text)
+    if phone_m:
+        digits = re.sub(r"\D", "", phone_m.group())
+        result["phone"] = f"{digits[:3]}-{digits[3:7]}-{digits[7:]}"
+
+    # 주민등록번호
+    rrn_m = re.search(r"(\d{6})[-\s]?([1-4]\d{6})", text)
+    if rrn_m:
+        result["rrn"] = rrn_m.group(1) + rrn_m.group(2)
+        front = rrn_m.group(1)
+        back1 = rrn_m.group(2)[0]
+        century = "19" if back1 in ("1", "2") else "20"
+        result["birth_date"] = f"{century}{front[:2]}-{front[2:4]}-{front[4:]}"
+        result["gender"] = "M" if back1 in ("1", "3") else "F"
+
+    # 이름 (2~4글자 한글, 전화/주민번호 숫자 제외)
+    name_m = re.search(r"(?<!\d)([가-힣]{2,4})(?!\d)", text)
+    if name_m:
+        result["name"] = name_m.group(1)
+
+    return result
+
+
 def _call_llm(prompt: str, model: str) -> dict:
     payload = {
         "model": model,
@@ -202,12 +248,20 @@ def _call_llm(prompt: str, model: str) -> dict:
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
     try:
-        return json.loads((data.get("response") or "").strip())
-    except json.JSONDecodeError:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if "error" in data:
+            raise RuntimeError(f"Ollama 오류: {data['error']}")
+        result = json.loads((data.get("response") or "").strip())
+        return result
+    except (json.JSONDecodeError, KeyError):
         return {}
+    except Exception:
+        # HTTPError(500), URLError(연결 실패), RuntimeError(Ollama error 키) 등
+        # → 호출부(extract_multiple / extract_customer_fields)에서 fallback 처리
+        raise
+
 
 
 _BULK_PROMPT = """다음 텍스트에는 여러 명의 고객 정보가 줄 또는 문단 단위로 들어 있다.
@@ -284,10 +338,21 @@ def extract_multiple(text: str, model: Optional[str] = None) -> list[dict]:
 
 def extract_customer_fields(text: str, model: Optional[str] = None) -> dict[str, Any]:
     model = model or LLM_MODEL
-    raw = _call_llm(_PROMPT + text.strip(), model)
+    try:
+        raw = _call_llm(_PROMPT + text.strip(), model)
+    except Exception:
+        # Ollama 실패(HTTPError 500, URLError, RuntimeError) → 규칙기반 fallback
+        raw = _rule_based_extract(text)
+        fields = {k: (raw.get(k) or None) for k in _FIELDS}
+        _fix_birthdate(fields)
+        _fix_gender(fields)
+        warnings: list[str] = [_FALLBACK_WARNING]
+        if not fields.get("name"):
+            warnings.append("이름을 찾지 못했습니다. 직접 입력하세요.")
+        return {"fields": fields, "warnings": warnings, "model": model}
 
     fields: dict[str, Any] = {k: (raw.get(k) or None) for k in _FIELDS}
-    warnings: list[str] = []
+    warnings = []
 
     if fields.get("phone"):
         digits = "".join(ch for ch in str(fields["phone"]) if ch.isdigit())
