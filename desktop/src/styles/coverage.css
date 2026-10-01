@@ -521,6 +521,11 @@
 
 .coverage-table-title {
   font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+.coverage-table td:first-child {
+  min-width: 160px;
 }
 
 .coverage-table td p {

@@ -213,12 +213,12 @@ async function api(path: string, init?: RequestInit) {
 }
 
 const inputStyle: React.CSSProperties = {
-  padding: 6,
+  padding: "6px 8px",
   width: "100%",
   boxSizing: "border-box",
-  backgroundColor: "var(--color-bg-surface)",
+  backgroundColor: "var(--color-bg-hover)",
   color: "var(--color-text-primary)",
-  border: "1px solid var(--color-border-default)",
+  border: "1px solid var(--color-border-hover)",
   borderRadius: 4,
 };
 const quickRegistrationPrimaryButtonStyle: React.CSSProperties = {
@@ -1989,7 +1989,7 @@ function PoliciesSection({
           <tbody>
             {detail.policies.map((p) =>
               editId === p.id ? (
-                <tr key={p.id} style={{ background: "#fafafa" }}>
+                <tr key={p.id} style={{ background: "var(--color-bg-hover)" }}>
                   <td colSpan={7} style={{ padding: 6 }}>
                    <div
                     style={{
@@ -2134,10 +2134,11 @@ function PoliciesSection({
       <div
         style={{
           marginTop: 10,
-          background: "#eef7ff",
-          borderLeft: "3px solid #2563eb",
+          background: "var(--color-bg-surface)",
+          borderLeft: "3px solid #3b82f6",
           borderRadius: 4,
           padding: "8px 10px",
+          border: "1px solid var(--color-border-default)",
         }}
       >
       <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>➕ 새 계약 추가</div>
@@ -2273,11 +2274,11 @@ function ConsultationsSection({
         style={{
           margin: "6px 0 10px",
           padding: 10,
-          border: dragOver ? "2px dashed #2563eb" : "1px dashed #bbb",
+          border: dragOver ? "2px dashed #3b82f6" : "1px dashed var(--color-border-hover)",
           borderRadius: 8,
-          background: dragOver ? "#eef4ff" : "#fbfbfd",
+          background: dragOver ? "rgba(37,99,235,0.08)" : "var(--color-bg-surface)",
           fontSize: 12,
-          color: "#666",
+          color: "var(--color-text-secondary)",
         }}
       >
         {staged ? (
@@ -2519,9 +2520,9 @@ function CoveragePanel({
       style={{
         marginTop: 24,
         padding: 12,
-        border: "1px solid #ddd",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
-        background: "#fbfbfd",
+        background: "var(--color-bg-surface)",
       }}
     >
       {latest ? (
@@ -2569,7 +2570,7 @@ function AskPanel({ customerId, hasDocs }: { customerId: string; hasDocs: boolea
   };
 
   return (
-    <div style={{ marginTop: 24, padding: 12, border: "1px solid #ddd", borderRadius: 8, background: "#fbfbfd" }}>
+    <div style={{ marginTop: 24, padding: 12, border: "1px solid var(--color-border-default)", borderRadius: 8, background: "var(--color-bg-surface)" }}>
       <h3 style={{ marginTop: 0 }}>이 고객 약관에 질문</h3>
       {!hasDocs && (
         <p style={{ color: "#888", fontSize: 13 }}>
@@ -2584,7 +2585,7 @@ function AskPanel({ customerId, hasDocs }: { customerId: string; hasDocs: boolea
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && ask()}
         />
-        <button onClick={ask} disabled={busy}>
+        <button onClick={ask} disabled={busy} style={{ minWidth: 56, whiteSpace: "nowrap", flexShrink: 0 }}>
           {busy ? "..." : "질문"}
         </button>
       </div>
