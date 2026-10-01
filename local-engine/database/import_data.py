@@ -416,6 +416,13 @@ def commit(
                     )
                 try:
                     rrn_val = _rrn.normalize(vals["rrn"])
+                    # 주민번호 → 생년월일/성별 자동 채움 (별도 컬럼 없을 때)
+                    if rrn_val:
+                        bd_from_rrn, gd_from_rrn = _rrn.birth_and_gender(rrn_val)
+                        if bd_from_rrn and not vals.get("birth_date"):
+                            vals["birth_date"] = bd_from_rrn
+                        if gd_from_rrn and not vals.get("gender"):
+                            vals["gender"] = gd_from_rrn
                 except ValueError as e:
                     warnings.append(f"{rownum}행: 주민번호 형식 오류로 제외 — {e}")
             vals.pop("rrn", None)
