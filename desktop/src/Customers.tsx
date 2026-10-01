@@ -1710,26 +1710,31 @@ export default function CustomersScreen({
                   onChange={(e) => setForm({ ...form, tags: e.target.value })}
                 />
               </label>
-              {rrnEnabled() && (
               <label style={{ fontSize: 13, gridColumn: "1 / span 2" }}>
                 주민등록번호{" "}
                 <span style={{ color: "#888", fontWeight: 400 }}>
                   (앞 6자리 생년월일 + 성별 1자리 + 뒤 6자리. 하이픈 무시. 암호화 저장)
                 </span>
+                {!rrnEnabled() && (
+                  <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 4, marginBottom: 4 }}>
+                    ⚠ 설정·진단에서 "주민등록번호 입력 기능"을 켜야 저장됩니다.
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <input
                     style={inputStyle}
                     placeholder={detail?.has_rrn ? "새 번호를 입력하면 갱신됩니다" : "예: 901010-1234567"}
                     value={rrnInput}
                     onChange={(e) => setRrnInput(e.target.value)}
+                    disabled={!rrnEnabled()}
                   />
-                  {mode === "edit" && detail?.has_rrn && (
+                  {mode === "edit" && detail?.has_rrn && rrnEnabled() && (
                     <button type="button" onClick={clearRrn} style={{ color: "#b00" }}>
                       삭제
                     </button>
                   )}
                 </div>
-                {rrnInput.replace(/\D/g, "").length > 0 && (
+                {rrnInput.replace(/\D/g, "").length > 0 && rrnEnabled() && (
                   <span
                     style={{
                       fontSize: 11,
@@ -1741,7 +1746,6 @@ export default function CustomersScreen({
                   </span>
                 )}
               </label>
-              )}
               <label style={{ fontSize: 13, gridColumn: "1 / span 2" }}>
                 메모
                 <textarea
