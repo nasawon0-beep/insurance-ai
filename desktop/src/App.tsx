@@ -2215,12 +2215,15 @@ function App() {
         key={key}
         onClick={() => guardedSetView(key)}
         style={{
-          padding: "6px 14px",
-          border: "1px solid var(--color-border-default)",
-          borderBottom: view === key ? "2px solid #2563eb" : "2px solid transparent",
+          padding: "8px 16px",
+          border: "none",
+          borderBottom: view === key ? "2px solid #3b82f6" : "2px solid transparent",
           background: "none",
-          fontWeight: view === key ? 600 : 400,
+          fontWeight: view === key ? 700 : 500,
+          fontSize: 14,
+          color: view === key ? "#3b82f6" : "var(--color-text-primary)",
           cursor: "pointer",
+          letterSpacing: "0.01em",
         }}
       >
         {label}

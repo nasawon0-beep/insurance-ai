@@ -222,20 +222,22 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 4,
 };
 const quickRegistrationPrimaryButtonStyle: React.CSSProperties = {
-  padding: "10px 18px",
+  padding: "10px 20px",
   background: "var(--primary-600)",
   color: "#fff",
-  border: "1px solid var(--primary-600)",
+  border: "2px solid var(--primary-500)",
   borderRadius: 8,
   fontWeight: 700,
   fontSize: 14,
   cursor: "pointer",
+  boxShadow: "0 2px 8px rgba(37,99,235,0.25)",
+  letterSpacing: "0.02em",
 };
 const quickRegistrationSecondaryButtonStyle: React.CSSProperties = {
-  padding: "10px 18px",
-  background: "var(--color-bg-surface)",
+  padding: "10px 20px",
+  background: "var(--color-bg-hover)",
   color: "var(--color-text-primary)",
-  border: "1px solid var(--color-border-default)",
+  border: "1px solid var(--color-border-hover)",
   borderRadius: 8,
   fontWeight: 600,
   fontSize: 14,
@@ -1141,7 +1143,7 @@ export default function CustomersScreen({
       {/* 왼쪽: 고객 목록 (고객 목록 탭에서만) */}
       {screen === "list" && (
       <div style={{ width: 260, flexShrink: 0 }}>
-        <button onClick={() => startNew()} style={{ width: "100%", marginBottom: 6 }}>
+        <button onClick={() => startNew()} style={{ width: "100%", marginBottom: 6, padding: "10px 16px", fontWeight: 700, fontSize: 14, background: "var(--primary-600)", color: "#fff", border: "2px solid var(--primary-500)", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.2)" }}>
           새 고객
         </button>
         <input
@@ -1361,7 +1363,7 @@ export default function CustomersScreen({
                 {mode === "edit" && detail && statusChip(detail.effective_status)}
                 <button
                   onClick={saveCustomer}
-                  style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "1px solid var(--color-border-default)", borderRadius: 5, padding: "6px 16px", cursor: "pointer" }}
+                  style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "2px solid #3b82f6", borderRadius: 8, padding: "8px 20px", cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.25)", fontSize: 14 }}
                 >
                   {mode === "new" ? "등록" : "변경사항 저장"}
                 </button>
@@ -1750,7 +1752,7 @@ export default function CustomersScreen({
               </label>
             </div>
             <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-              <button onClick={saveCustomer} style={{ fontWeight: 600 }}>
+              <button onClick={saveCustomer} style={{ fontWeight: 700, padding: "10px 24px", background: "#2563eb", color: "#fff", border: "2px solid #3b82f6", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.25)", fontSize: 14 }}>
                 {mode === "new" ? "등록" : "변경사항 저장"}
               </button>
             </div>

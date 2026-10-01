@@ -167,21 +167,21 @@
 /* ─────────────── 다크 모드 ─────────────── */
 
 [data-theme="dark"] {
-  /* 배경 - 데모 버전 다크모드 (가독성 개선) */
-  --color-bg-base: #0a0a0a;        /* Primary Background - 더 깊은 블랙 */
-  --color-bg-surface: #171717;     /* Card/Surface Background - 더 진한 그레이 */
-  --color-bg-hover: #262626;
+  /* 배경 - 밝은 다크 (가독성 최우선) */
+  --color-bg-base: #18181b;        /* Primary Background - zinc-900 */
+  --color-bg-surface: #27272a;     /* Card/Surface - zinc-800 */
+  --color-bg-hover: #3f3f46;       /* Hover - zinc-700 */
   --color-bg-overlay: rgba(0, 0, 0, 0.7);
   
-  /* 텍스트 - 데모 버전 (대비 최적화) */
-  --color-text-primary: #fafafa;   /* 주 텍스트 - 더 밝게 */
-  --color-text-secondary: #a3a3a3; /* 보조 텍스트 */
-  --color-text-disabled: #737373;  /* 비활성 텍스트 */
-  --color-text-inverse: #0a0a0a;   /* 반전 텍스트 */
+  /* 텍스트 */
+  --color-text-primary: #f4f4f5;   /* zinc-100 */
+  --color-text-secondary: #a1a1aa; /* zinc-400 */
+  --color-text-disabled: #71717a;  /* zinc-500 */
+  --color-text-inverse: #18181b;
   
-  /* 테두리 - 데모 버전 */
-  --color-border-default: #404040; /* 기본 테두리 */
-  --color-border-hover: #525252;   /* 호버 테두리 */
+  /* 테두리 - 더 밝게 */
+  --color-border-default: #52525b; /* zinc-600 */
+  --color-border-hover: #71717a;   /* zinc-500 */
   --color-border-focus: var(--primary-400);
   
   /* Primary 색상 - 데모 버전 다크모드용 */
