@@ -326,6 +326,7 @@ class AssistantTurn(BaseModel):
 class AssistantAsk(BaseModel):
     question: str = Field(..., min_length=1)
     history: Optional[List[AssistantTurn]] = None  # 프론트 세션의 최근 대화 (서버 무상태)
+    customer_id: Optional[str] = None  # 특정 고객 컨텍스트로 질문할 때 (고객 상세 탭 등)
 
     @field_validator("question")
     @classmethod

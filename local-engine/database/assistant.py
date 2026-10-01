@@ -58,13 +58,13 @@ def _is_broad_question(question: str) -> bool:
 
 _SYSTEM_PROMPT = """당신은 한 보험 설계사의 고객 관리(CRM) 데이터를 조회해 주는 AI 비서입니다. 아래 규칙을 반드시 지키세요.
 
-0. 이 AI 는 CRM 데이터 조회 전용이다. 보장 금액·지급 조건·약관 내용은 이 데이터로 답하지 말고 '고객 상세의 [이 고객 약관에 질문]을 이용하세요' 라고 안내하라.
-1. 오직 [고객 데이터]와 [집계]에 있는 내용만 근거로 답하세요. 거기에 없는 사실·숫자·날짜는 추측하거나 지어내지 마세요.
+0. [고객 보장 데이터] 블록이 제공된 경우, 그 안의 계약·담보·보장현황 데이터로 직접 답하세요. 블록이 없을 때만 "약관에 질문하세요"라고 안내하세요.
+1. 오직 [고객 데이터], [집계], [고객 보장 데이터]에 있는 내용만 근거로 답하세요. 거기에 없는 사실·숫자·날짜는 추측하거나 지어내지 마세요.
 2. [고객 데이터]에는 질문 관련 고객만 실릴 수 있다. [전체 고객 명단]에 이름이 있는데 상세가 없으면 어느 분인지 되물어라. 질문한 고객이나 정보가 명단에도 없으면 answer 에 "해당 정보를 찾지 못했습니다."라고 쓰고 no_data 를 true 로 두세요.
 3. 금액·날짜·전화번호는 데이터에 적힌 값을 그대로 옮기세요. 반올림·환산하지 마세요.
 4. 보험료 합계·인원수·만기 임박 목록 같은 집계는 [집계] 블록의 값을 그대로 쓰세요. 직접 계산하지 마세요.
 5. 같은 이름의 고객이 여러 명이면 생년월일로 구분해 모두 안내하거나, 어느 분인지 되물으세요.
-6. 특정 보험의 약관 내용(보장 금액·조건 등)은 이 데이터로 알 수 없습니다. 그런 질문이면 "약관 내용은 고객 상세의 '이 고객 약관에 질문'에서 확인하세요"라고 답하고 no_data 를 true 로 두세요.
+6. [고객 보장 데이터] 블록이 없는 상태에서 특정 보험의 약관 내용(보장 금액·조건 등)을 물으면 "약관 내용은 고객 상세의 '이 고객 약관에 질문'에서 확인하세요"라고 답하고 no_data 를 true 로 두세요.
 7. 주민등록번호는 데이터에 없으며 답하지 않습니다.
 8. 답변은 한국어로 1~4문장.
 9. 반드시 아래 JSON 하나만 출력하세요. 앞뒤에 다른 말을 붙이지 마세요.
@@ -397,6 +397,95 @@ def _customer_summary(
     return "\n".join(out).rstrip()
 
 
+def _customer_coverage_block(conn, customer_id: str) -> str:
+    """customer_id 지정 시 해당 고객의 계약 + 보장현황을 텍스트 블록으로 반환.
+    rrn·transcript·coverage_json 원문은 제외하고, 보장현황(coverage_json)은 파싱해서 요약."""
+    customer = repo.get_customer(conn, customer_id)
+    if not customer:
+        return ""
+    name = customer.get("name") or "?"
+    lines: list[str] = [f"[고객 보장 데이터] — {name}"]
+
+    # 1. 계약 목록
+    policies = repo.list_policies(conn, customer_id)
+    if policies:
+        lines.append("■ 계약 목록:")
+        for p in policies:
+            prem = p.get("premium")
+            cyc = "일시납" if _is_lump_sum(p.get("payment_cycle")) else (
+                "연납" if _is_yearly(p.get("payment_cycle")) else "월납"
+            )
+            end = p.get("end_date") or "만기미상"
+            ins = p.get("insurer") or "?"
+            prod = p.get("product_name") or "?"
+            ip = p.get("insured_period") or ""
+            prem_txt = f"{cyc} {prem:,}원" if prem is not None else f"{cyc} 미상"
+            status = p.get("status") or "?"
+            line = f"  - {ins} / {prod} / {prem_txt} / 만기:{end}"
+            if ip:
+                line += f" / 보험기간:{ip}"
+            line += f" / {status}"
+            lines.append(line)
+    else:
+        lines.append("■ 등록된 계약 없음")
+
+    # 2. 보장현황 (consultations.coverage_json) — 가장 최근 항목
+    consultations = repo.list_consultations(conn, customer_id)
+    cov_items: list[dict] = []
+    for k in consultations:
+        cj = k.get("coverage_json")
+        if not cj:
+            continue
+        try:
+            parsed = json.loads(cj)
+            if isinstance(parsed, list) and parsed:
+                cov_items = parsed
+                break  # 최신 것 하나면 충분
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    if cov_items:
+        lines.append("■ 보장현황 (보장분석서 기준):")
+        for item in cov_items:
+            n = item.get("name") or "?"
+            st = item.get("status") or "?"
+            cur = item.get("current")
+            rec = item.get("recommended")
+            pct = item.get("pct")
+            amt_txt = ""
+            if cur is not None:
+                amt_txt += f" 현재:{cur}"
+            if rec is not None:
+                amt_txt += f" 권장:{rec}"
+            if pct is not None:
+                amt_txt += f" ({pct}%)"
+            lines.append(f"  · {n}: {st}{amt_txt}")
+
+    return "\n".join(lines)
+
+
+def _rule_based_coverage_answer(question: str, coverage_block: str, customer_name: str) -> Optional[str]:
+    """Ollama 불능 시 보장 키워드 매칭으로 직접 답변. 매칭 실패 시 None."""
+    if not coverage_block:
+        return None
+    # 질문에서 담보명 키워드 추출 (2글자 이상 한글·숫자 조합)
+    q_tokens = re.findall(r"[가-힣]{2,}|[가-힣]+[0-9]+[가-힣]*", question)
+    if not q_tokens:
+        return None
+    lines = coverage_block.splitlines()
+    matched: list[str] = []
+    for line in lines:
+        if not line.strip().startswith("·") and "·" not in line:
+            continue
+        for tok in q_tokens:
+            if tok in line:
+                matched.append(line.strip().lstrip("· "))
+                break
+    if not matched:
+        return f"{customer_name} 고객의 보장현황에서 해당 담보를 찾지 못했습니다."
+    return f"{customer_name} 고객의 보장현황:\n" + "\n".join(f"  · {m}" for m in matched)
+
+
 def build_context(conn, question: Optional[str] = None) -> str:
     """[집계] + [고객 데이터] 를 한 문자열로."""
     if question is None:
@@ -429,9 +518,14 @@ def _serialize_history(history: Optional[list]) -> str:
 
 
 def answer(
-    conn, question: str, history: Optional[list] = None, model: Optional[str] = None
+    conn, question: str, history: Optional[list] = None, model: Optional[str] = None,
+    customer_id: Optional[str] = None,
 ) -> dict:
-    """질문 → {answer, used_customers, data_scope, model, no_data, grounded}."""
+    """질문 → {answer, used_customers, data_scope, model, no_data, grounded}.
+
+    customer_id 가 있으면 해당 고객의 계약·보장현황을 [고객 보장 데이터] 블록으로 추가해
+    LLM 이 직접 보장 금액을 답할 수 있게 한다. Ollama 불능 시 규칙기반 fallback 적용.
+    """
     model = model or LLM_MODEL
     own_only = _is_own_only_question(question)
     hints = _aggregate_hints(conn)
@@ -440,6 +534,16 @@ def answer(
     summary = _customer_summary(conn, own_only=own_only) if picked is None else _customer_summary(conn, own_only=own_only, customers=picked, with_contact_extra=contact)
     roster = "" if picked is None else "\n\n" + _customer_roster(repo.list_customers(conn, limit=10000))
     history_lines = _serialize_history(history)
+
+    # customer_id 지정 시 해당 고객 보장 데이터 블록 추가
+    coverage_block = ""
+    customer_name = ""
+    if customer_id:
+        coverage_block = _customer_coverage_block(conn, customer_id)
+        c = repo.get_customer(conn, customer_id)
+        customer_name = (c.get("name") or "") if c else ""
+        # RRN 패턴이 들어있으면 제거 (안전장치)
+        coverage_block = _RRN13_RE.sub("[주민번호 제외]", coverage_block)
 
     own_directive = (
         "\n\n[지시] 사용자는 본인이 직접 가입시킨 계약만 묻고 있다. "
@@ -452,15 +556,34 @@ def answer(
         + own_directive
         + f"\n\n[집계]\n{hints}"
         + f"\n\n[고객 데이터]\n{summary}{roster}"
+        + (f"\n\n{coverage_block}" if coverage_block else "")
         + f"\n\n[이전 대화]\n{history_lines or '(없음)'}"
         + f"\n\n[질문]\n{question}\n\n[출력 JSON]"
     )
 
-    data = _call_llm(prompt, model)
+    # Ollama 호출 — 실패 시 규칙기반 fallback
+    try:
+        data = _call_llm(prompt, model)
+    except Exception:
+        data = {}
+
     if not data or "answer" not in data:
-        # answerer.py 식 폴백 (원문 텍스트는 _call_llm 이 이미 버렸으므로 비어 있음)
+        # Ollama 불능: customer_id + coverage_block 있으면 키워드 매칭으로 직접 답변
+        fallback_answer = None
+        if coverage_block and customer_name:
+            fallback_answer = _rule_based_coverage_answer(question, coverage_block, customer_name)
+        if fallback_answer:
+            return {
+                "answer": fallback_answer,
+                "used_customers": [{"id": customer_id, "name": customer_name}] if customer_id else [],
+                "data_scope": "filtered",
+                "model": "rule_based_fallback",
+                "no_data": False,
+                "grounded": True,
+                "own_only": own_only,
+            }
         data = {
-            "answer": "답변을 생성하지 못했습니다.",
+            "answer": "AI 엔진에 연결할 수 없어 답변을 생성하지 못했습니다.",
             "used_customer_names": [],
             "grounded": False,
             "no_data": False,
@@ -468,8 +591,13 @@ def answer(
 
     no_data = bool(data.get("no_data"))
     used_customers: list[dict] = []
+    # customer_id 지정 시 해당 고객을 used_customers에 항상 포함
+    if customer_id and not no_data:
+        c = repo.get_customer(conn, customer_id)
+        if c:
+            used_customers.append({"id": customer_id, "name": c.get("name") or ""})
     if not no_data:
-        seen: set[str] = set()
+        seen: set[str] = {c["id"] for c in used_customers}
         for nm in data.get("used_customer_names") or []:
             if not isinstance(nm, str) or not nm.strip():
                 continue
@@ -481,7 +609,7 @@ def answer(
     return {
         "answer": data.get("answer") or "답변을 생성하지 못했습니다.",
         "used_customers": used_customers,
-        "data_scope": "filtered" if picked is not None else "all",
+        "data_scope": "filtered" if (picked is not None or customer_id) else "all",
         "model": model,
         "no_data": no_data,
         "grounded": bool(data.get("grounded")),

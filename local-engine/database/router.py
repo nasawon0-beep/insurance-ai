@@ -198,6 +198,7 @@ def assistant_ask(body: AssistantAsk, conn=Depends(get_conn)):
             conn,
             body.question,
             [t.model_dump() for t in (body.history or [])],
+            customer_id=body.customer_id,
         )
     except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout):
         raise HTTPException(
