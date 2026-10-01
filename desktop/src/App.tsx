@@ -1929,7 +1929,7 @@ function DiagnosticsScreen({
 }
 
 // 아키텍처 사이드바: 상담자 홈 / 고객 / 약관 / 상담(V0.2~) / 설정·진단
-type View = "home" | "newcustomer" | "customers" | "coverage" | "assistant" | "diagnostics";
+type View = "home" | "newcustomer" | "customers" | "import" | "coverage" | "assistant" | "diagnostics";
 
 function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) => void }) {
   const { pendingTasks } = useAssistant();
@@ -2269,6 +2269,7 @@ function App() {
           {tab("home", "홈")}
           {tab("newcustomer", "새 고객")}
           {tab("customers", "고객 목록")}
+          {tab("import", "일괄 등록")}
           {tab("coverage", "보장분석")}
           {tab("assistant", "AI 문의")}
           {tab("diagnostics", "설정·진단")}
@@ -2314,6 +2315,12 @@ function App() {
             onListViewConsumed={() => setFocusListView(null)}
             onDraftChange={handleDraftChange}
           />
+        )}
+        {view === "import" && (
+          <div style={{ padding: "24px", maxWidth: 800, margin: "0 auto" }}>
+            <h2 style={{ marginBottom: 16 }}>엑셀 일괄 등록</h2>
+            <ImportWizard />
+          </div>
         )}
         {view === "coverage" && <CoverageAnalysisScreen />}
         {view === "assistant" && <AssistantScreen onOpenCustomer={openCustomer} />}
