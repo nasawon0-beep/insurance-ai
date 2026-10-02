@@ -27,9 +27,80 @@ type AssistantTask = {
   question: string;
   history: { role: string; content: string }[];
   status: "pending" | "completed" | "error";
+  customer_id?: string;
   result?: Message;
   error?: string;
 };
+
+type CustomerSearchResult = {
+  id: string;
+  name?: string | null;
+};
+
+const CUSTOMER_NAME_STOPWORDS = new Set([
+  "고객",
+  "보험",
+  "보험료",
+  "만기",
+  "계약",
+  "보장",
+  "진단비",
+  "뇌진단비",
+  "암진단비",
+  "얼마",
+  "얼마야",
+  "얼마있어",
+  "언제",
+  "문의",
+  "이번",
+  "생일",
+  "후속",
+  "연락",
+]);
+
+function normalizeName(value: string): string {
+  return value.replace(/\s+/g, "").trim();
+}
+
+function customerNameCandidates(question: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of question.match(/[가-힣]{2,10}/g) ?? []) {
+    let token = raw.replace(/(고객님|고객|님|씨|의|은|는|이|가|을|를|에게|한테|께)$/u, "");
+    if (token.length < 2 || CUSTOMER_NAME_STOPWORDS.has(token)) continue;
+
+    const candidates = [token];
+    if (token.length > 4) candidates.push(token.slice(0, 4), token.slice(0, 3), token.slice(0, 2));
+    else if (token.length > 3) candidates.push(token.slice(0, 3), token.slice(0, 2));
+
+    for (const candidate of candidates) {
+      if (candidate.length < 2 || CUSTOMER_NAME_STOPWORDS.has(candidate) || seen.has(candidate)) continue;
+      seen.add(candidate);
+      out.push(candidate);
+    }
+  }
+  return out;
+}
+
+async function resolveCustomerIdFromQuestion(question: string): Promise<string | undefined> {
+  for (const candidate of customerNameCandidates(question)) {
+    const res = await api(`/customers?q=${encodeURIComponent(candidate)}&limit=5`);
+    const customers = Array.isArray(res?.customers) ? (res.customers as CustomerSearchResult[]) : [];
+    if (!customers.length) continue;
+
+    const exact = customers.find((c) => normalizeName(c.name ?? "") === normalizeName(candidate));
+    if (exact?.id) return exact.id;
+
+    const contained = customers.find((c) => {
+      const name = normalizeName(c.name ?? "");
+      return name.length >= 2 && (question.includes(name) || name.includes(candidate));
+    });
+    if (contained?.id) return contained.id;
+
+    if (customers.length === 1 && customers[0].id) return customers[0].id;
+  }
+  return undefined;
+}
 
 type AssistantContextType = {
   messages: Message[];
@@ -59,9 +130,16 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         if (task.status !== "pending") continue;
 
         try {
+          const customerId = task.customer_id ?? (await resolveCustomerIdFromQuestion(task.question).catch(() => undefined));
+          const payload: { question: string; history: { role: string; content: string }[]; customer_id?: string } = {
+            question: task.question,
+            history: task.history,
+          };
+          if (customerId) payload.customer_id = customerId;
+
           const res = await api("/assistant/ask", {
             method: "POST",
-            body: JSON.stringify({ question: task.question, history: task.history }),
+            body: JSON.stringify(payload),
           });
 
           const assistantMessage: Message = {
