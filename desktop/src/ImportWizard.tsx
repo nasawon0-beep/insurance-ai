@@ -61,7 +61,10 @@ const GUESS: Record<string, RegExp> = {
 
 const NONE = "";
 
-export default function ImportWizard() {
+type BackgroundJobStatus = "running" | "done" | "error";
+type BackgroundJobReporter = (event: { id: string; label: string; status: BackgroundJobStatus; message: string }) => void;
+
+export default function ImportWizard({ onBackgroundJob }: { onBackgroundJob?: BackgroundJobReporter }) {
   const fields = useMemo(
     () => Object.keys(FIELD_LABELS).filter((f) => f !== "rrn" || rrnEnabled()),
     [],
@@ -81,6 +84,7 @@ export default function ImportWizard() {
     setErr(null);
     setPreview(null);
     setBusy(true);
+    onBackgroundJob?.({ id: "import-preview", label: "일괄 등록", status: "running", message: "일괄등록 파일 읽는 중…" });
     try {
       const fd = new FormData();
       fd.append("file", f);
@@ -98,8 +102,11 @@ export default function ImportWizard() {
         if (hit) auto[fld] = hit;
       }
       setMapping(auto);
+      onBackgroundJob?.({ id: "import-preview", label: "일괄 등록", status: "done", message: `일괄등록 파일 읽기 완료 — ${p.row_count}행` });
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setErr(message);
+      onBackgroundJob?.({ id: "import-preview", label: "일괄 등록", status: "error", message: "일괄등록 파일 읽기 실패: " + message });
     } finally {
       setBusy(false);
     }
@@ -125,6 +132,7 @@ export default function ImportWizard() {
     }
     setBusy(true);
     setErr(null);
+    onBackgroundJob?.({ id: "import-commit", label: "일괄 등록", status: "running", message: "일괄등록 가져오기 진행 중…" });
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -137,8 +145,11 @@ export default function ImportWizard() {
       }
       const res: Result = await r.json();
       setResult(res);
+      onBackgroundJob?.({ id: "import-commit", label: "일괄 등록", status: "done", message: `일괄등록 완료 — 신규 ${res.created} · 병합 ${res.merged}` });
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setErr(message);
+      onBackgroundJob?.({ id: "import-commit", label: "일괄 등록", status: "error", message: "일괄등록 실패: " + message });
     } finally {
       setBusy(false);
     }

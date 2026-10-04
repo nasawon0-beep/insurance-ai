@@ -309,6 +309,7 @@ export default function CustomersScreen({
   onFocusConsumed,
   onListViewConsumed,
   onDraftChange,
+  onBackgroundJob,
 }: {
   focusCustomer?: { id: string; nonce: number } | null;
   focusListView?: { view: "expiry" | "birthday"; nonce: number } | null;
@@ -318,6 +319,7 @@ export default function CustomersScreen({
   onListViewConsumed?: () => void;
   // 상위(App)가 상단 탭 전환 전에 미저장 분석 초안·분석 진행 여부를 물어볼 수 있게 알린다.
   onDraftChange?: (state: { hasDraft: boolean; isAnalyzing: boolean }) => void;
+  onBackgroundJob?: (event: { id: string; label: string; status: "running" | "done" | "error"; message: string }) => void;
 }) {
   const [list, setList] = useState<Customer[]>([]);
   const [q, setQ] = useState("");
@@ -752,6 +754,7 @@ export default function CustomersScreen({
   const saveCustomer = async () => {
     setError(null);
     setNotice(null);
+    onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: "running", message: mode === "new" ? "새고객 등록 중…" : "고객 저장 중…" });
     try {
       const payload: Record<string, unknown> = nullifyBlanks(form);
       payload.tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
@@ -825,6 +828,7 @@ export default function CustomersScreen({
             `계약 저장 실패 ${pol.failures.length}건:\n` +
               pol.failures.map((f) => `· ${f.label} — ${f.error}`).join("\n"),
           );
+        onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: pol.failures.length ? "error" : "done", message: pol.failures.length ? `새고객 등록 완료, 계약 ${pol.failures.length}건 실패` : `${created.name} 등록 완료` });
       } else if (selectedId) {
         await api(`/customers/${selectedId}`, {
           method: "PATCH",
@@ -869,10 +873,13 @@ export default function CustomersScreen({
             `계약 저장 실패 ${pol.failures.length}건:\n` +
               pol.failures.map((f) => `· ${f.label} — ${f.error}`).join("\n"),
           );
+        onBackgroundJob?.({ id: "customer-save", label: "고객 저장", status: pol.failures.length ? "error" : "done", message: pol.failures.length ? `고객 저장 완료, 계약 ${pol.failures.length}건 실패` : "고객 저장 완료" });
       }
       if (rrnError) setError(rrnError);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: "error", message: "새고객 등록 실패: " + message });
     }
   };
 
@@ -943,14 +950,18 @@ export default function CustomersScreen({
     setBulkRows([]);
     setDupMatch(null);
     setMergePreview(null);
+    onBackgroundJob?.({ id: "customer-intake", label: "새고객 등록", status: "running", message: "새고객 텍스트 분석 중…" });
     try {
       const r = await api("/customers/intake/bulk", {
         method: "POST",
         body: JSON.stringify({ text: intakeText }),
       });
       applyItems((r.items ?? []) as any[]);
+      onBackgroundJob?.({ id: "customer-intake", label: "새고객 등록", status: "done", message: `새고객 분석 완료 — ${(r.items ?? []).length}건` });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      onBackgroundJob?.({ id: "customer-intake", label: "새고객 등록", status: "error", message: "새고객 분석 실패: " + message });
     } finally {
       setIntakeBusy(false);
     }
@@ -967,6 +978,7 @@ export default function CustomersScreen({
     setDupMatch(null);
     setMergePreview(null);
     setFileKind(isAudio ? "audio" : "doc");
+    onBackgroundJob?.({ id: "customer-file-intake", label: "새고객 등록", status: "running", message: isAudio ? "새고객 녹취 분석 중…" : "새고객 파일 분석 중…" });
     try {
       const fd = new FormData();
       fd.append("file", f);
@@ -976,8 +988,11 @@ export default function CustomersScreen({
       applyItems((b.items ?? []) as any[]);
       setIntakeContext(""); // 분석에 반영됐으니 비운다
       setStagedIntake(null);
+      onBackgroundJob?.({ id: "customer-file-intake", label: "새고객 등록", status: "done", message: `새고객 파일 분석 완료 — ${(b.items ?? []).length}건` });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      onBackgroundJob?.({ id: "customer-file-intake", label: "새고객 등록", status: "error", message: "새고객 파일 분석 실패: " + message });
     } finally {
       setAudioIntakeBusy(false);
       setFileKind(null);
@@ -1003,6 +1018,7 @@ export default function CustomersScreen({
     setError(null);
     setNotice(null);
     setBulkBusy(true);
+    onBackgroundJob?.({ id: "customer-bulk", label: "새고객 일괄", status: "running", message: "새고객 일괄 저장 중…" });
     const res = { created: 0, merged: 0, skipped: 0, failed: 0, coverageAnalyses: 0 };
     let lastErr: string | null = null;
     // 주민번호는 던져넣기와 동일하게 항상 별도 PATCH (본 payload 와 분리).
@@ -1073,6 +1089,7 @@ export default function CustomersScreen({
         (res.failed ? ` · 실패 ${res.failed}` : ""),
     );
     if (lastErr) setError(lastErr);
+    onBackgroundJob?.({ id: "customer-bulk", label: "새고객 일괄", status: lastErr ? "error" : "done", message: lastErr ? "새고객 일괄 저장 오류: " + lastErr : `새고객 일괄 완료 — 신규 ${res.created} · 보완 ${res.merged}` });
   };
 
   const clearRrn = async () => {

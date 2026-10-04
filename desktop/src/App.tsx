@@ -197,7 +197,19 @@ type LastCaptureBatch = {
   at: number;
 };
 
-function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: string) => void; onChanged: () => void }) {
+type BackgroundJobStatus = "running" | "done" | "error";
+type BackgroundJobEvent = { id: string; label: string; status: BackgroundJobStatus; message: string };
+type BackgroundJobReporter = (event: BackgroundJobEvent) => void;
+
+function CapturePanel({
+  onOpenCustomer,
+  onChanged,
+  onBackgroundJob,
+}: {
+  onOpenCustomer: (id: string) => void;
+  onChanged: () => void;
+  onBackgroundJob?: BackgroundJobReporter;
+}) {
   const [text, setText] = useState("");
   const [context, setContext] = useState(""); // 업로드 파일에 대한 설명·요청 (분석에만 반영, 저장 안 함)
   const [staged, setStaged] = useState<File | null>(null); // 끌어다 놓은/고른 파일 — 바로 분석 안 하고 대기
@@ -362,6 +374,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     setErr(null);
     setMsg(null);
     setRows([]);
+    onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "running", message: file ? "던져넣기 파일 분석 중…" : "던져넣기 텍스트 분석 중…" });
     try {
       const fd = new FormData();
       if (text.trim()) fd.append("text", text.trim());
@@ -387,6 +400,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
       );
       setContext(""); // 분석에 반영됐으니 비운다
       setStaged(null);
+      onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "done", message: `던져넣기 분석 완료 — ${(b.items ?? []).length}건` });
     } catch (e) {
       if ((e as any)?.status === 409 && file) {
         setSttStatus((e as any).body?.stt_status || null);
@@ -399,7 +413,9 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
         pollStt(file);
         return;
       }
-      setErr(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setErr(message);
+      onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "error", message: "던져넣기 분석 실패: " + message });
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -456,6 +472,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     setMsg(null);
     setBusy(true);
     setPhase("저장 중…");
+    onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "running", message: "던져넣기 저장 중…" });
     const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, consultations: 0, coverageAnalyses: 0 };
     let lastNewId: string | null = null;
     let mergedId: string | null = null;
@@ -589,6 +606,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
     const onlyMerge = res.merged === 1 && total === 1;
     const single = (onlyNew && lastNewId) || (onlyMerge && mergedId);
     if (single && !policyFails.length && !rrnErr && !saveErr) {
+      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "done", message: "던져넣기 저장 완료" });
       reset();
       onOpenCustomer((lastNewId || mergedId)!);
       return;
@@ -607,7 +625,13 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
           policyFails.map((f) => `· ${f.label} — ${f.error}`).join("\n"),
       rrnErr && "주민번호 저장 실패: " + rrnErr,
     ].filter(Boolean);
-    if (errs.length) setErr(errs.join(" / "));
+    if (errs.length) {
+      const message = errs.join(" / ");
+      setErr(message);
+      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "error", message: "던져넣기 저장 오류: " + message });
+    } else {
+      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "done", message: `던져넣기 완료 — 신규 ${res.created} · 갱신 ${res.merged}` });
+    }
   };
 
   const undoLastBatch = async () => {
@@ -1066,7 +1090,7 @@ function CapturePanel({ onOpenCustomer, onChanged }: { onOpenCustomer: (id: stri
   );
 }
 
-function HomeScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }) {
+function HomeScreen({ onOpenCustomer, onBackgroundJob }: { onOpenCustomer: (id: string) => void; onBackgroundJob?: BackgroundJobReporter }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ownOnly, setOwnOnly] = useState(() => localStorage.getItem("iai.own_only") === "1");
@@ -1133,7 +1157,7 @@ function HomeScreen({ onOpenCustomer }: { onOpenCustomer: (id: string) => void }
         />
         내 계약만
       </label>
-      <CapturePanel onOpenCustomer={onOpenCustomer} onChanged={load} />
+      <CapturePanel onOpenCustomer={onOpenCustomer} onChanged={load} onBackgroundJob={onBackgroundJob} />
       {error && <p style={{ color: "#b00" }}>대시보드 오류: {error}</p>}
       {!data ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>
@@ -1925,6 +1949,16 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
   );
 }
 
+function AssistantBackgroundBanner() {
+  const { pendingTasks } = useAssistant();
+  if (pendingTasks <= 0) return null;
+  return (
+    <div style={{ background: "#f5f3ff", color: "#5b21b6", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid #ddd6fe" }} role="status" aria-live="polite">
+      AI문의 진행 중… 다른 탭에서도 계속 처리됩니다.
+    </div>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
   const [needsOnboarding, setNeedsOnboarding] = useState(
@@ -1943,6 +1977,8 @@ function App() {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [engineReconnect, setEngineReconnect] = useState<{ status: "idle" | "connecting" | "error"; error?: string }>({ status: "idle" });
+  const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJobEvent[]>([]);
+  const [toast, setToast] = useState<BackgroundJobEvent | null>(null);
   // CustomersScreen 은 탭 전환("새 고객"↔"고객 목록"↔"AI 문의" 등) 때마다 통째로
   // unmount/mount 되므로, 미저장 분석 초안·분석 진행 여부는 그 화면이 직접 올려보낸 값을 여기서 지킨다.
   // hasDraft(확인 후 이동 가능)와 isAnalyzing(이동 자체를 막음)을 분리해, 내부 목록 이동 가드
@@ -1954,6 +1990,19 @@ function App() {
   const handleDraftChange = useCallback((s: { hasDraft: boolean; isAnalyzing: boolean }) => {
     hasDraftRef.current = s.hasDraft;
     isAnalyzingRef.current = s.isAnalyzing;
+  }, []);
+
+  const reportBackgroundJob = useCallback((event: BackgroundJobEvent) => {
+    setBackgroundJobs((prev) => {
+      const without = prev.filter((job) => job.id !== event.id);
+      return event.status === "running" ? [...without, event] : without;
+    });
+    if (event.status !== "running") {
+      setToast(event);
+      window.setTimeout(() => {
+        setToast((current) => (current?.id === event.id && current?.message === event.message ? null : current));
+      }, 6000);
+    }
   }, []);
 
   const checkForUpdates = useCallback(async () => {
@@ -2123,10 +2172,8 @@ function App() {
   // 분석이 실제로 도는 중이면(isAnalyzing) 이동 자체를 막고(내부 목록 가드와 동일 정책),
   // 미저장 결과만 있으면(hasDraft) 확인 후 이동을 허용한다 — 허용되면 플래그도 같이 내린다.
   const tryLeaveCurrentScreen = () => {
-    if (isAnalyzingRef.current) {
-      window.alert("분석이 진행 중입니다. 완료된 뒤 이동해 주세요.");
-      return false;
-    }
+    // 분석/저장 작업은 화면 컴포넌트를 숨긴 상태로 계속 살려두므로 탭 이동을 막지 않는다.
+    // 미저장 결과(hasDraft)만 기존처럼 확인한다.
     if (hasDraftRef.current && !window.confirm("저장하지 않은 분석 결과가 있습니다. 버리고 이동할까요?")) {
       return false;
     }
@@ -2236,6 +2283,20 @@ function App() {
             </button>
           </span>
         </nav>
+        <AssistantBackgroundBanner />
+        {backgroundJobs.length > 0 && (
+          <div style={{ background: "#eff6ff", color: "#1d4ed8", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid #bfdbfe" }} role="status" aria-live="polite">
+            {backgroundJobs.map((job) => job.message).join(" · ")}
+            <div style={{ height: 3, background: "#bfdbfe", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
+              <div style={{ width: "35%", height: "100%", background: "#2563eb", borderRadius: 999 }} />
+            </div>
+          </div>
+        )}
+        {toast && (
+          <div style={{ position: "fixed", right: 16, top: 64, zIndex: 1000, maxWidth: 360, background: toast.status === "error" ? "#fef2f2" : "#ecfdf5", color: toast.status === "error" ? "#991b1b" : "#166534", border: `1px solid ${toast.status === "error" ? "#fecaca" : "#bbf7d0"}`, borderRadius: 10, padding: "10px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", fontSize: 13 }}>
+            {toast.message}
+          </div>
+        )}
         {expiringCount > 0 && !bannerDismissed && (
           <div style={{ background: "var(--color-bg-surface)", color: "#8a4b00", fontSize: 13, padding: "6px 12px", display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #f0d9b5" }}>
             <span
@@ -2252,15 +2313,18 @@ function App() {
             </button>
           </div>
         )}
-        {view === "home" && <HomeScreen onOpenCustomer={openCustomer} />}
-        {view === "newcustomer" && (
+        <div style={{ display: view === "home" ? "block" : "none" }} aria-hidden={view !== "home"}>
+          <HomeScreen onOpenCustomer={openCustomer} onBackgroundJob={reportBackgroundJob} />
+        </div>
+        <div style={{ display: view === "newcustomer" ? "block" : "none" }} aria-hidden={view !== "newcustomer"}>
           <CustomersScreen
             screen="new"
             onOpenCustomer={openCustomer}
             onDraftChange={handleDraftChange}
+            onBackgroundJob={reportBackgroundJob}
           />
-        )}
-        {view === "customers" && (
+        </div>
+        <div style={{ display: view === "customers" ? "block" : "none" }} aria-hidden={view !== "customers"}>
           <CustomersScreen
             screen="list"
             focusCustomer={focusCustomer}
@@ -2269,17 +2333,22 @@ function App() {
             onFocusConsumed={() => setFocusCustomer(null)}
             onListViewConsumed={() => setFocusListView(null)}
             onDraftChange={handleDraftChange}
+            onBackgroundJob={reportBackgroundJob}
           />
-        )}
-        {view === "import" && (
+        </div>
+        <div style={{ display: view === "import" ? "block" : "none" }} aria-hidden={view !== "import"}>
           <div style={{ padding: "24px", maxWidth: 800, margin: "0 auto" }}>
             <h2 style={{ marginBottom: 16 }}>엑셀 일괄 등록</h2>
-            <ImportWizard />
+            <ImportWizard onBackgroundJob={reportBackgroundJob} />
           </div>
-        )}
-        {view === "coverage" && <CoverageAnalysisScreen />}
-        {view === "assistant" && <AssistantScreen onOpenCustomer={openCustomer} />}
-        {view === "diagnostics" && (
+        </div>
+        <div style={{ display: view === "coverage" ? "block" : "none" }} aria-hidden={view !== "coverage"}>
+          <CoverageAnalysisScreen />
+        </div>
+        <div style={{ display: view === "assistant" ? "block" : "none" }} aria-hidden={view !== "assistant"}>
+          <AssistantScreen onOpenCustomer={openCustomer} />
+        </div>
+        <div style={{ display: view === "diagnostics" ? "block" : "none" }} aria-hidden={view !== "diagnostics"}>
           <DiagnosticsScreen
             onOpenCustomer={openCustomer}
             onRestartOnboarding={() => {
@@ -2289,7 +2358,7 @@ function App() {
               setNeedsOnboarding(true);
             }}
           />
-        )}
+        </div>
       </div>
     </AssistantProvider>
   );
