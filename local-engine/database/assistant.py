@@ -31,7 +31,44 @@ LLM_MODEL = os.environ.get(
 )
 SUMMARY_LLM_MODEL = os.environ.get("ASSISTANT_SUMMARY_LLM_MODEL", "qwen2.5:3b")
 COMPLEX_LLM_MODEL = os.environ.get("ASSISTANT_COMPLEX_LLM_MODEL", "qwen2.5:7b")
-KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+
+
+def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+def _default_num_thread() -> int:
+    """상원님 Windows PC 논리 코어 수에 맞추되, 환경변수로 언제든 끌 수 있게 한다."""
+    raw = os.environ.get("OLLAMA_NUM_THREAD")
+    if raw and raw.lower() == "auto":
+        return 0
+    if raw:
+        return _int_env("OLLAMA_NUM_THREAD", 0, minimum=0)
+    return max(1, os.cpu_count() or 1)
+
+
+KEEP_ALIVE = os.environ.get(
+    "OLLAMA_ASSISTANT_KEEP_ALIVE",
+    os.environ.get("OLLAMA_LLM_KEEP_ALIVE", os.environ.get("OLLAMA_KEEP_ALIVE", "10m")),
+)
+NUM_CTX = _int_env("OLLAMA_ASSISTANT_NUM_CTX", _int_env("OLLAMA_NUM_CTX", 2048), minimum=512)
+NUM_PREDICT = _int_env("OLLAMA_ASSISTANT_NUM_PREDICT", 512, minimum=128)
+NUM_THREAD = _default_num_thread()
+
+
+def _ollama_options() -> dict[str, int | float]:
+    options: dict[str, int | float] = {
+        "temperature": 0,
+        "num_predict": NUM_PREDICT,
+        "num_ctx": NUM_CTX,
+    }
+    if NUM_THREAD:
+        options["num_thread"] = NUM_THREAD
+    return options
 
 _MEMO_CAP = 200
 _HISTORY_TURNS = 6
@@ -83,8 +120,7 @@ def _call_llm(prompt: str, model: str) -> dict:
         "stream": False,
         "format": "json",
         "keep_alive": KEEP_ALIVE,
-        # num_ctx 는 워밍업(main._warm_ollama)과 같은 값이어야 재로딩이 안 생긴다.
-        "options": {"temperature": 0, "num_predict": 700, "num_ctx": 4096},
+        "options": _ollama_options(),
     }
     req = urllib.request.Request(
         f"{OLLAMA_BASE}/api/generate",

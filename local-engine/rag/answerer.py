@@ -22,6 +22,43 @@ from .pipeline import search
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL = os.environ.get("RAG_LLM_MODEL", "qwen2.5:7b")
 MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.1"))
+KEEP_ALIVE = os.environ.get(
+    "OLLAMA_RAG_KEEP_ALIVE",
+    os.environ.get("OLLAMA_LLM_KEEP_ALIVE", os.environ.get("OLLAMA_KEEP_ALIVE", "10m")),
+)
+
+
+def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+def _default_num_thread() -> int:
+    raw = os.environ.get("OLLAMA_NUM_THREAD")
+    if raw and raw.lower() == "auto":
+        return 0
+    if raw:
+        return _int_env("OLLAMA_NUM_THREAD", 0, minimum=0)
+    return max(1, os.cpu_count() or 1)
+
+
+NUM_CTX = _int_env("OLLAMA_RAG_NUM_CTX", _int_env("OLLAMA_NUM_CTX", 2048), minimum=512)
+NUM_PREDICT = _int_env("OLLAMA_RAG_NUM_PREDICT", 512, minimum=128)
+NUM_THREAD = _default_num_thread()
+
+
+def _ollama_options() -> dict[str, int | float]:
+    options: dict[str, int | float] = {
+        "temperature": 0,
+        "num_predict": NUM_PREDICT,
+        "num_ctx": NUM_CTX,
+    }
+    if NUM_THREAD:
+        options["num_thread"] = NUM_THREAD
+    return options
 
 ABSTAIN_TEXT = "해당 약관에서 지급 여부를 확정할 근거를 찾지 못했습니다."
 
@@ -56,8 +93,8 @@ def _call_llm(model: str, question: str, context: str) -> dict:
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m"),
-        "options": {"temperature": 0, "num_predict": 700},
+        "keep_alive": KEEP_ALIVE,
+        "options": _ollama_options(),
     }
     req = urllib.request.Request(
         f"{OLLAMA_BASE}/api/generate",

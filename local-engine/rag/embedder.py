@@ -17,6 +17,10 @@ import urllib.request
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "bge-m3")
+EMBED_KEEP_ALIVE = os.environ.get(
+    "OLLAMA_EMBED_KEEP_ALIVE",
+    os.environ.get("OLLAMA_KEEP_ALIVE", "2m"),
+)
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -59,8 +63,7 @@ class OllamaEmbedder:
 
     def _embed_one(self, text: str) -> list[float]:
         payload = json.dumps(
-            {"model": self.model, "prompt": text,
-             "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m")}
+            {"model": self.model, "prompt": text, "keep_alive": EMBED_KEEP_ALIVE}
         ).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base}/api/embeddings",

@@ -316,15 +316,28 @@ async def limit_request_body(request: Request, call_next):
 def _warm_ollama() -> None:
     """엔진 시작 시 필요한 모델을 미리 메모리에 올려둔다 (첫 요청 지연 제거)."""
     base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    keep = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+    llm_keep = os.environ.get("OLLAMA_LLM_KEEP_ALIVE", os.environ.get("OLLAMA_KEEP_ALIVE", "10m"))
+    embed_keep = os.environ.get("OLLAMA_EMBED_KEEP_ALIVE", os.environ.get("OLLAMA_KEEP_ALIVE", "2m"))
+    intake_keep = os.environ.get("OLLAMA_INTAKE_KEEP_ALIVE", os.environ.get("OLLAMA_KEEP_ALIVE", "30m"))
+    try:
+        num_ctx = max(512, int(os.environ.get("OLLAMA_NUM_CTX", "2048")))
+    except ValueError:
+        num_ctx = 2048
+    num_thread_raw = os.environ.get("OLLAMA_NUM_THREAD", str(os.cpu_count() or 1))
+    try:
+        num_thread = 0 if num_thread_raw.lower() == "auto" else max(0, int(num_thread_raw))
+    except ValueError:
+        num_thread = os.cpu_count() or 1
+    llm_options = {"num_predict": 1, "num_ctx": num_ctx}
+    if num_thread:
+        llm_options["num_thread"] = num_thread
     intake_model = os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
     rag_model = os.environ.get("RAG_LLM_MODEL", "qwen2.5:7b")
     embed_model = os.environ.get("RAG_EMBED_MODEL", "bge-m3")
-    # options.num_ctx 는 실제 호출부(intake/summarizer 는 4096)와 같아야 재로딩이 없다.
     jobs = [
-        ("/api/generate", {"model": intake_model, "prompt": "ping", "stream": False, "keep_alive": keep, "options": {"num_predict": 1, "num_ctx": 4096}}),
-        ("/api/generate", {"model": rag_model, "prompt": "ping", "stream": False, "keep_alive": keep, "options": {"num_predict": 1}}),
-        ("/api/embeddings", {"model": embed_model, "prompt": "ping", "keep_alive": keep}),
+        ("/api/generate", {"model": intake_model, "prompt": "ping", "stream": False, "keep_alive": intake_keep, "options": {"num_predict": 1, "num_ctx": 4096}}),
+        ("/api/generate", {"model": rag_model, "prompt": "ping", "stream": False, "keep_alive": llm_keep, "options": llm_options}),
+        ("/api/embeddings", {"model": embed_model, "prompt": "ping", "keep_alive": embed_keep}),
     ]
     for path, body in jobs:
         try:
