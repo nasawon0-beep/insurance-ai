@@ -60,10 +60,27 @@ def test_index_then_search_finds_right_page(parsed, tmp_path):
 
 def test_reindex_replaces_same_doc(parsed, tmp_path):
     db = tmp_path / "idx.sqlite3"
-    pipeline.index_parsed_doc(parsed, db_path=db)
+    first = pipeline.index_parsed_doc(parsed, db_path=db)
     info = pipeline.index_parsed_doc(parsed, db_path=db)  # 두 번째
-    # 교체이므로 두 배로 늘지 않는다
-    assert info["total_chunks_in_store"] == info["chunks_indexed"]
+    # 같은 파일 해시면 재임베딩하지 않고 기존 벡터를 재사용한다.
+    assert first["chunks_indexed"] >= 4
+    assert info["skipped"] is True
+    assert info["reason"] == "same_file_hash"
+    assert info["chunks_indexed"] == 0
+    assert info["chunks_cached"] == first["chunks_indexed"]
+    assert info["total_chunks_in_store"] == first["chunks_indexed"]
+
+
+def test_docs_metadata_tracks_file_hash(parsed, tmp_path):
+    db = tmp_path / "idx.sqlite3"
+    info = pipeline.index_parsed_doc(parsed, db_path=db)
+
+    docs = pipeline.list_docs(db_path=db)["docs"]
+    doc = next(d for d in docs if d["doc_id"] == parsed["doc_id"])
+    assert info["file_hash"] == parsed["doc_id"]
+    assert doc["file_hash"] == parsed["doc_id"]
+    assert doc["indexed_at"]
+    assert doc["chunks"] == info["chunks_indexed"]
 
 
 def test_search_can_scope_to_doc(parsed, tmp_path):

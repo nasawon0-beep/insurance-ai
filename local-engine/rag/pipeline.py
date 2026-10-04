@@ -18,20 +18,54 @@ def index_parsed_doc(
     db_path: str | Path | None = None,
     replace: bool = True,
 ) -> dict[str, Any]:
-    """parser의 /parse/pdf 응답(ParsedDoc) → 조각 색인. 같은 doc_id는 기본 교체."""
-    chunks = chunk_parsed_doc(doc)
-    embedder = get_embedder()
+    """parser의 /parse/pdf 응답(ParsedDoc) → 조각 색인.
+
+    ParsedDoc.doc_id는 현재 PDF 원본 bytes의 SHA256이다. 향후 클라이언트가
+    별도 file_hash를 보내도 같은 해시가 이미 색인돼 있으면 청킹/임베딩을 건너뛴다.
+    """
+    doc_id = doc["doc_id"]
+    file_hash = doc.get("file_hash") or doc_id
     store = VectorStore(db_path)
     try:
+        if replace and store.is_same_hash_indexed(doc_id, file_hash):
+            cached = store.doc_info(doc_id) or {}
+            if cached.get("indexed_at") is None:
+                store.upsert_doc(
+                    doc_id,
+                    file_hash,
+                    cached.get("filename") or doc.get("filename"),
+                    cached.get("chunks", store.count(doc_id)),
+                    cached.get("embed_model"),
+                )
+                cached = store.doc_info(doc_id) or cached
+            return {
+                "doc_id": doc_id,
+                "file_hash": file_hash,
+                "filename": cached.get("filename") or doc.get("filename"),
+                "chunks_indexed": 0,
+                "chunks_cached": cached.get("chunks", store.count(doc_id)),
+                "skipped": True,
+                "reason": "same_file_hash",
+                "embed_model": cached.get("embed_model"),
+                "indexed_at": cached.get("indexed_at"),
+                "total_chunks_in_store": store.count(),
+            }
+
+        chunks = chunk_parsed_doc(doc)
+        embedder = get_embedder()
         if replace:
-            store.clear(doc["doc_id"])
+            store.clear(doc_id)
         if chunks:
             embeddings = embedder.embed([c.text for c in chunks])
             store.add(chunks, embeddings, embedder.name)
+        store.upsert_doc(doc_id, file_hash, doc.get("filename"), len(chunks), embedder.name)
         return {
-            "doc_id": doc["doc_id"],
+            "doc_id": doc_id,
+            "file_hash": file_hash,
             "filename": doc.get("filename"),
             "chunks_indexed": len(chunks),
+            "chunks_cached": 0,
+            "skipped": False,
             "embed_model": embedder.name,
             "total_chunks_in_store": store.count(),
         }

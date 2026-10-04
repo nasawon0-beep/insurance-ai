@@ -12,6 +12,7 @@ import json
 import math
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,20 @@ class VectorStore:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS docs (
+                doc_id      TEXT PRIMARY KEY,
+                file_hash   TEXT NOT NULL,
+                filename    TEXT,
+                chunks      INTEGER NOT NULL DEFAULT 0,
+                embed_model TEXT,
+                indexed_at  TEXT NOT NULL
+            )
+            """
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_hash ON docs(file_hash)")
         self.conn.commit()
 
     def clear(self, doc_id: str | None = None) -> int:
@@ -49,6 +63,10 @@ class VectorStore:
             if doc_id
             else self.conn.execute("DELETE FROM chunks")
         )
+        if doc_id:
+            self.conn.execute("DELETE FROM docs WHERE doc_id = ?", (doc_id,))
+        else:
+            self.conn.execute("DELETE FROM docs")
         self.conn.commit()
         return cur.rowcount
 
@@ -66,6 +84,64 @@ class VectorStore:
         self.conn.commit()
         return len(rows)
 
+    def upsert_doc(
+        self,
+        doc_id: str,
+        file_hash: str,
+        filename: str | None,
+        chunks: int,
+        embed_model: str | None,
+    ) -> None:
+        indexed_at = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO docs (doc_id, file_hash, filename, chunks, embed_model, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id) DO UPDATE SET
+                file_hash = excluded.file_hash,
+                filename = excluded.filename,
+                chunks = excluded.chunks,
+                embed_model = excluded.embed_model,
+                indexed_at = excluded.indexed_at
+            """,
+            (doc_id, file_hash, filename, chunks, embed_model, indexed_at),
+        )
+        self.conn.commit()
+
+    def doc_info(self, doc_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT doc_id, file_hash, filename, chunks, embed_model, indexed_at FROM docs WHERE doc_id = ?",
+            (doc_id,),
+        ).fetchone()
+        if row:
+            return {
+                "doc_id": row[0],
+                "file_hash": row[1],
+                "filename": row[2],
+                "chunks": row[3],
+                "embed_model": row[4],
+                "indexed_at": row[5],
+            }
+
+        legacy = self.conn.execute(
+            "SELECT doc_id, filename, COUNT(*), MIN(embed_model) FROM chunks WHERE doc_id = ? GROUP BY doc_id, filename",
+            (doc_id,),
+        ).fetchone()
+        if not legacy:
+            return None
+        return {
+            "doc_id": legacy[0],
+            "file_hash": legacy[0],
+            "filename": legacy[1],
+            "chunks": legacy[2],
+            "embed_model": legacy[3],
+            "indexed_at": None,
+        }
+
+    def is_same_hash_indexed(self, doc_id: str, file_hash: str) -> bool:
+        info = self.doc_info(doc_id)
+        return bool(info and info.get("file_hash") == file_hash)
+
     def count(self, doc_id: str | None = None) -> int:
         if doc_id:
             row = self.conn.execute(
@@ -76,14 +152,50 @@ class VectorStore:
         return row[0]
 
     def docs(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT doc_id, filename, COUNT(*), MIN(embed_model) "
-            "FROM chunks GROUP BY doc_id, filename ORDER BY filename"
+        doc_rows = self.conn.execute(
+            """
+            SELECT d.doc_id, d.file_hash, d.filename, d.chunks, d.embed_model, d.indexed_at,
+                   COUNT(c.chunk_id) AS actual_chunks
+            FROM docs d
+            LEFT JOIN chunks c ON c.doc_id = d.doc_id
+            GROUP BY d.doc_id, d.file_hash, d.filename, d.chunks, d.embed_model, d.indexed_at
+            ORDER BY d.filename
+            """
         ).fetchall()
-        return [
-            {"doc_id": d, "filename": f, "chunks": n, "embed_model": m}
-            for d, f, n, m in rows
+        docs = [
+            {
+                "doc_id": d,
+                "file_hash": h,
+                "filename": f,
+                "chunks": actual_n if actual_n is not None else n,
+                "embed_model": m,
+                "indexed_at": indexed_at,
+            }
+            for d, h, f, n, m, indexed_at, actual_n in doc_rows
         ]
+
+        legacy_rows = self.conn.execute(
+            """
+            SELECT c.doc_id, c.filename, COUNT(*), MIN(c.embed_model)
+            FROM chunks c
+            LEFT JOIN docs d ON d.doc_id = c.doc_id
+            WHERE d.doc_id IS NULL
+            GROUP BY c.doc_id, c.filename
+            ORDER BY c.filename
+            """
+        ).fetchall()
+        docs.extend(
+            {
+                "doc_id": d,
+                "file_hash": d,
+                "filename": f,
+                "chunks": n,
+                "embed_model": m,
+                "indexed_at": None,
+            }
+            for d, f, n, m in legacy_rows
+        )
+        return docs
 
     def search(
         self,
