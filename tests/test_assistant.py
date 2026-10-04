@@ -211,9 +211,9 @@ def test_exact_name_overrides_broad_wording(client, monkeypatch, question):
     _mock_llm(monkeypatch, {"answer": "네.", "used_customer_names": [],
               "grounded": True, "no_data": False}, capture=captured)
     body = client.post("/assistant/ask", json={"question": question}).json()
-    customer_block = captured[0].split("[고객 데이터]\n", 1)[1].split("[전체 고객 명단]", 1)[0]
-    assert "■ 김철수" in customer_block
-    assert "■ 박영희" not in customer_block
+    assert captured == []
+    assert body["routing_type"] == "db_query"
+    assert body["used_customers"][0]["name"] == "김철수"
     assert body["data_scope"] == "filtered"
 
 
@@ -235,9 +235,9 @@ def test_exact_full_name_precedes_suffix_match(client, monkeypatch):
     _mock_llm(monkeypatch, {"answer": "네.", "used_customer_names": [],
               "grounded": True, "no_data": False}, capture=captured)
     body = client.post("/assistant/ask", json={"question": "김철수 보험료"}).json()
-    customer_block = captured[0].split("[고객 데이터]\n", 1)[1].split("[전체 고객 명단]", 1)[0]
-    assert "■ 김철수" in customer_block
-    assert "■ 이철수" not in customer_block
+    assert captured == []
+    assert body["routing_type"] == "db_query"
+    assert body["used_customers"][0]["name"] == "김철수"
     assert body["data_scope"] == "filtered"
 
 
@@ -263,9 +263,7 @@ def test_answer_uses_customer_named_in_history(client, monkeypatch):
         "question": "그 고객 만기는?",
         "history": [{"role": "user", "content": "김철수 보험 알려줘"}],
     })
-    customer_block = captured[0].split("[고객 데이터]\n", 1)[1].split("[전체 고객 명단]", 1)[0]
-    assert "■ 김철수" in customer_block
-    assert "■ 박영희" not in customer_block
+    assert captured == []
 
 
 def test_answer_filters_to_own_policies_when_asked(client, monkeypatch):
@@ -304,6 +302,53 @@ def test_own_regex_does_not_falsely_trigger_on_third_person_direct(monkeypatch):
     assert _is_own_only_question("최유진이 직접 가입한 보험 뭐야") is False
     assert _is_own_only_question("고객이 직접 가입한 계약 알려줘") is False
     assert _is_own_only_question("최유진 보험료 얼마 내?") is False
+
+
+def test_classify_question_routes_by_question_type():
+    from database.assistant import _classify_question
+
+    assert _classify_question("홍길동 보험료 얼마야?") == "db_query"
+    assert _classify_question("암보험 약관 면책 조건 알려줘") == "rag"
+    assert _classify_question("이 상담 내용 요약해줘") == "summarize"
+    assert _classify_question("다음 상담 전략 추천해줘") == "complex"
+
+
+def test_summarize_question_uses_light_model(client, monkeypatch):
+    _seed_customer(client, name="이영희")
+    captured: list[tuple[str, str]] = []
+
+    def fake(prompt, model):
+        captured.append((prompt, model))
+        return {"answer": "요약했습니다.", "used_customer_names": [], "grounded": True, "no_data": False}
+
+    from database import assistant
+    monkeypatch.setattr(assistant, "_call_llm", fake)
+
+    body = client.post("/assistant/ask", json={"question": "최근 상담 내용 요약해줘"}).json()
+    assert body["routing_type"] == "summarize"
+    assert body["model"] == "qwen2.5:3b"
+    assert captured[0][1] == "qwen2.5:3b"
+
+
+def test_rag_question_routes_to_rag_answer(client, monkeypatch):
+    from database import assistant
+
+    def fake_rag(question):
+        return {
+            "question": question,
+            "answer": "약관 답변입니다.",
+            "model": "qwen2.5:14b",
+            "grounded": True,
+            "abstained": False,
+            "sources": [],
+        }
+
+    monkeypatch.setattr(assistant, "_rag_answer", fake_rag)
+    body = client.post("/assistant/ask", json={"question": "이 약관의 가입조건 설명해줘"}).json()
+    assert body["routing_type"] == "rag"
+    assert body["model"] == "qwen2.5:14b"
+    assert body["data_scope"] == "rag"
+    assert body["answer"] == "약관 답변입니다."
 
 
 def test_normal_question_keeps_all_policies_with_markers(client, monkeypatch):

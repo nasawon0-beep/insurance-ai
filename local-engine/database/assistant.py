@@ -29,6 +29,8 @@ OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL = os.environ.get(
     "ASSISTANT_LLM_MODEL", os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
 )
+SUMMARY_LLM_MODEL = os.environ.get("ASSISTANT_SUMMARY_LLM_MODEL", "qwen2.5:3b")
+COMPLEX_LLM_MODEL = os.environ.get("ASSISTANT_COMPLEX_LLM_MODEL", "qwen2.5:7b")
 KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 
 _MEMO_CAP = 200
@@ -482,6 +484,37 @@ def _has_any_keyword(question: str, keywords: tuple[str, ...]) -> bool:
     return any(k.replace(" ", "") in compact for k in keywords)
 
 
+_RAG_QUESTION_KEYWORDS = ("약관", "보장내용", "가입조건", "면책")
+_SUMMARIZE_QUESTION_KEYWORDS = ("요약", "정리", "설명")
+_DB_ROUTE_KEYWORDS = ("보장", "보험료", "만기", "계약")
+
+
+def _looks_like_named_db_question(question: str) -> bool:
+    """고객명처럼 보이는 2~4자 한글 이름 + DB 키워드 조합인지 판별."""
+    compact = (question or "").replace(" ", "")
+    if not _has_any_keyword(compact, _DB_ROUTE_KEYWORDS):
+        return False
+    for keyword in _DB_ROUTE_KEYWORDS:
+        k = keyword.replace(" ", "")
+        if not k or k not in compact:
+            continue
+        if re.search(rf"[가-힣]{{2,4}}(?:의)?{re.escape(k)}", compact):
+            return True
+    return False
+
+
+def _classify_question(question: str) -> str:
+    """질문 라우팅 타입을 분류한다."""
+    q = question or ""
+    if _looks_like_named_db_question(q) and not _has_any_keyword(q, _RAG_QUESTION_KEYWORDS):
+        return "db_query"
+    if _has_any_keyword(q, _RAG_QUESTION_KEYWORDS):
+        return "rag"
+    if _has_any_keyword(q, _SUMMARIZE_QUESTION_KEYWORDS):
+        return "summarize"
+    return "complex"
+
+
 def _format_money(value: Any) -> str:
     won = _won(value)
     if won is not None:
@@ -662,6 +695,13 @@ def _serialize_history(history: Optional[list]) -> str:
     return "\n".join(lines)
 
 
+def _rag_answer(question: str) -> dict:
+    """약관/RAG 질문은 기존 rag.answerer 경로(qwen2.5:14b 기본)를 사용한다."""
+    from rag.answerer import answer as rag_answer
+
+    return rag_answer(question, top_k=4)
+
+
 def answer(
     conn, question: str, history: Optional[list] = None, model: Optional[str] = None,
     customer_id: Optional[str] = None,
@@ -671,8 +711,28 @@ def answer(
     customer_id 가 있으면 해당 고객의 계약·보장현황을 [고객 보장 데이터] 블록으로 추가해
     LLM 이 직접 보장 금액을 답할 수 있게 한다. Ollama 불능 시 규칙기반 fallback 적용.
     """
-    model = model or LLM_MODEL
+    routing_type = _classify_question(question)
+    # 고객 상세 화면에서는 고객명 휴리스틱보다 customer_id 지정 DB 질문을 우선한다.
+    if customer_id and _has_any_keyword(question, _DB_QUESTION_KEYWORDS) and routing_type != "rag":
+        routing_type = "db_query"
+    model = model or (SUMMARY_LLM_MODEL if routing_type == "summarize" else COMPLEX_LLM_MODEL)
     own_only = _is_own_only_question(question)
+
+    if routing_type == "rag":
+        rag = _rag_answer(question)
+        return {
+            **rag,
+            "used_customers": [],
+            "data_scope": "rag",
+            "no_data": bool(rag.get("abstained")) or not bool(rag.get("grounded", True)),
+            "own_only": own_only,
+            "routing_type": "rag",
+        }
+
+    if routing_type == "db_query" and not customer_id:
+        exact_matches = _exact_customer_matches(conn, question, history)
+        if len(exact_matches) == 1:
+            customer_id = exact_matches[0]["id"]
 
     # customer_id 지정 + DB성 질문이면 Ollama 호출 전에 즉시 템플릿 답변을 시도한다.
     coverage_block = ""
@@ -705,6 +765,7 @@ def answer(
                     "no_data": False,
                     "grounded": True,
                     "own_only": own_only,
+                    "routing_type": "db_query",
                 }
 
     hints = _aggregate_hints(conn)
@@ -756,6 +817,7 @@ def answer(
                 "no_data": False,
                 "grounded": True,
                 "own_only": own_only,
+                "routing_type": "db_query",
             }
         data = {
             "answer": "답변을 생성하지 못했습니다.",
@@ -789,4 +851,5 @@ def answer(
         "no_data": no_data,
         "grounded": bool(data.get("grounded")),
         "own_only": own_only,
+        "routing_type": routing_type,
     }
