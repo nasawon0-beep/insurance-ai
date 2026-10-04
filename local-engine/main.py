@@ -33,6 +33,7 @@ from database.db import connect
 from database.uploads import MAX_AUDIO
 from whisper.router import router as whisper_router
 from auth import router as auth_router
+from ollama_diagnostics import ollama_runtime_status, optimization_recommendations
 
 
 API_SECRET_HEADER = "X-Insurance-AI-Secret"
@@ -348,6 +349,29 @@ def _warm_ollama() -> None:
             urllib.request.urlopen(req, timeout=180).read()
         except Exception:
             pass  # Ollama 꺼져 있으면 조용히 넘어감
+    try:
+        status = ollama_runtime_status()
+        loaded = status.get("loaded_models", [])
+        logger.info(
+            "ollama runtime: version=%s gpu_active=%s num_thread=%s hsa_override=%s loaded=%s",
+            status.get("version"),
+            status.get("gpu_active"),
+            status.get("num_thread"),
+            status.get("hsa_override_gfx_version"),
+            [
+                {
+                    "name": m.get("name"),
+                    "processor": m.get("processor"),
+                    "size_vram": m.get("size_vram"),
+                    "quantization": m.get("quantization_level"),
+                }
+                for m in loaded
+            ],
+        )
+        if not status.get("gpu_active"):
+            logger.warning("ollama runtime: CPU-only fallback detected; see docs/WINDOWS-OLLAMA-AMD.md")
+    except Exception as exc:
+        logger.debug("ollama runtime diagnostics failed: %s", exc)
 
 
 def _warm_whisper() -> None:
@@ -381,7 +405,7 @@ def api_secret(request: Request):
 @app.get("/health")
 def health():
     """Desktop 홈 화면에서 폴링할 엔드포인트."""
-    engine_status = {"local_engine": "ok"}
+    engine_status: dict[str, object] = {"local_engine": "ok"}
 
     try:
         with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=3) as resp:
@@ -392,6 +416,13 @@ def health():
     except Exception as e:
         engine_status["ollama"] = "disconnected"
         engine_status["error"] = str(e)
+
+    try:
+        ollama_runtime = ollama_runtime_status()
+        engine_status["ollama_runtime"] = ollama_runtime
+        engine_status["ollama_optimization"] = optimization_recommendations(ollama_runtime)
+    except Exception as e:
+        engine_status["ollama_runtime"] = {"error": str(e)}
 
     # 고객 DB 암호화 상태 (설정·진단 화면에서 표시)
     try:

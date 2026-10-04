@@ -732,7 +732,7 @@ def _serialize_history(history: Optional[list]) -> str:
 
 
 def _rag_answer(question: str) -> dict:
-    """약관/RAG 질문은 기존 rag.answerer 경로(qwen2.5:14b 기본)를 사용한다."""
+    """약관/RAG 질문은 기본 7B를 사용하고, 14B는 RAG_LLM_MODEL 명시 시에만 쓴다."""
     from rag.answerer import answer as rag_answer
 
     return rag_answer(question, top_k=4)

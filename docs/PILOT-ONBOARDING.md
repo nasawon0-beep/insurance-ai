@@ -15,7 +15,7 @@
       ollama pull qwen2.5:7b     # 필드 추출·요약 (약 4.7GB)
       ollama pull bge-m3         # 약관 임베딩 (약 1.2GB)
       ```
-      (RAG 답변용 `qwen2.5:14b` 는 파일럿에서 선택. 쓰면 `ollama pull qwen2.5:14b`.)
+      (`qwen2.5:14b` 는 기본 설치하지 않음. 품질 검증 때만 환경변수로 선택.)
 - [ ] 프로젝트 폴더를 PC로 복사 (경로에 공백/한글이 있어도 됨 — 스크립트가 따옴표 처리함)
 - [ ] Node.js LTS 설치 — **데스크톱 앱을 dev 모드(`npm run tauri dev`)로 띄울 경우에만** 필요.
       빌드된 앱(.app/.msi)을 쓰면 불필요.
@@ -69,6 +69,9 @@
 - [ ] **OCR 은 RapidOCR(onnxruntime)** 로 동작. 글자 없는 PDF(스캔본/벡터 출력물)를
       `pypdfium2` 로 렌더 → RapidOCR(한국어+영어 내장 모델). **첫 실행 시 모델 준비로 몇 초** 걸림.
 - [ ] 실행은 `.bat` 런처 사용 (`start.bat` / `stop.bat` / `setup-once.bat`).
+- [ ] AMD GPU/CPU 상태 확인: `python scripts\windows-ollama-check.py` 실행 후
+      `ollama ps` 의 PROCESSOR 또는 JSON `size_vram` 확인.
+      gfx1103 PC가 CPU로 폴백하면 `docs/WINDOWS-OLLAMA-AMD.md` 순서대로 점검.
 - [ ] **Windows 앱 빌드(.msi)는 별도 리드 작업**입니다. Windows 머신에서
       `cd desktop && npm run tauri build` → `src-tauri/target/release/bundle/msi/*.msi`.
       파일럿 동안에는 **Node 설치 + `start.bat` 이 `npm run tauri dev` 로 앱을 띄우는 방식**이면 충분.
@@ -90,4 +93,4 @@
 
 - [ ] Windows 앱 정식 빌드(.msi) 여부 결정 (dev 모드로 갈지)
 - [ ] 각 PC에 Ollama 모델 사전 배포 방법 (인터넷 느린 지점 대비 오프라인 pull)
-- [ ] `qwen2.5:14b` 사용 여부 (RAG 답변 품질 vs 메모리)
+- [ ] `qwen2.5:14b` 예외 사용 여부 (기본 7B, 필요 시 `RAG_LLM_MODEL=qwen2.5:14b`)
