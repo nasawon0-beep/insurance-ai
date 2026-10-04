@@ -5,6 +5,7 @@ LLM 호출(assistant._call_llm)은 전부 목으로 대체한다 — 느리고 �
 컨텍스트 조립·집계·이름 매핑·폴백만 결정적으로 검증한다.
 """
 import base64
+import json
 import re
 
 import pytest
@@ -373,3 +374,65 @@ def test_assistant_ask_empty_question_422(client):
 
 def test_assistant_ask_blank_question_422(client):
     assert client.post("/assistant/ask", json={"question": "   "}).status_code == 422
+
+
+def test_customer_db_coverage_question_skips_llm(client, monkeypatch):
+    """고객 상세 DB 질문은 qwen 호출 없이 coverage_json으로 즉시 답한다."""
+    from database import assistant
+
+    c = _seed_customer(client, name="나상원")
+    _seed_policy(
+        client,
+        c["id"],
+        insurer="테스트생명",
+        product_name="건강보험",
+        premium=50000,
+        payment_cycle="MONTHLY",
+        status="ACTIVE",
+    )
+    r = client.post(f"/customers/{c['id']}/consultations", json={
+        "title": "보장분석",
+        "coverage_json": json.dumps([
+            {"name": "뇌진단비", "status": "충분", "current": "3,000만원", "recommended": "2,000만원"},
+            {"name": "암진단비", "status": "부족", "current": "1,000만원"},
+        ], ensure_ascii=False),
+    })
+    assert r.status_code == 201, r.text
+
+    def fail_llm(prompt, model):  # pragma: no cover - 호출되면 테스트 실패
+        raise AssertionError("LLM must not be called for DB coverage questions")
+
+    monkeypatch.setattr(assistant, "_call_llm", fail_llm)
+    r = client.post("/assistant/ask", json={
+        "question": "나상원 뇌진단비 얼마있어?",
+        "customer_id": c["id"],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == "rule_based_db"
+    assert body["grounded"] is True
+    assert "뇌진단비" in body["answer"]
+    assert "3,000만원" in body["answer"]
+
+
+def test_customer_db_premium_question_skips_llm(client, monkeypatch):
+    from database import assistant
+
+    c = _seed_customer(client, name="나상원")
+    _seed_policy(client, c["id"], premium=60000, payment_cycle="MONTHLY", status="ACTIVE")
+    _seed_policy(client, c["id"], premium=120000, payment_cycle="YEARLY", status="ACTIVE")
+    _seed_policy(client, c["id"], premium=99999, payment_cycle="MONTHLY", status="LAPSED")
+
+    monkeypatch.setattr(
+        assistant,
+        "_call_llm",
+        lambda prompt, model: (_ for _ in ()).throw(AssertionError("LLM must not be called")),
+    )
+    r = client.post("/assistant/ask", json={
+        "question": "나상원 보험료",
+        "customer_id": c["id"],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == "rule_based_db"
+    assert "70,000원" in body["answer"]

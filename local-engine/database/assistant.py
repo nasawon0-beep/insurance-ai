@@ -464,14 +464,157 @@ def _customer_coverage_block(conn, customer_id: str) -> str:
     return "\n".join(lines)
 
 
-def _rule_based_coverage_answer(question: str, coverage_block: str, customer_name: str) -> Optional[str]:
-    """Ollama 불능 시 보장 키워드 매칭으로 직접 답변. 매칭 실패 시 None."""
+_DB_QUESTION_KEYWORDS = (
+    "보장", "담보", "보험료", "월납", "만기", "계약", "보험", "얼마", "가입",
+)
+_COVERAGE_AMOUNT_KEYWORDS = ("얼마", "금액", "한도", "있어", "있니", "있나", "보장")
+_PREMIUM_KEYWORDS = ("보험료", "월납", "납입", "얼마 내", "얼마내")
+_EXPIRY_KEYWORDS = ("만기", "끝", "종료")
+_POLICY_KEYWORDS = ("계약", "보험", "가입")
+_STOP_COVERAGE_TOKENS = {
+    "얼마", "있어", "있니", "있나", "보장", "보험", "보험료", "월납", "납입", "만기",
+    "계약", "가입", "목록", "리스트", "알려줘", "뭐야", "무엇", "고객", "현황",
+}
+
+
+def _has_any_keyword(question: str, keywords: tuple[str, ...]) -> bool:
+    compact = (question or "").replace(" ", "")
+    return any(k.replace(" ", "") in compact for k in keywords)
+
+
+def _format_money(value: Any) -> str:
+    won = _won(value)
+    if won is not None:
+        return f"{won:,}원"
+    text = str(value or "").strip()
+    return text or "미상"
+
+
+def _format_coverage_amount(value: Any) -> str:
+    if value is None:
+        return "미상"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{int(value):,}원"
+    text = str(value).strip()
+    return text or "미상"
+
+
+def _latest_coverage_items(conn, customer_id: str) -> list[dict]:
+    """최근 상담의 coverage_json을 파싱해 보장 항목만 반환한다."""
+    for k in repo.list_consultations(conn, customer_id):
+        cj = k.get("coverage_json")
+        if not cj:
+            continue
+        try:
+            parsed = json.loads(cj)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _coverage_question_tokens(question: str, customer_name: str) -> list[str]:
+    q = (question or "").replace(customer_name or "", " ")
+    tokens = re.findall(r"[가-힣A-Za-z0-9]{2,}", q)
+    out: list[str] = []
+    for tok in tokens:
+        if tok in _STOP_COVERAGE_TOKENS:
+            continue
+        if any(stop in tok for stop in _STOP_COVERAGE_TOKENS):
+            # "얼마있어" 같은 질의어 결합 토큰은 제외하되, "뇌진단비" 같은 담보명은 유지.
+            stripped = tok
+            for stop in _STOP_COVERAGE_TOKENS:
+                stripped = stripped.replace(stop, "")
+            if len(stripped) < 2:
+                continue
+            tok = stripped
+        if tok and tok not in out:
+            out.append(tok)
+    return out
+
+
+def _coverage_item_matches(question: str, customer_name: str, item: dict) -> bool:
+    name = str(item.get("name") or "").strip()
+    if not name:
+        return False
+    compact_q = (question or "").replace(" ", "")
+    compact_name = name.replace(" ", "")
+    if compact_name and compact_name in compact_q:
+        return True
+    for tok in _coverage_question_tokens(question, customer_name):
+        if tok in compact_name or compact_name in tok:
+            return True
+    return False
+
+
+def _policy_line(policy: dict) -> str:
+    prem = policy.get("premium")
+    cyc = "일시납" if _is_lump_sum(policy.get("payment_cycle")) else (
+        "연납" if _is_yearly(policy.get("payment_cycle")) else "월납"
+    )
+    end = policy.get("end_date") or "만기미상"
+    return (
+        f"{policy.get('insurer') or '?'} / {policy.get('product_name') or '?'} / "
+        f"{cyc} {_format_money(prem)} / 만기 {end} / {policy.get('status') or '?'}"
+    )
+
+
+def _rule_based_coverage_answer(
+    question: str,
+    coverage_block: str,
+    customer_name: str,
+    policies: Optional[list[dict]] = None,
+    coverage_items: Optional[list[dict]] = None,
+    *,
+    allow_no_match_message: bool = True,
+) -> Optional[str]:
+    """DB 질문은 Ollama 없이 템플릿 답변. 매칭 실패 시 None 또는 미발견 문구."""
     if not coverage_block:
         return None
-    # 질문에서 담보명 키워드 추출 (2글자 이상 한글·숫자 조합)
-    q_tokens = re.findall(r"[가-힣]{2,}|[가-힣]+[0-9]+[가-힣]*", question)
-    if not q_tokens:
-        return None
+    q = question or ""
+    policies = policies or []
+    coverage_items = coverage_items or []
+
+    # [고객명] 보험료 → ACTIVE 계약 월 환산 합산
+    if _has_any_keyword(q, _PREMIUM_KEYWORDS):
+        active = [p for p in policies if p.get("status") == "ACTIVE"]
+        total = sum(_monthly_premium(p) for p in active)
+        return f"{customer_name} 고객의 ACTIVE 계약 월납 환산 보험료 합계는 {total:,}원입니다."
+
+    # [고객명] 만기 → ACTIVE 계약 중 가장 빠른 만기
+    if _has_any_keyword(q, _EXPIRY_KEYWORDS):
+        active_ends = [str(p.get("end_date")) for p in policies if p.get("status") == "ACTIVE" and p.get("end_date")]
+        if active_ends:
+            soonest = min(active_ends)
+            lines = [_policy_line(p) for p in policies if p.get("status") == "ACTIVE" and str(p.get("end_date")) == soonest]
+            return f"{customer_name} 고객의 가장 빠른 만기는 {soonest}입니다.\n" + "\n".join(f"  · {line}" for line in lines)
+        return f"{customer_name} 고객의 ACTIVE 계약 중 등록된 만기일을 찾지 못했습니다."
+
+    # [고객명] 계약 → 계약 목록
+    if _has_any_keyword(q, _POLICY_KEYWORDS) and not _has_any_keyword(q, _COVERAGE_AMOUNT_KEYWORDS):
+        if policies:
+            return f"{customer_name} 고객의 등록 계약은 {len(policies)}건입니다.\n" + "\n".join(
+                f"  · {_policy_line(p)}" for p in policies
+            )
+        return f"{customer_name} 고객의 등록 계약이 없습니다."
+
+    # [고객명] [보장명] 얼마 → coverage_json 현재 금액
+    if _has_any_keyword(q, _COVERAGE_AMOUNT_KEYWORDS):
+        matched_items = [item for item in coverage_items if _coverage_item_matches(q, customer_name, item)]
+        if matched_items:
+            lines: list[str] = []
+            for item in matched_items:
+                name = item.get("name") or "?"
+                current = _format_coverage_amount(item.get("current"))
+                status = item.get("status") or "상태 미상"
+                rec = item.get("recommended")
+                rec_txt = f", 권장 {_format_coverage_amount(rec)}" if rec is not None else ""
+                lines.append(f"{name}: 현재 {current} ({status}{rec_txt})")
+            return f"{customer_name} 고객의 보장현황입니다.\n" + "\n".join(f"  · {line}" for line in lines)
+
+    # Ollama 장애 fallback용: coverage_block 텍스트에서도 한 번 더 찾는다.
+    q_tokens = _coverage_question_tokens(q, customer_name)
     lines = coverage_block.splitlines()
     matched: list[str] = []
     for line in lines:
@@ -481,9 +624,11 @@ def _rule_based_coverage_answer(question: str, coverage_block: str, customer_nam
             if tok in line:
                 matched.append(line.strip().lstrip("· "))
                 break
-    if not matched:
-        return f"{customer_name} 고객의 보장현황에서 해당 담보를 찾지 못했습니다."
-    return f"{customer_name} 고객의 보장현황:\n" + "\n".join(f"  · {m}" for m in matched)
+    if matched:
+        return f"{customer_name} 고객의 보장현황:\n" + "\n".join(f"  · {m}" for m in matched)
+    if allow_no_match_message and _has_any_keyword(q, _DB_QUESTION_KEYWORDS):
+        return f"{customer_name} 고객의 보장현황에서 해당 정보를 찾지 못했습니다."
+    return None
 
 
 def build_context(conn, question: Optional[str] = None) -> str:
@@ -528,22 +673,46 @@ def answer(
     """
     model = model or LLM_MODEL
     own_only = _is_own_only_question(question)
-    hints = _aggregate_hints(conn)
-    picked = _pick_customers(conn, question, history)
-    contact = any(k in question for k in _CONTACT_KEYWORDS)
-    summary = _customer_summary(conn, own_only=own_only) if picked is None else _customer_summary(conn, own_only=own_only, customers=picked, with_contact_extra=contact)
-    roster = "" if picked is None else "\n\n" + _customer_roster(repo.list_customers(conn, limit=10000))
-    history_lines = _serialize_history(history)
 
-    # customer_id 지정 시 해당 고객 보장 데이터 블록 추가
+    # customer_id 지정 + DB성 질문이면 Ollama 호출 전에 즉시 템플릿 답변을 시도한다.
     coverage_block = ""
     customer_name = ""
+    direct_policies: list[dict] = []
+    direct_coverage_items: list[dict] = []
     if customer_id:
         coverage_block = _customer_coverage_block(conn, customer_id)
         c = repo.get_customer(conn, customer_id)
         customer_name = (c.get("name") or "") if c else ""
         # RRN 패턴이 들어있으면 제거 (안전장치)
         coverage_block = _RRN13_RE.sub("[주민번호 제외]", coverage_block)
+        if coverage_block and customer_name and _has_any_keyword(question, _DB_QUESTION_KEYWORDS):
+            direct_policies = repo.list_policies(conn, customer_id)
+            direct_coverage_items = _latest_coverage_items(conn, customer_id)
+            direct_answer = _rule_based_coverage_answer(
+                question,
+                coverage_block,
+                customer_name,
+                direct_policies,
+                direct_coverage_items,
+                allow_no_match_message=False,
+            )
+            if direct_answer:
+                return {
+                    "answer": direct_answer,
+                    "used_customers": [{"id": customer_id, "name": customer_name}],
+                    "data_scope": "filtered",
+                    "model": "rule_based_db",
+                    "no_data": False,
+                    "grounded": True,
+                    "own_only": own_only,
+                }
+
+    hints = _aggregate_hints(conn)
+    picked = _pick_customers(conn, question, history)
+    contact = any(k in question for k in _CONTACT_KEYWORDS)
+    summary = _customer_summary(conn, own_only=own_only) if picked is None else _customer_summary(conn, own_only=own_only, customers=picked, with_contact_extra=contact)
+    roster = "" if picked is None else "\n\n" + _customer_roster(repo.list_customers(conn, limit=10000))
+    history_lines = _serialize_history(history)
 
     own_directive = (
         "\n\n[지시] 사용자는 본인이 직접 가입시킨 계약만 묻고 있다. "
@@ -571,7 +740,13 @@ def answer(
         # Ollama 불능: customer_id + coverage_block 있으면 키워드 매칭으로 직접 답변
         fallback_answer = None
         if coverage_block and customer_name:
-            fallback_answer = _rule_based_coverage_answer(question, coverage_block, customer_name)
+            fallback_answer = _rule_based_coverage_answer(
+                question,
+                coverage_block,
+                customer_name,
+                direct_policies or (repo.list_policies(conn, customer_id) if customer_id else []),
+                direct_coverage_items or (_latest_coverage_items(conn, customer_id) if customer_id else []),
+            )
         if fallback_answer:
             return {
                 "answer": fallback_answer,
@@ -583,7 +758,7 @@ def answer(
                 "own_only": own_only,
             }
         data = {
-            "answer": "AI 엔진에 연결할 수 없어 답변을 생성하지 못했습니다.",
+            "answer": "답변을 생성하지 못했습니다.",
             "used_customer_names": [],
             "grounded": False,
             "no_data": False,
