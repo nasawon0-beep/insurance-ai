@@ -318,7 +318,7 @@ def _warm_ollama() -> None:
     base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     keep = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
     intake_model = os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
-    rag_model = os.environ.get("RAG_LLM_MODEL", "qwen2.5:14b")
+    rag_model = os.environ.get("RAG_LLM_MODEL", "qwen2.5:7b")
     embed_model = os.environ.get("RAG_EMBED_MODEL", "bge-m3")
     # options.num_ctx 는 실제 호출부(intake/summarizer 는 4096)와 같아야 재로딩이 없다.
     jobs = [

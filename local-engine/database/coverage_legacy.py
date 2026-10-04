@@ -18,7 +18,7 @@ from rag import search as rag_search
 from . import repo
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-LLM_MODEL = os.environ.get("RAG_LLM_MODEL", "qwen2.5:14b")
+LLM_MODEL = os.environ.get("RAG_LLM_MODEL", "qwen2.5:7b")
 
 # 표준 보장 카테고리 + 약관 검색용 질의 (속도 위해 핵심 5개로 압축)
 _CATEGORIES = [

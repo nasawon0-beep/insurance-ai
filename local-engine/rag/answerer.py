@@ -1,7 +1,7 @@
 """
 답변 생성 (작업 E, 3단계).
 
-검색된 조각 + 질문을 STANDARD 티어 모델(qwen2.5:14b)에게 넘겨
+검색된 조각 + 질문을 STANDARD 티어 모델(qwen2.5:7b)에게 넘겨
 근거와 함께 답을 만든다. 계약(문서 9번): 응답에 항상
 {answer, company, product, clause, page} 키가 있어야 한다.
 
@@ -20,7 +20,7 @@ from typing import Any
 from .pipeline import search
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-LLM_MODEL = os.environ.get("RAG_LLM_MODEL", "qwen2.5:14b")
+LLM_MODEL = os.environ.get("RAG_LLM_MODEL", "qwen2.5:7b")
 MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.1"))
 
 ABSTAIN_TEXT = "해당 약관에서 지급 여부를 확정할 근거를 찾지 못했습니다."
