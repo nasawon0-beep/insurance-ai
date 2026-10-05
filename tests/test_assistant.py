@@ -212,7 +212,7 @@ def test_exact_name_overrides_broad_wording(client, monkeypatch, question):
               "grounded": True, "no_data": False}, capture=captured)
     body = client.post("/assistant/ask", json={"question": question}).json()
     assert captured == []
-    assert body["routing_type"] == "db_query"
+    assert body["routing_type"] == "db_direct"
     assert body["used_customers"][0]["name"] == "김철수"
     assert body["data_scope"] == "filtered"
 
@@ -236,7 +236,7 @@ def test_exact_full_name_precedes_suffix_match(client, monkeypatch):
               "grounded": True, "no_data": False}, capture=captured)
     body = client.post("/assistant/ask", json={"question": "김철수 보험료"}).json()
     assert captured == []
-    assert body["routing_type"] == "db_query"
+    assert body["routing_type"] == "db_direct"
     assert body["used_customers"][0]["name"] == "김철수"
     assert body["data_scope"] == "filtered"
 
@@ -285,11 +285,10 @@ def test_answer_filters_to_own_policies_when_asked(client, monkeypatch):
     body = r.json()
     assert body["own_only"] is True
 
-    prompt = captured[0]
-    # 내 계약만 컨텍스트에 남고, 타사 계약은 빠진다 + 지시문이 붙는다
-    assert "내가판매한상품" in prompt
-    assert "타사이관상품" not in prompt
-    assert "본인이 직접 가입시킨 계약만" in prompt
+    assert captured == []
+    # DB 직접 응답에서도 내 계약 필터가 적용되어야 한다.
+    assert "내가판매한상품" in body["answer"]
+    assert "타사이관상품" not in body["answer"]
 
 
 def test_own_regex_does_not_falsely_trigger_on_third_person_direct(monkeypatch):
@@ -307,10 +306,30 @@ def test_own_regex_does_not_falsely_trigger_on_third_person_direct(monkeypatch):
 def test_classify_question_routes_by_question_type():
     from database.assistant import _classify_question
 
-    assert _classify_question("홍길동 보험료 얼마야?") == "db_query"
+    assert _classify_question("홍길동 보험료 얼마야?") == "db_direct"
     assert _classify_question("암보험 약관 면책 조건 알려줘") == "rag"
     assert _classify_question("이 상담 내용 요약해줘") == "summarize"
-    assert _classify_question("다음 상담 전략 추천해줘") == "complex"
+    assert _classify_question("다음 상담 전략 추천해줘") == "local_llm"
+
+
+def test_classify_question_routes_flexible_db_keywords():
+    from database.assistant import _classify_question
+
+    cases = [
+        "나상원 암 보장 얼마나 있어?",
+        "나상원 뇌혈관질환 진단비 얼마?",
+        "나상원 어떤 보험 가입했어?",
+        "나상원 월 보험료 얼마야?",
+        "나상원 심장 관련 보장 있나?",
+        "종수술비 얼마 들어있어?",
+        "CI보험 가입했어?",
+        "만기일 언제야?",
+    ]
+    for question in cases:
+        assert _classify_question(question) == "db_direct"
+
+    # RAG 키워드는 DB 키워드보다 우선한다.
+    assert _classify_question("나상원 암 보장내용 약관 알려줘") == "rag"
 
 
 def test_summarize_question_uses_light_model(client, monkeypatch):
@@ -368,10 +387,9 @@ def test_normal_question_keeps_all_policies_with_markers(client, monkeypatch):
     body = r.json()
     assert body["own_only"] is False
 
-    prompt = captured[0]
-    assert "내가판매한상품" in prompt and "타사이관상품" in prompt
-    assert "[내 계약]" in prompt and "[타사/미확인]" in prompt
-    assert "본인이 직접 가입시킨 계약만" not in prompt
+    assert captured == []
+    assert body["routing_type"] == "db_direct"
+    assert "내가판매한상품" in body["answer"] and "타사이관상품" in body["answer"]
 
 
 def test_assistant_context_shows_policyholder(client, monkeypatch):
@@ -454,7 +472,7 @@ def test_customer_db_coverage_question_skips_llm(client, monkeypatch):
     })
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["model"] == "rule_based_db"
+    assert body["model"] == "db_direct"
     assert body["grounded"] is True
     assert "뇌진단비" in body["answer"]
     assert "3,000만원" in body["answer"]
@@ -479,5 +497,5 @@ def test_customer_db_premium_question_skips_llm(client, monkeypatch):
     })
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["model"] == "rule_based_db"
+    assert body["model"] == "db_direct"
     assert "70,000원" in body["answer"]

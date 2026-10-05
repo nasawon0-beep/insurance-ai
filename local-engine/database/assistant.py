@@ -511,14 +511,30 @@ def _customer_coverage_block(conn, customer_id: str) -> str:
 _DB_QUESTION_KEYWORDS = (
     "보장", "담보", "보험료", "월납", "만기", "계약", "보험", "얼마", "가입",
     "가입목록", "가입 목록", "보장금액", "암", "뇌", "심장", "수술", "종수술",
+    "진단비", "수술비", "입원비", "치료비", "일당", "금액", "어떤", "무슨",
+    "있어", "있나", "들어", "포함", "현재", "지금", "가지고",
+    "암진단", "뇌진단", "심장진단", "뇌혈관", "뇌출혈", "뇌경색",
+    "심근경색", "협심증", "일반수술", "CI", "CI보험", "중대질병",
+    "상품", "계약서", "증권", "납입", "납입금", "연납", "만기일", "만료",
+    "갱신", "갱신형", "비갱신", "조회", "확인", "검색", "찾기",
+    "보여줘", "알려줘", "말해줘", "리스트", "목록", "전체",
+    "고객", "가입자", "피보험자", "이름", "성함",
 )
-_COVERAGE_AMOUNT_KEYWORDS = ("얼마", "금액", "한도", "있어", "있니", "있나", "보장")
-_PREMIUM_KEYWORDS = ("보험료", "월납", "납입", "얼마 내", "얼마내")
-_EXPIRY_KEYWORDS = ("만기", "끝", "종료")
-_POLICY_KEYWORDS = ("계약", "보험", "가입", "가입목록", "가입 목록", "리스트", "목록")
+_COVERAGE_AMOUNT_KEYWORDS = (
+    "얼마", "금액", "한도", "보장", "진단비", "수술비",
+    "입원비", "치료비", "일당",
+)
+_PREMIUM_KEYWORDS = ("보험료", "월납", "납입", "납입금", "월 보험료", "월보험료", "얼마 내", "얼마내")
+_EXPIRY_KEYWORDS = ("만기", "만기일", "만료", "끝", "종료")
+_POLICY_KEYWORDS = (
+    "계약", "계약서", "보험", "상품", "증권", "가입", "가입목록", "가입 목록",
+    "리스트", "목록", "전체",
+)
 _STOP_COVERAGE_TOKENS = {
-    "얼마", "있어", "있니", "있나", "보장", "보험", "보험료", "월납", "납입", "만기",
-    "계약", "가입", "목록", "리스트", "알려줘", "뭐야", "무엇", "고객", "현황",
+    "얼마", "금액", "몇", "어떤", "무슨", "있어", "있니", "있나", "들어", "포함",
+    "현재", "지금", "가지고", "보장", "보험", "보험료", "월납", "납입", "만기", "만기일",
+    "계약", "계약서", "상품", "증권", "가입", "목록", "리스트", "전체", "조회", "확인",
+    "검색", "찾기", "보여줘", "알려줘", "말해줘", "뭐야", "무엇", "고객", "현황",
 }
 
 
@@ -530,8 +546,31 @@ def _has_any_keyword(question: str, keywords: tuple[str, ...]) -> bool:
 _RAG_QUESTION_KEYWORDS = ("약관", "보장내용", "가입조건", "면책")
 _SUMMARIZE_QUESTION_KEYWORDS = ("요약", "정리", "설명")
 _DB_ROUTE_KEYWORDS = (
+    # 기존
     "보장", "보험료", "만기", "계약", "보험", "가입", "가입목록",
     "담보", "보장금액", "암", "뇌", "심장", "수술", "종수술",
+
+    # 보장 관련
+    "진단비", "수술비", "입원비", "치료비", "일당",
+    "얼마", "금액", "어떤", "무슨",
+    "있어", "있나", "들어", "포함", "현재", "지금", "가지고",
+
+    # 질병 확장
+    "암진단", "뇌진단", "심장진단",
+    "뇌혈관", "뇌출혈", "뇌경색",
+    "심근경색", "협심증",
+    "일반수술", "CI", "CI보험", "중대질병",
+
+    # 보험 상품
+    "상품", "계약서", "증권",
+    "납입", "납입금", "월납", "연납",
+    "만기일", "만료", "종료",
+    "갱신", "갱신형", "비갱신",
+
+    # 조회 표현은 단독 오분류를 줄이기 위해 목록형 표현만 유지
+    "리스트", "목록",
+
+    # 고객 관련 단독 표현은 오분류가 커서 라우팅 키워드에서는 제외한다.
 )
 
 
@@ -562,9 +601,8 @@ def _classify_question(question: str) -> str:
 
 
 def route_question(question: str) -> str:
-    """외부 테스트/로그용 라우터. 반환값: db_direct / local_llm / rag."""
-    route = _classify_question(question)
-    return "local_llm" if route == "summarize" else route
+    """외부 테스트/로그용 라우터. 반환값: db_direct / local_llm / rag / summarize."""
+    return _classify_question(question)
 
 
 def _format_money(value: Any) -> str:
@@ -832,6 +870,8 @@ def _direct_db_answer(conn, question: str, history: Optional[list], customer_id:
         return None
     customer_name = c.get("name") or ""
     policies = repo.list_policies(conn, customer_id)
+    if own_only:
+        policies = [p for p in policies if p.get("is_own")]
     coverage_items = _latest_coverage_items(conn, customer_id)
     coverage_block = _RRN13_RE.sub("[주민번호 제외]", _customer_coverage_block(conn, customer_id))
     direct_answer = _rule_based_coverage_answer(
@@ -889,16 +929,9 @@ def answer(
         if direct:
             log_customer_id = (direct.get("used_customers") or [{}])[0].get("id") if direct.get("used_customers") else customer_id
             return _with_response_log(direct, _response_log("db_direct", started, "db_direct", log_customer_id, False))
-        return _with_response_log({
-            "answer": "해당 고객 또는 조회 정보를 찾지 못했습니다.",
-            "used_customers": [],
-            "data_scope": "filtered" if customer_id else "all",
-            "model": "db_direct",
-            "no_data": True,
-            "grounded": True,
-            "own_only": own_only,
-            "routing_type": "db_direct",
-        }, _response_log("db_direct", started, "db_direct", customer_id, False))
+        # 키워드만으로 DB성 질문처럼 보여도 고객/조회 대상을 특정할 수 없으면
+        # 즉시 실패 처리하지 않고 기존 LLM 경로로 넘긴다. 키워드 확장으로 인한 오분류 완화.
+        routing_type = "local_llm"
 
     if routing_type == "db_direct" and not customer_id:
         exact_matches = _exact_customer_matches(conn, question, history)
@@ -1014,7 +1047,7 @@ def answer(
                     seen.add(hit["id"])
                     used_customers.append({"id": hit["id"], "name": hit["name"]})
 
-    route_name = "local_llm" if routing_type in ("local_llm", "summarize", "db_direct") else routing_type
+    route_name = routing_type if routing_type == "summarize" else ("local_llm" if routing_type in ("local_llm", "db_direct") else routing_type)
     return _with_response_log({
         "answer": data.get("answer") or "답변을 생성하지 못했습니다.",
         "used_customers": used_customers,
