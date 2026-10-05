@@ -16,13 +16,17 @@ AI 문의 — 자연어로 고객 관리(CRM) 데이터를 질의응답.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 import urllib.request
 from datetime import date, timedelta
 from typing import Any, Optional
 
 from . import repo
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # 문의 답변은 조회·문장화라 작은 모델로. 없으면 인테이크와 같은 모델.
@@ -30,7 +34,9 @@ LLM_MODEL = os.environ.get(
     "ASSISTANT_LLM_MODEL", os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
 )
 SUMMARY_LLM_MODEL = os.environ.get("ASSISTANT_SUMMARY_LLM_MODEL", "qwen2.5:3b")
-COMPLEX_LLM_MODEL = os.environ.get("ASSISTANT_COMPLEX_LLM_MODEL", "qwen2.5:7b")
+COMPLEX_LLM_MODEL = os.environ.get(
+    "ASSISTANT_COMPLEX_LLM_MODEL", os.environ.get("ASSISTANT_LLM_MODEL", "qwen2.5:7b")
+)
 
 
 def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
@@ -504,11 +510,12 @@ def _customer_coverage_block(conn, customer_id: str) -> str:
 
 _DB_QUESTION_KEYWORDS = (
     "보장", "담보", "보험료", "월납", "만기", "계약", "보험", "얼마", "가입",
+    "가입목록", "가입 목록", "보장금액", "암", "뇌", "심장", "수술", "종수술",
 )
 _COVERAGE_AMOUNT_KEYWORDS = ("얼마", "금액", "한도", "있어", "있니", "있나", "보장")
 _PREMIUM_KEYWORDS = ("보험료", "월납", "납입", "얼마 내", "얼마내")
 _EXPIRY_KEYWORDS = ("만기", "끝", "종료")
-_POLICY_KEYWORDS = ("계약", "보험", "가입")
+_POLICY_KEYWORDS = ("계약", "보험", "가입", "가입목록", "가입 목록", "리스트", "목록")
 _STOP_COVERAGE_TOKENS = {
     "얼마", "있어", "있니", "있나", "보장", "보험", "보험료", "월납", "납입", "만기",
     "계약", "가입", "목록", "리스트", "알려줘", "뭐야", "무엇", "고객", "현황",
@@ -522,7 +529,10 @@ def _has_any_keyword(question: str, keywords: tuple[str, ...]) -> bool:
 
 _RAG_QUESTION_KEYWORDS = ("약관", "보장내용", "가입조건", "면책")
 _SUMMARIZE_QUESTION_KEYWORDS = ("요약", "정리", "설명")
-_DB_ROUTE_KEYWORDS = ("보장", "보험료", "만기", "계약")
+_DB_ROUTE_KEYWORDS = (
+    "보장", "보험료", "만기", "계약", "보험", "가입", "가입목록",
+    "담보", "보장금액", "암", "뇌", "심장", "수술", "종수술",
+)
 
 
 def _looks_like_named_db_question(question: str) -> bool:
@@ -542,13 +552,19 @@ def _looks_like_named_db_question(question: str) -> bool:
 def _classify_question(question: str) -> str:
     """질문 라우팅 타입을 분류한다."""
     q = question or ""
-    if _looks_like_named_db_question(q) and not _has_any_keyword(q, _RAG_QUESTION_KEYWORDS):
-        return "db_query"
     if _has_any_keyword(q, _RAG_QUESTION_KEYWORDS):
         return "rag"
+    if _has_any_keyword(q, _DB_ROUTE_KEYWORDS) or _looks_like_named_db_question(q):
+        return "db_direct"
     if _has_any_keyword(q, _SUMMARIZE_QUESTION_KEYWORDS):
         return "summarize"
-    return "complex"
+    return "local_llm"
+
+
+def route_question(question: str) -> str:
+    """외부 테스트/로그용 라우터. 반환값: db_direct / local_llm / rag."""
+    route = _classify_question(question)
+    return "local_llm" if route == "summarize" else route
 
 
 def _format_money(value: Any) -> str:
@@ -738,6 +754,108 @@ def _rag_answer(question: str) -> dict:
     return rag_answer(question, top_k=4)
 
 
+def _response_log(route: str, started: float, model: str, customer_id: Optional[str], fallback: bool) -> dict:
+    return {
+        "route": route,
+        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        "model": model,
+        "used_customer_id": customer_id,
+        "fallback": fallback,
+    }
+
+
+def _with_response_log(result: dict, log: dict) -> dict:
+    result = dict(result)
+    result["response_log"] = log
+    result["elapsed_ms"] = log["elapsed_ms"]
+    result["route"] = log["route"]
+    logger.info("assistant_response %s", json.dumps(log, ensure_ascii=False))
+    return result
+
+
+def _this_month_expiry_answer(conn) -> str:
+    today = date.today()
+    next_month = date(today.year + (1 if today.month == 12 else 0), 1 if today.month == 12 else today.month + 1, 1)
+    rows = repo.expiring_policies(conn, (next_month - timedelta(days=1)).isoformat())
+    lines = []
+    for p in rows:
+        end = str(p.get("end_date") or "")
+        if end[:7] != today.strftime("%Y-%m"):
+            continue
+        lines.append(f"{p.get('customer_name') or '?'} / {p.get('product_name') or '?'} / {end}")
+    if not lines:
+        return "이번 달 만기 예정 계약은 없습니다."
+    return "이번 달 만기 예정 계약입니다.\n" + "\n".join(f"  · {line}" for line in lines)
+
+
+def _direct_db_answer(conn, question: str, history: Optional[list], customer_id: Optional[str]) -> Optional[dict]:
+    """단순 CRM 조회는 Ollama 없이 즉시 답한다."""
+    q = question or ""
+    own_only = _is_own_only_question(q)
+    if _has_any_keyword(q, _EXPIRY_KEYWORDS) and any(k in q for k in ("이번 달", "이번달", "이달")) and not customer_id:
+        return {
+            "answer": _this_month_expiry_answer(conn),
+            "used_customers": [],
+            "data_scope": "all",
+            "model": "db_direct",
+            "no_data": False,
+            "grounded": True,
+            "own_only": own_only,
+            "routing_type": "db_direct",
+        }
+
+    if not customer_id:
+        exact_matches = _exact_customer_matches(conn, q, history)
+        if len(exact_matches) == 1:
+            customer_id = exact_matches[0]["id"]
+        elif len(exact_matches) > 1:
+            names = ", ".join(
+                f"{c.get('name') or '?'}({str(c.get('birth_date') or '')[:10] or '생년미상'})"
+                for c in exact_matches[:5]
+            )
+            return {
+                "answer": f"같은 이름의 고객이 여러 명입니다. 어느 분인지 확인해 주세요: {names}",
+                "used_customers": [{"id": c["id"], "name": c.get("name") or ""} for c in exact_matches[:5]],
+                "data_scope": "filtered",
+                "model": "db_direct",
+                "no_data": True,
+                "grounded": True,
+                "own_only": own_only,
+                "routing_type": "db_direct",
+            }
+
+    if not customer_id:
+        return None
+
+    c = repo.get_customer(conn, customer_id)
+    if not c:
+        return None
+    customer_name = c.get("name") or ""
+    policies = repo.list_policies(conn, customer_id)
+    coverage_items = _latest_coverage_items(conn, customer_id)
+    coverage_block = _RRN13_RE.sub("[주민번호 제외]", _customer_coverage_block(conn, customer_id))
+    direct_answer = _rule_based_coverage_answer(
+        q,
+        coverage_block,
+        customer_name,
+        policies,
+        coverage_items,
+        allow_no_match_message=True,
+    )
+    if not direct_answer:
+        return None
+    return {
+        "answer": direct_answer,
+        "used_customers": [{"id": customer_id, "name": customer_name}],
+        "data_scope": "filtered",
+        "model": "db_direct",
+        "no_data": "찾지 못했습니다" in direct_answer,
+        "grounded": True,
+        "own_only": own_only,
+        "routing_type": "db_direct",
+    }
+
+
 def answer(
     conn, question: str, history: Optional[list] = None, model: Optional[str] = None,
     customer_id: Optional[str] = None,
@@ -747,25 +865,42 @@ def answer(
     customer_id 가 있으면 해당 고객의 계약·보장현황을 [고객 보장 데이터] 블록으로 추가해
     LLM 이 직접 보장 금액을 답할 수 있게 한다. Ollama 불능 시 규칙기반 fallback 적용.
     """
-    routing_type = _classify_question(question)
+    started = time.perf_counter()
+    routing_type = route_question(question)
     # 고객 상세 화면에서는 고객명 휴리스틱보다 customer_id 지정 DB 질문을 우선한다.
     if customer_id and _has_any_keyword(question, _DB_QUESTION_KEYWORDS) and routing_type != "rag":
-        routing_type = "db_query"
+        routing_type = "db_direct"
     model = model or (SUMMARY_LLM_MODEL if routing_type == "summarize" else COMPLEX_LLM_MODEL)
     own_only = _is_own_only_question(question)
 
     if routing_type == "rag":
         rag = _rag_answer(question)
-        return {
+        return _with_response_log({
             **rag,
             "used_customers": [],
             "data_scope": "rag",
             "no_data": bool(rag.get("abstained")) or not bool(rag.get("grounded", True)),
             "own_only": own_only,
             "routing_type": "rag",
-        }
+        }, _response_log("rag", started, model, customer_id, False))
 
-    if routing_type == "db_query" and not customer_id:
+    if routing_type == "db_direct":
+        direct = _direct_db_answer(conn, question, history, customer_id)
+        if direct:
+            log_customer_id = (direct.get("used_customers") or [{}])[0].get("id") if direct.get("used_customers") else customer_id
+            return _with_response_log(direct, _response_log("db_direct", started, "db_direct", log_customer_id, False))
+        return _with_response_log({
+            "answer": "해당 고객 또는 조회 정보를 찾지 못했습니다.",
+            "used_customers": [],
+            "data_scope": "filtered" if customer_id else "all",
+            "model": "db_direct",
+            "no_data": True,
+            "grounded": True,
+            "own_only": own_only,
+            "routing_type": "db_direct",
+        }, _response_log("db_direct", started, "db_direct", customer_id, False))
+
+    if routing_type == "db_direct" and not customer_id:
         exact_matches = _exact_customer_matches(conn, question, history)
         if len(exact_matches) == 1:
             customer_id = exact_matches[0]["id"]
@@ -793,7 +928,7 @@ def answer(
                 allow_no_match_message=False,
             )
             if direct_answer:
-                return {
+                return _with_response_log({
                     "answer": direct_answer,
                     "used_customers": [{"id": customer_id, "name": customer_name}],
                     "data_scope": "filtered",
@@ -801,8 +936,8 @@ def answer(
                     "no_data": False,
                     "grounded": True,
                     "own_only": own_only,
-                    "routing_type": "db_query",
-                }
+                    "routing_type": "db_direct",
+                }, _response_log("db_direct", started, "rule_based_db", customer_id, False))
 
     hints = _aggregate_hints(conn)
     picked = _pick_customers(conn, question, history)
@@ -845,7 +980,7 @@ def answer(
                 direct_coverage_items or (_latest_coverage_items(conn, customer_id) if customer_id else []),
             )
         if fallback_answer:
-            return {
+            return _with_response_log({
                 "answer": fallback_answer,
                 "used_customers": [{"id": customer_id, "name": customer_name}] if customer_id else [],
                 "data_scope": "filtered",
@@ -853,8 +988,8 @@ def answer(
                 "no_data": False,
                 "grounded": True,
                 "own_only": own_only,
-                "routing_type": "db_query",
-            }
+                "routing_type": "db_direct",
+            }, _response_log("db_direct", started, "rule_based_fallback", customer_id, True))
         data = {
             "answer": "답변을 생성하지 못했습니다.",
             "used_customer_names": [],
@@ -879,7 +1014,8 @@ def answer(
                     seen.add(hit["id"])
                     used_customers.append({"id": hit["id"], "name": hit["name"]})
 
-    return {
+    route_name = "local_llm" if routing_type in ("local_llm", "summarize", "db_direct") else routing_type
+    return _with_response_log({
         "answer": data.get("answer") or "답변을 생성하지 못했습니다.",
         "used_customers": used_customers,
         "data_scope": "filtered" if (picked is not None or customer_id) else "all",
@@ -887,5 +1023,5 @@ def answer(
         "no_data": no_data,
         "grounded": bool(data.get("grounded")),
         "own_only": own_only,
-        "routing_type": routing_type,
-    }
+        "routing_type": route_name,
+    }, _response_log(route_name, started, model, customer_id, False))

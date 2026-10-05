@@ -104,6 +104,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
                 background: m.role === "user" ? "var(--primary-600)" : "var(--color-bg-base)",
                 color: m.role === "user" ? "#fff" : "var(--color-text-primary)",
                 border: "1px solid var(--color-border-default)",
+                opacity: m.pending ? 0.85 : 1,
                 boxShadow: m.role === "user" 
                   ? "0 1px 2px rgba(37,99,235,0.1)" 
                   : "var(--shadow-sm)",
@@ -111,6 +112,17 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
               }}
             >
               <div>{m.content}</div>
+              {m.role === "assistant" && m.pending && (
+                <div style={{ marginTop: 8, fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+                  DB 조회 후 필요한 경우 AI 답변을 보강합니다.
+                </div>
+              )}
+              {m.role === "assistant" && m.response_log && (
+                <div style={{ marginTop: 8, fontSize: "0.72rem", color: "var(--color-text-secondary)" }}>
+                  route: {m.response_log.route} · {m.response_log.elapsed_ms}ms · model: {m.response_log.model}
+                  {m.response_log.fallback ? " · fallback" : ""}
+                </div>
+              )}
               {m.role === "assistant" && m.no_data && (
                 <div style={{ marginTop: 8, fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
                   <span style={{ background: "var(--color-bg-base)", borderRadius: 6, padding: "3px 8px", border: "1px solid #e5e5e5" }}>
@@ -178,7 +190,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
                 }} />
               </div>
               <p style={{ fontSize: "0.75rem", color: "#a3a3a3", margin: "6px 0 0", fontStyle: "italic" }}>
-                AI가 데이터를 확인하는 중…
+                고객 정보 확인 중...
               </p>
             </div>
           </div>

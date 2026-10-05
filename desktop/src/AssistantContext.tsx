@@ -20,6 +20,14 @@ export type Message = {
   content: string;
   used_customers?: UsedCustomer[];
   no_data?: boolean;
+  pending?: boolean;
+  response_log?: {
+    route: "db_direct" | "local_llm" | "rag" | string;
+    elapsed_ms: number;
+    model: string;
+    used_customer_id?: string | null;
+    fallback: boolean;
+  };
 };
 
 type AssistantTask = {
@@ -28,6 +36,7 @@ type AssistantTask = {
   history: { role: string; content: string }[];
   status: "pending" | "completed" | "error";
   customer_id?: string;
+  placeholder_id?: string;
   result?: Message;
   error?: string;
 };
@@ -147,6 +156,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             content: res.answer,
             used_customers: res.used_customers ?? [],
             no_data: !!res.no_data,
+            response_log: res.response_log,
           };
 
           // 작업 완료
@@ -156,8 +166,14 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             )
           );
 
-          // 메시지 추가
-          setMessages((prev) => [...prev, assistantMessage]);
+          // 진행 표시 메시지를 실제 답변으로 교체 (탭 이동 중에도 유지)
+          setMessages((prev) =>
+            prev.map((m) =>
+              task.placeholder_id && m.pending && (m as Message & { id?: string }).id === task.placeholder_id
+                ? assistantMessage
+                : m
+            )
+          );
 
           // 알림 표시
           if ("Notification" in window && Notification.permission === "granted") {
@@ -176,6 +192,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             prev.map((t) => (t.id === task.id ? { ...t, status: "error" as const, error: errorMessage } : t))
           );
           setErr(errorMessage);
+          setMessages((prev) =>
+            prev.map((m) =>
+              task.placeholder_id && m.pending && (m as Message & { id?: string }).id === task.placeholder_id
+                ? { role: "assistant", content: `오류: ${errorMessage}`, no_data: true }
+                : m
+            )
+          );
           setBusy(false);
         }
       }
@@ -192,8 +215,15 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
     const historyForAPI = history.slice(-6).map((m) => ({ role: m.role, content: m.content }));
     
-    // 사용자 메시지 즉시 추가
-    setMessages((prev) => [...prev, { role: "user", content: trimmedQuestion }]);
+    const taskId = `${Date.now()}-${Math.random()}`;
+    const placeholderId = `progress-${taskId}`;
+
+    // 사용자 메시지와 진행 표시를 즉시 추가
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: trimmedQuestion },
+      { role: "assistant", content: "고객 정보 확인 중...", pending: true, id: placeholderId } as Message & { id: string },
+    ]);
     setErr(null);
     setBusy(true);
 
@@ -203,11 +233,11 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     }
 
     // 백그라운드 작업 큐에 추가
-    const taskId = `${Date.now()}-${Math.random()}`;
     setTasks((prev) => [
       ...prev,
       {
         id: taskId,
+        placeholder_id: placeholderId,
         question: trimmedQuestion,
         history: historyForAPI,
         status: "pending",
