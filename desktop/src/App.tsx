@@ -205,10 +205,24 @@ function CapturePanel({
   onOpenCustomer,
   onChanged,
   onBackgroundJob,
+  title = "던져넣기",
+  subtitle = "한 명이든 여러 명이든, 녹취·PDF·텍스트 무엇이든",
+  jobLabel = "던져넣기",
+  accept = "audio/*,.m4a,.mp3,.wav,.aac,.aiff,.pdf,.txt,.csv,.md,text/plain",
+  defaultContext = "",
+  contextPlaceholder = "이 파일에 대해 알려주세요 — 누구 자료인지(고객 이름), 어느 보험사, 어떤 문서(제안서·증권·보장분석·녹취)인지, 특별히 봐야 할 점.\n여기 적은 내용이 분석에 함께 들어갑니다. (저장은 안 됩니다)",
+  textPlaceholder = "고객 정보를 붙여넣으세요. 여러 명이면 한 줄에 한 명씩.\n또는 녹취·PDF·텍스트 파일을 위 영역에 끌어다 놓으세요.",
 }: {
   onOpenCustomer: (id: string) => void;
   onChanged: () => void;
   onBackgroundJob?: BackgroundJobReporter;
+  title?: string;
+  subtitle?: string;
+  jobLabel?: string;
+  accept?: string;
+  defaultContext?: string;
+  contextPlaceholder?: string;
+  textPlaceholder?: string;
 }) {
   const [text, setText] = useState("");
   const [context, setContext] = useState(""); // 업로드 파일에 대한 설명·요청 (분석에만 반영, 저장 안 함)
@@ -374,7 +388,7 @@ function CapturePanel({
     setErr(null);
     setMsg(null);
     setRows([]);
-    onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "running", message: file ? "던져넣기 파일 분석 중…" : "던져넣기 텍스트 분석 중…" });
+    onBackgroundJob?.({ id: "capture-analyze", label: jobLabel, status: "running", message: file ? `${jobLabel} 파일 분석 중…` : `${jobLabel} 텍스트 분석 중…` });
     try {
       const fd = new FormData();
       if (text.trim()) fd.append("text", text.trim());
@@ -400,7 +414,7 @@ function CapturePanel({
       );
       setContext(""); // 분석에 반영됐으니 비운다
       setStaged(null);
-      onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "done", message: `던져넣기 분석 완료 — ${(b.items ?? []).length}건` });
+      onBackgroundJob?.({ id: "capture-analyze", label: jobLabel, status: "done", message: `${jobLabel} 분석 완료 — ${(b.items ?? []).length}건` });
     } catch (e) {
       if ((e as any)?.status === 409 && file) {
         setSttStatus((e as any).body?.stt_status || null);
@@ -415,7 +429,7 @@ function CapturePanel({
       }
       const message = e instanceof Error ? e.message : String(e);
       setErr(message);
-      onBackgroundJob?.({ id: "capture-analyze", label: "던져넣기", status: "error", message: "던져넣기 분석 실패: " + message });
+      onBackgroundJob?.({ id: "capture-analyze", label: jobLabel, status: "error", message: `${jobLabel} 분석 실패: ${message}` });
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -442,7 +456,7 @@ function CapturePanel({
   const pickFile = async () => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "audio/*,.m4a,.mp3,.wav,.aac,.aiff,.pdf,.txt,.csv,.md,text/plain";
+    input.accept = accept;
     const f: File | null = await new Promise((resolve) => {
       input.onchange = () => {
         const selected = input.files?.[0] ?? null;
@@ -451,7 +465,7 @@ function CapturePanel({
       };
       input.click();
     });
-    if (f) setStaged(f); // 바로 분석하지 않고 설명을 받는다
+    if (f) { setStaged(f); if (defaultContext) setContext(defaultContext); } // 바로 분석하지 않고 설명을 받는다
   };
 
   const patchRow = (i: number, p: Record<string, unknown>) =>
@@ -472,7 +486,7 @@ function CapturePanel({
     setMsg(null);
     setBusy(true);
     setPhase("저장 중…");
-    onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "running", message: "던져넣기 저장 중…" });
+    onBackgroundJob?.({ id: "capture-save", label: `${jobLabel} 저장`, status: "running", message: `${jobLabel} 저장 중…` });
     const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, consultations: 0, coverageAnalyses: 0 };
     let lastNewId: string | null = null;
     let mergedId: string | null = null;
@@ -606,7 +620,7 @@ function CapturePanel({
     const onlyMerge = res.merged === 1 && total === 1;
     const single = (onlyNew && lastNewId) || (onlyMerge && mergedId);
     if (single && !policyFails.length && !rrnErr && !saveErr) {
-      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "done", message: "던져넣기 저장 완료" });
+      onBackgroundJob?.({ id: "capture-save", label: `${jobLabel} 저장`, status: "done", message: `${jobLabel} 저장 완료` });
       reset();
       onOpenCustomer((lastNewId || mergedId)!);
       return;
@@ -628,9 +642,9 @@ function CapturePanel({
     if (errs.length) {
       const message = errs.join(" / ");
       setErr(message);
-      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "error", message: "던져넣기 저장 오류: " + message });
+      onBackgroundJob?.({ id: "capture-save", label: `${jobLabel} 저장`, status: "error", message: `${jobLabel} 저장 오류: ${message}` });
     } else {
-      onBackgroundJob?.({ id: "capture-save", label: "던져넣기 저장", status: "done", message: `던져넣기 완료 — 신규 ${res.created} · 갱신 ${res.merged}` });
+      onBackgroundJob?.({ id: "capture-save", label: `${jobLabel} 저장`, status: "done", message: `${jobLabel} 완료 — 신규 ${res.created} · 갱신 ${res.merged}` });
     }
   };
 
@@ -673,7 +687,7 @@ function CapturePanel({
         setDragOver(false);
         if (busy) return;
         const f = e.dataTransfer.files?.[0];
-        if (f) setStaged(f); // 바로 분석하지 않고 설명을 받는다
+        if (f) { setStaged(f); if (defaultContext) setContext(defaultContext); } // 바로 분석하지 않고 설명을 받는다
       }}
       style={{
         border: dragOver ? "2px dashed var(--primary-500)" : "2px dashed var(--color-border-default)",
@@ -737,10 +751,10 @@ function CapturePanel({
           </div>
           <div>
             <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "var(--color-text-primary)" }}>
-              던져넣기 {dragOver && "— 여기에 놓으세요"}
+              {title} {dragOver && "— 여기에 놓으세요"}
             </h3>
             <p style={{ margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>
-              한 명이든 여러 명이든, 녹취·PDF·텍스트 무엇이든
+              {subtitle}
             </p>
           </div>
         </div>
@@ -822,9 +836,7 @@ function CapturePanel({
               outline: "none",
               transition: "border 0.2s"
             }}
-            placeholder={
-              "이 파일에 대해 알려주세요 — 누구 자료인지(고객 이름), 어느 보험사, 어떤 문서(제안서·증권·보장분석·녹취)인지, 특별히 봐야 할 점.\n여기 적은 내용이 분석에 함께 들어갑니다. (저장은 안 됩니다)"
-            }
+            placeholder={contextPlaceholder}
             value={context}
             onChange={(e) => setContext(e.target.value)}
             autoFocus
@@ -919,7 +931,7 @@ function CapturePanel({
               transition: "border 0.2s",
               marginBottom: 10
             }}
-            placeholder={"고객 정보를 붙여넣으세요. 여러 명이면 한 줄에 한 명씩.\n또는 녹취·PDF·텍스트 파일을 위 영역에 끌어다 놓으세요."}
+            placeholder={textPlaceholder}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
@@ -1090,7 +1102,17 @@ function CapturePanel({
   );
 }
 
-function HomeScreen({ onOpenCustomer, onBackgroundJob }: { onOpenCustomer: (id: string) => void; onBackgroundJob?: BackgroundJobReporter }) {
+function HomeScreen({
+  onOpenCustomer,
+  onGoDataAnalysis,
+  onGoCustomers,
+  onGoCoverage,
+}: {
+  onOpenCustomer: (id: string) => void;
+  onGoDataAnalysis: () => void;
+  onGoCustomers: () => void;
+  onGoCoverage: () => void;
+}) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ownOnly, setOwnOnly] = useState(() => localStorage.getItem("iai.own_only") === "1");
@@ -1157,7 +1179,11 @@ function HomeScreen({ onOpenCustomer, onBackgroundJob }: { onOpenCustomer: (id: 
         />
         내 계약만
       </label>
-      <CapturePanel onOpenCustomer={onOpenCustomer} onChanged={load} onBackgroundJob={onBackgroundJob} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, margin: "12px 0 20px" }}>
+        <button onClick={onGoDataAnalysis} style={{ padding: "12px 14px", fontWeight: 700 }}>자료 업로드</button>
+        <button onClick={onGoCustomers} style={{ padding: "12px 14px", fontWeight: 700 }}>고객 목록</button>
+        <button onClick={onGoCoverage} style={{ padding: "12px 14px", fontWeight: 700 }}>보장현황 보기</button>
+      </div>
       {error && <p style={{ color: "#b00" }}>대시보드 오류: {error}</p>}
       {!data ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>
@@ -1567,6 +1593,93 @@ function PilotTools() {
   );
 }
 
+function DataAnalysisScreen({
+  onOpenCustomer,
+  onDraftChange,
+  onBackgroundJob,
+}: {
+  onOpenCustomer: (id: string) => void;
+  onDraftChange: (state: { hasDraft: boolean; isAnalyzing: boolean }) => void;
+  onBackgroundJob: BackgroundJobReporter;
+}) {
+  const [section, setSection] = useState<"new" | "bulk" | "customerPdf" | "coveragePdf">("new");
+  const sectionButton = (key: typeof section, label: string, desc: string) => (
+    <button
+      key={key}
+      onClick={() => setSection(key)}
+      style={{
+        textAlign: "left",
+        padding: 14,
+        border: `1px solid ${section === key ? "#2563eb" : "var(--color-border-default)"}`,
+        borderRadius: 10,
+        background: section === key ? "#eff6ff" : "var(--color-bg-surface)",
+        color: "var(--color-text-primary)",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ fontWeight: 800, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{desc}</div>
+    </button>
+  );
+
+  return (
+    <div style={{ maxWidth: 1040, margin: "24px auto", padding: "0 16px" }}>
+      <h2 style={{ margin: "0 0 4px" }}>자료분석</h2>
+      <p style={{ margin: "0 0 16px", color: "var(--color-text-secondary)", fontSize: 13 }}>
+        업로드 전용 화면입니다. 조회는 고객 탭과 보장분석 탭에서 진행합니다.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 }}>
+        {sectionButton("new", "새고객 등록", "상세 입력·파일/텍스트 분석")}
+        {sectionButton("bulk", "일괄등록", "엑셀/CSV 업로드")}
+        {sectionButton("customerPdf", "고객자료 PDF", "증권·제안서·상담자료 업로드")}
+        {sectionButton("coveragePdf", "보장분석서 PDF", "보장분석 자료 업로드")}
+      </div>
+      <div style={{ display: section === "new" ? "block" : "none" }} aria-hidden={section !== "new"}>
+        <CustomersScreen
+          screen="new"
+          onOpenCustomer={onOpenCustomer}
+          onDraftChange={onDraftChange}
+          onBackgroundJob={onBackgroundJob}
+        />
+      </div>
+      <div style={{ display: section === "bulk" ? "block" : "none" }} aria-hidden={section !== "bulk"}>
+        <div style={pboxStyle}>
+          <b>일괄등록 (엑셀)</b>
+          <ImportWizard onBackgroundJob={onBackgroundJob} />
+        </div>
+      </div>
+      <div style={{ display: section === "customerPdf" ? "block" : "none" }} aria-hidden={section !== "customerPdf"}>
+        <CapturePanel
+          title="고객자료 PDF"
+          subtitle="고객자료·증권·제안서 PDF를 업로드해 고객/계약/상담 정보를 저장합니다."
+          jobLabel="고객자료 PDF"
+          accept="application/pdf,.pdf"
+          defaultContext="고객자료 PDF"
+          contextPlaceholder="고객 이름, 보험사, 자료 종류(증권·제안서·상담자료), 특별히 봐야 할 점을 적어주세요."
+          textPlaceholder="PDF를 선택하거나 끌어다 놓으세요."
+          onOpenCustomer={onOpenCustomer}
+          onChanged={() => undefined}
+          onBackgroundJob={onBackgroundJob}
+        />
+      </div>
+      <div style={{ display: section === "coveragePdf" ? "block" : "none" }} aria-hidden={section !== "coveragePdf"}>
+        <CapturePanel
+          title="보장분석서 PDF"
+          subtitle="보장분석서 PDF를 업로드해 고객별 보장분석 데이터를 저장합니다."
+          jobLabel="보장분석서 PDF"
+          accept="application/pdf,.pdf"
+          defaultContext="보장분석서 PDF / 보장분석"
+          contextPlaceholder="고객 이름과 보장분석서라는 점을 적어주세요. 저장 시 해당 customer_id로 상담/보장분석이 연결됩니다."
+          textPlaceholder="보장분석서 PDF를 선택하거나 끌어다 놓으세요."
+          onOpenCustomer={onOpenCustomer}
+          onChanged={() => undefined}
+          onBackgroundJob={onBackgroundJob}
+        />
+      </div>
+    </div>
+  );
+}
+
 function DiagnosticsScreen({
   onOpenCustomer,
   onRestartOnboarding,
@@ -1905,7 +2018,7 @@ function DiagnosticsScreen({
 }
 
 // 아키텍처 사이드바: 상담자 홈 / 고객 / 약관 / 상담(V0.2~) / 설정·진단
-type View = "home" | "newcustomer" | "customers" | "import" | "coverage" | "assistant" | "diagnostics";
+type View = "home" | "customers" | "data" | "coverage" | "assistant" | "diagnostics";
 
 function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) => void }) {
   const { pendingTasks } = useAssistant();
@@ -2269,9 +2382,8 @@ function App() {
         )}
         <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--color-border-default)", padding: "8px 12px 0", alignItems: "center", position: "sticky", top: 0, background: "var(--color-bg-surface)", zIndex: 20 }}>
           {tab("home", "홈")}
-          {tab("newcustomer", "새 고객")}
-          {tab("customers", "고객 목록")}
-          {tab("import", "일괄 등록")}
+          {tab("customers", "고객")}
+          {tab("data", "자료분석")}
           {tab("coverage", "보장분석")}
           {tab("assistant", "AI 문의")}
           {tab("diagnostics", "설정·진단")}
@@ -2314,14 +2426,11 @@ function App() {
           </div>
         )}
         <div style={{ display: view === "home" ? "block" : "none" }} aria-hidden={view !== "home"}>
-          <HomeScreen onOpenCustomer={openCustomer} onBackgroundJob={reportBackgroundJob} />
-        </div>
-        <div style={{ display: view === "newcustomer" ? "block" : "none" }} aria-hidden={view !== "newcustomer"}>
-          <CustomersScreen
-            screen="new"
+          <HomeScreen
             onOpenCustomer={openCustomer}
-            onDraftChange={handleDraftChange}
-            onBackgroundJob={reportBackgroundJob}
+            onGoDataAnalysis={() => guardedSetView("data")}
+            onGoCustomers={() => guardedSetView("customers")}
+            onGoCoverage={() => guardedSetView("coverage")}
           />
         </div>
         <div style={{ display: view === "customers" ? "block" : "none" }} aria-hidden={view !== "customers"}>
@@ -2336,11 +2445,12 @@ function App() {
             onBackgroundJob={reportBackgroundJob}
           />
         </div>
-        <div style={{ display: view === "import" ? "block" : "none" }} aria-hidden={view !== "import"}>
-          <div style={{ padding: "24px", maxWidth: 800, margin: "0 auto" }}>
-            <h2 style={{ marginBottom: 16 }}>엑셀 일괄 등록</h2>
-            <ImportWizard onBackgroundJob={reportBackgroundJob} />
-          </div>
+        <div style={{ display: view === "data" ? "block" : "none" }} aria-hidden={view !== "data"}>
+          <DataAnalysisScreen
+            onOpenCustomer={openCustomer}
+            onDraftChange={handleDraftChange}
+            onBackgroundJob={reportBackgroundJob}
+          />
         </div>
         <div style={{ display: view === "coverage" ? "block" : "none" }} aria-hidden={view !== "coverage"}>
           <CoverageAnalysisScreen />
