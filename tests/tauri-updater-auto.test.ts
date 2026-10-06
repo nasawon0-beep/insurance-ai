@@ -49,7 +49,7 @@ test("local-engine auth falls back to Tauri secret bridge when /api-secret fetch
   const engine = read("desktop/src/engine.ts");
   const rust = read("desktop/src-tauri/src/lib.rs");
 
-  assert.match(engine, /fetch\(`\$\{LOCAL_ENGINE_URL\}\/api-secret`\)/);
+  assert.match(engine, /fetchWithTimeout\(`\$\{LOCAL_ENGINE_URL\}\/api-secret`\)/);
   assert.match(engine, /invoke<string>\("local_engine_api_secret"\)/);
   assert.match(engine, /secretPromise\s*=\s*null/);
 
@@ -57,6 +57,26 @@ test("local-engine auth falls back to Tauri secret bridge when /api-secret fetch
   assert.match(rust, /local-engine-api\.secret/);
   assert.match(rust, /fn local_engine_api_secret/);
   assert.match(rust, /tauri::generate_handler!\[[\s\S]*local_engine_api_secret/);
+});
+
+test("local-engine requests fall back to native bridge without breaking uploads", () => {
+  const engine = read("desktop/src/engine.ts");
+  const rust = read("desktop/src-tauri/src/lib.rs");
+  const cargo = read("desktop/src-tauri/Cargo.toml");
+
+  assert.match(engine, /browserThenNativeEngineFetch/);
+  assert.match(engine, /invoke<NativeEngineResponse>\("local_engine_request"/);
+  assert.match(engine, /body instanceof FormData[\s\S]*type: "formData"/);
+  assert.match(engine, /headers\.delete\("Content-Type"\)/);
+  assert.match(engine, /new Response\(new Uint8Array\(result\.body\)/);
+  assert.match(engine, /LONG_RUNNING_PATH_PREFIXES[\s\S]*"\/capture"[\s\S]*"\/parse\/pdf"[\s\S]*"\/import\/preview"[\s\S]*"\/import\/commit"/);
+  assert.doesNotMatch(engine, /ensureLocalEngineRecovered\(\)[\s\S]{0,160}catch/);
+
+  assert.match(rust, /enum LocalEngineRequestBody[\s\S]*FormData/);
+  assert.match(rust, /reqwest::multipart::Form/);
+  assert.match(rust, /\.bytes\(\)[\s\S]*bytes\.to_vec\(\)/);
+  assert.match(rust, /tauri::generate_handler!\[[\s\S]*local_engine_request/);
+  assert.match(cargo, /reqwest = \{ version = "0\.11", features = \["stream", "multipart"\] \}/);
 });
 
 test("license diagnostics distinguish online refresh failures and offline grace rejection", () => {

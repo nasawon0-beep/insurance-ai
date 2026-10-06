@@ -10,6 +10,38 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
+#[derive(serde::Deserialize)]
+struct LocalEngineRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Option<LocalEngineRequestBody>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum LocalEngineRequestBody {
+    Text { text: String },
+    Bytes { bytes: Vec<u8> },
+    FormData { fields: Vec<LocalEngineFormField> },
+}
+
+#[derive(serde::Deserialize)]
+struct LocalEngineFormField {
+    name: String,
+    value: Option<String>,
+    file_name: Option<String>,
+    content_type: Option<String>,
+    bytes: Option<Vec<u8>>,
+}
+
+#[derive(serde::Serialize)]
+struct LocalEngineResponse {
+    status: u16,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+}
+
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
     local_engine: Mutex<Option<CommandChild>>,
@@ -416,6 +448,95 @@ fn local_engine_api_secret(app: tauri::AppHandle) -> Result<String, String> {
     Ok(value)
 }
 
+#[tauri::command]
+async fn local_engine_request(request: LocalEngineRequest) -> Result<LocalEngineResponse, String> {
+    let method = request
+        .method
+        .parse::<reqwest::Method>()
+        .map_err(|e| format!("local-engine 요청 method 오류: {e}"))?;
+    let path = if request.path.starts_with('/') {
+        request.path
+    } else {
+        format!("/{}", request.path)
+    };
+    if path.contains("..") || path.starts_with("//") {
+        return Err("local-engine 요청 path가 올바르지 않습니다".to_owned());
+    }
+    let url = format!("http://{}:{}{}", LOCAL_ENGINE_HOST, LOCAL_ENGINE_PORT, path);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("local-engine client 생성 실패: {e}"))?;
+    let mut builder = client.request(method, url);
+    for (name, value) in request.headers {
+        let lower = name.to_ascii_lowercase();
+        if lower == "host" || lower == "origin" || lower == "referer" || lower == "content-length" {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    if let Some(body) = request.body {
+        builder = match body {
+            LocalEngineRequestBody::Text { text } => builder.body(text),
+            LocalEngineRequestBody::Bytes { bytes } => builder.body(bytes),
+            LocalEngineRequestBody::FormData { fields } => {
+                let mut form = reqwest::multipart::Form::new();
+                for field in fields {
+                    if let Some(bytes) = field.bytes {
+                        let mut part = reqwest::multipart::Part::bytes(bytes);
+                        if let Some(file_name) = field.file_name {
+                            part = part.file_name(file_name);
+                        }
+                        if let Some(content_type) =
+                            field.content_type.filter(|value| !value.is_empty())
+                        {
+                            part = part.mime_str(&content_type).map_err(|e| {
+                                format!("local-engine multipart content-type 오류: {e}")
+                            })?;
+                        }
+                        form = form.part(field.name, part);
+                    } else {
+                        form = form.text(field.name, field.value.unwrap_or_default());
+                    }
+                }
+                builder.multipart(form)
+            }
+        };
+    }
+    let response = builder
+        .send()
+        .await
+        .map_err(|e| format!("local-engine native request 실패: {e}"))?;
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            let lower = name.as_str().to_ascii_lowercase();
+            if lower == "transfer-encoding"
+                || lower == "content-encoding"
+                || lower == "content-length"
+            {
+                return None;
+            }
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.to_string(), value.to_owned()))
+        })
+        .collect();
+    let body = response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| format!("local-engine 응답 읽기 실패: {e}"))?;
+    Ok(LocalEngineResponse {
+        status,
+        body,
+        headers,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +631,7 @@ pub fn run() {
             ollama::download_model,
             ensure_local_engine,
             local_engine_api_secret,
+            local_engine_request,
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;

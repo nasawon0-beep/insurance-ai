@@ -16,6 +16,25 @@ const LONG_RUNNING_PATH_PREFIXES = [
 let secretPromise: Promise<string> | null = null;
 let recoveryPromise: Promise<void> | null = null;
 
+type NativeEngineRequestBody =
+  | { type: "text"; text: string }
+  | { type: "bytes"; bytes: number[] }
+  | { type: "formData"; fields: NativeEngineFormField[] };
+
+type NativeEngineFormField = {
+  name: string;
+  value?: string;
+  file_name?: string;
+  content_type?: string;
+  bytes?: number[];
+};
+
+type NativeEngineResponse = {
+  status: number;
+  body: number[];
+  headers: [string, string][];
+};
+
 function getActorId(): string | null {
   try {
     const id = JSON.parse(localStorage.getItem("iai.user") || "null")?.id;
@@ -41,6 +60,58 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs =
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+function bytesFromBuffer(buffer: ArrayBuffer): number[] {
+  return Array.from(new Uint8Array(buffer));
+}
+
+async function nativeBodyFromInit(init: RequestInit): Promise<NativeEngineRequestBody | null> {
+  const body = init.body;
+  if (body == null) return null;
+  if (typeof body === "string") return { type: "text", text: body };
+  if (body instanceof URLSearchParams) return { type: "text", text: body.toString() };
+  if (body instanceof FormData) {
+    const fields: NativeEngineFormField[] = [];
+    for (const [name, value] of body.entries()) {
+      if (value instanceof File) {
+        fields.push({
+          name,
+          file_name: value.name,
+          content_type: value.type || undefined,
+          bytes: bytesFromBuffer(await value.arrayBuffer()),
+        });
+      } else {
+        fields.push({ name, value: String(value) });
+      }
+    }
+    return { type: "formData", fields };
+  }
+  if (body instanceof Blob) return { type: "bytes", bytes: bytesFromBuffer(await body.arrayBuffer()) };
+  if (body instanceof ArrayBuffer) return { type: "bytes", bytes: bytesFromBuffer(body) };
+  if (ArrayBuffer.isView(body)) {
+    const view = body as ArrayBufferView;
+    return { type: "bytes", bytes: Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)) };
+  }
+  throw new Error("local-engine native fallback은 이 요청 본문 형식을 지원하지 않습니다");
+}
+
+async function nativeEngineFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  // reqwest가 multipart boundary를 새로 만들기 때문에 기존 browser boundary 헤더는 제거한다.
+  if (init.body instanceof FormData) headers.delete("Content-Type");
+  const result = await invoke<NativeEngineResponse>("local_engine_request", {
+    request: {
+      method: init.method || "GET",
+      path,
+      headers: Array.from(headers.entries()),
+      body: await nativeBodyFromInit(init),
+    },
+  });
+  return new Response(new Uint8Array(result.body), {
+    status: result.status,
+    headers: result.headers,
+  });
 }
 
 export async function ensureLocalEngineRecovered(): Promise<void> {
@@ -80,28 +151,42 @@ async function getApiSecret(): Promise<string> {
   return secretPromise;
 }
 
+async function browserEngineFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, timeoutForEnginePath(path));
+}
+
+async function browserThenNativeEngineFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  try {
+    return await browserEngineFetch(path, init);
+  } catch (error) {
+    console.warn("local-engine browser fetch failed; trying Tauri native bridge", { path, error });
+    return nativeEngineFetch(path, init);
+  }
+}
+
 export async function engineFetch(
   path: string,
   init: RequestInit = {},
   retryWithFreshSecret = true,
 ): Promise<Response> {
-  if (path === "/health") return fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 1000);
+  if (path === "/health") {
+    try {
+      return await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 1000);
+    } catch (error) {
+      console.warn("local-engine /health browser fetch failed; trying Tauri native bridge", error);
+      return nativeEngineFetch(path, init);
+    }
+  }
 
   const headers = new Headers(init.headers);
   headers.set(API_SECRET_HEADER, await getApiSecret());
   const actorId = getActorId();
   if (actorId) headers.set(ACTOR_HEADER, actorId);
-  try {
-    const response = await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, { ...init, headers }, timeoutForEnginePath(path));
-    if (response.status === 401 && retryWithFreshSecret) {
-      secretPromise = null;
-      return engineFetch(path, init, false);
-    }
-    return response;
-  } catch (error) {
-    // Do not auto-restart local-engine from ordinary request failures.
-    // Restarting during uploads/analysis makes the UI stutter and can kill in-flight work.
-    // The user can still use the explicit "로컬 엔진 재시작" button.
-    throw error;
+
+  const response = await browserThenNativeEngineFetch(path, { ...init, headers });
+  if (response.status === 401 && retryWithFreshSecret) {
+    secretPromise = null;
+    return engineFetch(path, init, false);
   }
+  return response;
 }
