@@ -118,6 +118,12 @@ type Dashboard = {
   recent_consultations: RecentConsult[];
 };
 
+const DASHBOARD_STARTUP_RETRY_DELAYS_MS = [500, 1000, 1500, 2500];
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function dday(dateStr: string | null): { label: string; color: string } | null {
   if (!dateStr) return null;
   const d = new Date(dateStr.slice(0, 10) + "T00:00:00");
@@ -1133,14 +1139,38 @@ function HomeScreen({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
   const [ownOnly, setOwnOnly] = useState(() => localStorage.getItem("iai.own_only") === "1");
+  const hasDashboardDataRef = useRef(false);
+  const dashboardLoadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++dashboardLoadSeqRef.current;
+    const isCurrent = () => seq === dashboardLoadSeqRef.current;
+    const retryDelays = hasDashboardDataRef.current ? [] : DASHBOARD_STARTUP_RETRY_DELAYS_MS;
+    setDashboardLoading(true);
+    if (!hasDashboardDataRef.current) setError(null);
+    let lastError: unknown = null;
     try {
       const qs = ownOnly ? "?own=1" : "";
-      setData(await (await engineFetch(`/dashboard${qs}`)).json());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+        try {
+          const response = await engineFetch(`/dashboard${qs}`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const next = await response.json();
+          if (!isCurrent()) return;
+          hasDashboardDataRef.current = true;
+          setData(next);
+          setError(null);
+          return;
+        } catch (e) {
+          lastError = e;
+          if (attempt < retryDelays.length) await wait(retryDelays[attempt]);
+        }
+      }
+      if (isCurrent()) setError(lastError instanceof Error ? lastError.message : String(lastError));
+    } finally {
+      if (isCurrent()) setDashboardLoading(false);
     }
   }, [ownOnly]);
 
@@ -1202,6 +1232,7 @@ function HomeScreen({
         <button onClick={onGoCustomers} style={{ padding: "12px 14px", fontWeight: 700 }}>고객 목록</button>
         <button onClick={onGoCoverage} style={{ padding: "12px 14px", fontWeight: 700 }}>보장현황 보기</button>
       </div>
+      {dashboardLoading && !data && <p style={{ color: "#888" }}>로컬 엔진 연결 후 대시보드를 불러오는 중…</p>}
       {error && <p style={{ color: "#b00" }}>대시보드 오류: {error}</p>}
       {!data ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>

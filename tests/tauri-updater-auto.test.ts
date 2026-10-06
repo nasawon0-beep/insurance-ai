@@ -79,6 +79,20 @@ test("local-engine requests fall back to native bridge without breaking uploads"
   assert.match(cargo, /reqwest = \{ version = "0\.11", features = \["stream", "multipart"\] \}/);
 });
 
+test("dashboard startup race retries before showing a permanent error and clears stale errors on success", () => {
+  const app = read("desktop/src/App.tsx");
+
+  assert.match(app, /DASHBOARD_STARTUP_RETRY_DELAYS_MS\s*=\s*\[500, 1000, 1500, 2500\]/);
+  assert.match(app, /hasDashboardDataRef\s*=\s*useRef\(false\)/);
+  assert.match(app, /const retryDelays = hasDashboardDataRef\.current \? \[\] : DASHBOARD_STARTUP_RETRY_DELAYS_MS/);
+  assert.match(app, /if \(!hasDashboardDataRef\.current\) setError\(null\)/);
+  assert.match(app, /await wait\(retryDelays\[attempt\]\)/);
+  assert.match(app, /hasDashboardDataRef\.current = true;[\s\S]*setData\(next\);[\s\S]*setError\(null\);/);
+  assert.match(app, /if \(isCurrent\(\)\) setError\(lastError instanceof Error \? lastError\.message : String\(lastError\)\)/);
+  assert.match(app, /로컬 엔진 연결 후 대시보드를 불러오는 중/);
+  assert.doesNotMatch(app, /ensureLocalEngineRecovered\(\)[\s\S]{0,240}dashboard/);
+});
+
 test("license diagnostics distinguish online refresh failures and offline grace rejection", () => {
   const auth = read("desktop/src/auth.ts");
 
