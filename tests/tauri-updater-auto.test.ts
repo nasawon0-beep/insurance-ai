@@ -79,6 +79,34 @@ test("local-engine requests fall back to native bridge without breaking uploads"
   assert.match(cargo, /reqwest = \{ version = "0\.11", features = \["stream", "multipart"\] \}/);
 });
 
+test("local-engine startup race waits for health and retries safe initial GET requests only", () => {
+  const engine = read("desktop/src/engine.ts");
+
+  assert.match(engine, /STARTUP_RECOVERY_RETRY_DELAYS_MS\s*=\s*\[250, 500, 1000, 1500, 2500\]/);
+  assert.match(engine, /waitForLocalEngineReady/);
+  assert.match(engine, /browserThenNativeEngineFetch\("\/health", \{\}\)/);
+  assert.match(engine, /canRetryEngineStartupRequest[\s\S]*method === "GET" \|\| method === "HEAD"/);
+  assert.match(engine, /!isLongRunningEnginePath\(path\)/);
+  assert.match(engine, /getApiSecretAfterStartupWait/);
+  assert.match(engine, /local-engine request failed before startup completed; waiting for readiness and retrying/);
+
+  const retryBlock = engine.slice(engine.indexOf("export async function engineFetch"));
+  assert.match(retryBlock, /await waitForLocalEngineReady\(\);[\s\S]*return engineFetchOnce\(path, init, retryWithFreshSecret\)/);
+  assert.doesNotMatch(engine, /ensureLocalEngineRecovered\(\)[\s\S]{0,240}engineFetch/);
+});
+
+test("diagnostics initial load shows preparing state and clears stale local-engine errors on success", () => {
+  const app = read("desktop/src/App.tsx");
+  const diagnostics = app.slice(app.indexOf("function DiagnosticsScreen"), app.indexOf("// 아키텍처 사이드바"));
+
+  assert.match(diagnostics, /const \[enginePreparing, setEnginePreparing\] = useState\(false\)/);
+  assert.match(diagnostics, /setEnginePreparing\(true\);[\s\S]*setErr\(null\);[\s\S]*engineFetch\("\/diagnostics"\)/);
+  assert.match(diagnostics, /setD\(await \(await engineFetch\("\/diagnostics"\)\)\.json\(\)\);[\s\S]*setErr\(null\);/);
+  assert.match(diagnostics, /finally \{[\s\S]*setEnginePreparing\(false\);[\s\S]*\}/);
+  assert.match(diagnostics, /로컬 엔진 준비 중… 진단 정보를 곧 불러옵니다/);
+  assert.match(diagnostics, /err && !enginePreparing/);
+});
+
 test("dashboard startup race retries before showing a permanent error and clears stale errors on success", () => {
   const app = read("desktop/src/App.tsx");
 

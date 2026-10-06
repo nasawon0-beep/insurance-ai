@@ -1738,6 +1738,7 @@ function DiagnosticsScreen({
 }) {
   const [d, setD] = useState<Record<string, any> | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [enginePreparing, setEnginePreparing] = useState(false);
   const [lic, setLic] = useState<Record<string, any> | null>(null);
   const [devices, setDevices] = useState<any[]>([]);
   const [recompBusy, setRecompBusy] = useState(false);
@@ -1772,10 +1773,15 @@ function DiagnosticsScreen({
   }, []);
 
   const load = useCallback(async () => {
+    setEnginePreparing(true);
+    setErr(null);
     try {
       setD(await (await engineFetch("/diagnostics")).json());
+      setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEnginePreparing(false);
     }
     try {
       const r = await resolveLicense();
@@ -1897,7 +1903,8 @@ function DiagnosticsScreen({
           </>
         )}
       </div>
-      {err && <p style={{ color: "#b00" }}>{err}</p>}
+      {enginePreparing && !d && <p style={{ color: "#888" }}>로컬 엔진 준비 중… 진단 정보를 곧 불러옵니다.</p>}
+      {err && !enginePreparing && <p style={{ color: "#b00" }}>{err}</p>}
       {!d ? (
         <p style={{ color: "#888" }}>불러오는 중…</p>
       ) : (
