@@ -2,7 +2,7 @@ import { CONTROL_URL } from "./config.ts";
 
 export function isFetchNetworkError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /Failed to fetch|NetworkError|Load failed/i.test(message);
+  return /Failed to fetch|NetworkError|Load failed|AbortError|abort|timed?\s*out/i.test(message);
 }
 
 export function formatLocalEngineNetworkError(error: unknown): string {

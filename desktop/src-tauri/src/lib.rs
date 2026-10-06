@@ -142,8 +142,18 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+const LOCAL_ENGINE_HOST: &str = "127.0.0.1";
+const LOCAL_ENGINE_PORT: u16 = 8420;
+const LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+const LOCAL_ENGINE_PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCAL_ENGINE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn local_engine_is_healthy(timeout: Duration) -> bool {
-    let Ok(mut addrs) = ("127.0.0.1", 8420).to_socket_addrs() else {
+    local_engine_is_healthy_at(LOCAL_ENGINE_HOST, LOCAL_ENGINE_PORT, timeout)
+}
+
+fn local_engine_is_healthy_at(host: &str, port: u16, timeout: Duration) -> bool {
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
         return false;
     };
     let Some(addr) = addrs.next() else {
@@ -163,19 +173,68 @@ fn local_engine_is_healthy(timeout: Duration) -> bool {
     if stream.write_all(HEALTH_REQUEST).is_err() {
         return false;
     }
-    let mut response = String::new();
-    if stream.read_to_string(&mut response).is_err() {
-        return false;
+    let deadline = Instant::now() + timeout;
+    let mut response = Vec::new();
+    let mut buf = [0_u8; 512];
+    while Instant::now() < deadline {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                response.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&response);
+                if (text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200"))
+                    && text.contains("\"local_engine\"")
+                    && text.contains("\"ok\"")
+                {
+                    return true;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(_) => return false,
+        }
     }
+    let response = String::from_utf8_lossy(&response);
     (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
         && response.contains("\"local_engine\"")
         && response.contains("\"ok\"")
 }
 
+fn is_tcp_port_open(host: &str, port: u16, timeout: Duration) -> bool {
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, timeout).is_ok()
+}
+
+fn wait_for_local_engine_port_released(total_timeout: Duration) -> bool {
+    wait_for_tcp_port_released(LOCAL_ENGINE_HOST, LOCAL_ENGINE_PORT, total_timeout)
+}
+
+fn wait_for_tcp_port_released(host: &str, port: u16, total_timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < total_timeout {
+        if !is_tcp_port_open(host, port, Duration::from_millis(200)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    !is_tcp_port_open(host, port, Duration::from_millis(200))
+}
+
 fn wait_for_local_engine_health(total_timeout: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < total_timeout {
-        if local_engine_is_healthy(Duration::from_millis(1200)) {
+        if local_engine_is_healthy(LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -242,7 +301,7 @@ fn spawn_local_engine(
     repair_unhealthy: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = app.state::<SidecarChildren>();
-    if local_engine_is_healthy(Duration::from_millis(1200)) {
+    if local_engine_is_healthy(LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT) {
         return Ok(());
     }
 
@@ -257,9 +316,11 @@ fn spawn_local_engine(
 
     if repair_unhealthy {
         kill_unhealthy_local_engine_processes()?;
-        std::thread::sleep(Duration::from_millis(500));
-        if local_engine_is_healthy(Duration::from_millis(1200)) {
-            return Ok(());
+        if !wait_for_local_engine_port_released(LOCAL_ENGINE_PORT_RELEASE_TIMEOUT) {
+            return Err(
+                "stale local-engine.exe 종료 후에도 127.0.0.1:8420 포트가 해제되지 않았습니다"
+                    .into(),
+            );
         }
     }
 
@@ -328,11 +389,11 @@ fn ensure_local_engine(app: tauri::AppHandle) -> Result<(), String> {
     let lock_path_str = data_dir.join("app.lock").to_string_lossy().into_owned();
     spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str, true)
         .map_err(|e| format!("local-engine 복구 실패: {e}"))?;
-    if wait_for_local_engine_health(Duration::from_secs(10)) {
+    if wait_for_local_engine_health(LOCAL_ENGINE_STARTUP_TIMEOUT) {
         Ok(())
     } else {
         Err(
-            "local-engine 재시작 후에도 /health 응답이 없습니다. 앱 재시작을 시도해 주세요."
+            "local-engine 재시작 후 60초 동안 /health 응답이 없습니다. 실행 중인 local-engine.exe를 종료한 뒤 앱을 다시 시작해 주세요."
                 .to_owned(),
         )
     }
@@ -353,6 +414,85 @@ fn local_engine_api_secret(app: tauri::AppHandle) -> Result<String, String> {
         return Err("local-engine 인증 파일이 비어 있습니다".to_owned());
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn localhost_listener() -> (TcpListener, u16) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        (listener, port)
+    }
+
+    #[test]
+    fn health_probe_times_out_when_port_accepts_but_never_responds() {
+        let (listener, port) = localhost_listener();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0_u8; 128];
+                let _ = stream.read(&mut buf);
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+
+        let started = Instant::now();
+        assert!(!local_engine_is_healthy_at(
+            "127.0.0.1",
+            port,
+            Duration::from_millis(250)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn health_probe_accepts_local_engine_ok_response() {
+        let (listener, port) = localhost_listener();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept health probe");
+            let mut buf = [0_u8; 128];
+            let _ = stream.read(&mut buf);
+            let body = "{\"local_engine\":\"ok\"}";
+            let mut response = Vec::new();
+            response.extend_from_slice(b"HTTP/1.1 200 OK");
+            response.extend_from_slice(&[13, 10]);
+            response.extend_from_slice(b"Content-Length: ");
+            response.extend_from_slice(body.len().to_string().as_bytes());
+            response.extend_from_slice(&[13, 10]);
+            response.extend_from_slice(b"Connection: close");
+            response.extend_from_slice(&[13, 10, 13, 10]);
+            response.extend_from_slice(body.as_bytes());
+            stream.write_all(&response).expect("write response");
+        });
+
+        assert!(local_engine_is_healthy_at(
+            "127.0.0.1",
+            port,
+            Duration::from_secs(1)
+        ));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn wait_for_tcp_port_released_waits_until_listener_drops() {
+        let (listener, port) = localhost_listener();
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            drop(listener);
+        });
+
+        assert!(wait_for_tcp_port_released(
+            "127.0.0.1",
+            port,
+            Duration::from_secs(2)
+        ));
+        let _ = handle.join();
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

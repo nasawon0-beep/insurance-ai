@@ -2237,9 +2237,20 @@ function App() {
         setEngineNotice({ status: "idle" });
       }
     } catch (error) {
+      try {
+        await waitForEngineHealth();
+        void loadEngineSettings();
+        setEngineNotice(showRecovered ? { status: "recovered", message: "로컬 엔진 연결이 복구되었습니다. 다시 시도하세요." } : { status: "idle" });
+        if (showRecovered) {
+          window.setTimeout(() => setEngineNotice((current) => (current.status === "recovered" ? { status: "idle" } : current)), 6000);
+        }
+        return;
+      } catch {
+        // 원래 복구 실패 원인을 사용자에게 보여준다.
+      }
       setEngineNotice({
         status: "error",
-        message: `로컬 엔진 복구 실패. 앱 재시작을 시도해 주세요. (${error instanceof Error ? error.message : String(error)})`,
+        message: `로컬 엔진 복구 실패. 실행 중인 local-engine.exe를 종료한 뒤 앱을 다시 시작해 주세요. (${error instanceof Error ? error.message : String(error)})`,
       });
     }
   }, [waitForEngineHealth]);
