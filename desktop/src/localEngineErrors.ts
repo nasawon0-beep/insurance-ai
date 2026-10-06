@@ -1,4 +1,4 @@
-import { CONTROL_URL, LOCAL_ENGINE_URL } from "./config.ts";
+import { CONTROL_URL } from "./config.ts";
 
 export function isFetchNetworkError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -8,9 +8,8 @@ export function isFetchNetworkError(error: unknown): boolean {
 export function formatLocalEngineNetworkError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    `local-engine API(${LOCAL_ENGINE_URL})에 연결할 수 없습니다. ` +
-    `/health가 정상이어도 인증(/api-secret) 또는 분석 API 호출이 실패했을 수 있습니다. ` +
-    `잠시 후 다시 분석하거나 앱 재시작을 시도해 주세요. (${message})`
+    `로컬 엔진 복구 중입니다. 잠시 후 자동으로 다시 시도됩니다. ` +
+    `계속 실패하면 상단의 "로컬 엔진 재시작" 또는 "앱 재시작"을 눌러 주세요. (${message})`
   );
 }
 

@@ -25,7 +25,7 @@ import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { engineFetch } from "./engine";
+import { engineFetch, ensureLocalEngineRecovered } from "./engine";
 import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
 
@@ -2114,6 +2114,7 @@ function App() {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [engineReconnect, setEngineReconnect] = useState<{ status: "idle" | "connecting" | "error"; error?: string }>({ status: "idle" });
+  const [engineNotice, setEngineNotice] = useState<{ status: "idle" | "recovering" | "recovered" | "error"; message?: string }>({ status: "idle" });
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJobEvent[]>([]);
   const [toast, setToast] = useState<BackgroundJobEvent | null>(null);
   // CustomersScreen 은 탭 전환("새 고객"↔"고객 목록"↔"AI 문의" 등) 때마다 통째로
@@ -2223,6 +2224,26 @@ function App() {
     throw new Error(lastError);
   }, []);
 
+  const recoverLocalEngine = useCallback(async (showRecovered = true) => {
+    setEngineNotice({ status: "recovering", message: "로컬 엔진 복구 중..." });
+    try {
+      await ensureLocalEngineRecovered();
+      await waitForEngineHealth();
+      void loadEngineSettings();
+      if (showRecovered) {
+        setEngineNotice({ status: "recovered", message: "로컬 엔진 재시작 완료. 다시 시도하세요." });
+        window.setTimeout(() => setEngineNotice((current) => (current.status === "recovered" ? { status: "idle" } : current)), 6000);
+      } else {
+        setEngineNotice({ status: "idle" });
+      }
+    } catch (error) {
+      setEngineNotice({
+        status: "error",
+        message: `로컬 엔진 복구 실패. 앱 재시작을 시도해 주세요. (${error instanceof Error ? error.message : String(error)})`,
+      });
+    }
+  }, [waitForEngineHealth]);
+
   const finishOnboardingAndConnectEngine = useCallback(async () => {
     setNeedsOnboarding(false);
     setEngineReconnect({ status: "connecting" });
@@ -2247,6 +2268,11 @@ function App() {
   useEffect(() => {
     boot();
   }, [boot]);
+
+  useEffect(() => {
+    if (auth !== "in" || needsOnboarding) return;
+    void recoverLocalEngine(false);
+  }, [auth, needsOnboarding, recoverLocalEngine]);
 
   useEffect(() => {
     // 앱 실행(프로세스) 당 1회만. 앱 시작 3초 뒤 백그라운드에서 자동 확인한다.
@@ -2402,6 +2428,15 @@ function App() {
         {(offline || licenseErr) && (
           <div style={{ background: licenseErr ? "#fde8e8" : "#fff7e6", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
             {licenseErr ?? "오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다."}
+          </div>
+        )}
+        {engineNotice.status !== "idle" && (
+          <div style={{ background: engineNotice.status === "error" ? "#fef2f2" : "#eff6ff", color: engineNotice.status === "error" ? "#991b1b" : "#1d4ed8", fontSize: 13, padding: "8px 12px", display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #bfdbfe" }} role="status" aria-live="polite">
+            <span>{engineNotice.message ?? (engineNotice.status === "recovering" ? "로컬 엔진 복구 중..." : "로컬 엔진 상태를 확인했습니다.")}</span>
+            <button onClick={() => void recoverLocalEngine()} disabled={engineNotice.status === "recovering"} style={{ marginLeft: "auto", fontSize: 12 }}>
+              로컬 엔진 재시작
+            </button>
+            {engineNotice.status === "error" && <button onClick={() => void relaunchApp()} style={{ fontSize: 12 }}>앱 재시작</button>}
           </div>
         )}
         <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--color-border-default)", padding: "8px 12px 0", alignItems: "center", position: "sticky", top: 0, background: "var(--color-bg-surface)", zIndex: 20 }}>

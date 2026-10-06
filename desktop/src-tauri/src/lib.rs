@@ -2,9 +2,11 @@ mod ollama;
 
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
@@ -140,20 +142,125 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn local_engine_is_healthy(timeout: Duration) -> bool {
+    let Ok(mut addrs) = ("127.0.0.1", 8420).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    const HEALTH_REQUEST: &[u8] = &[
+        71, 69, 84, 32, 47, 104, 101, 97, 108, 116, 104, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13,
+        10, 72, 111, 115, 116, 58, 32, 49, 50, 55, 46, 48, 46, 48, 46, 49, 58, 56, 52, 50, 48, 13,
+        10, 67, 111, 110, 110, 101, 99, 116, 105, 111, 110, 58, 32, 99, 108, 111, 115, 101, 13, 10,
+        13, 10,
+    ];
+    if stream.write_all(HEALTH_REQUEST).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
+        && response.contains("\"local_engine\"")
+        && response.contains("\"ok\"")
+}
+
+fn wait_for_local_engine_health(total_timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < total_timeout {
+        if local_engine_is_healthy(Duration::from_millis(1200)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    false
+}
+
+#[cfg(windows)]
+fn kill_unhealthy_local_engine_processes() -> Result<(), Box<dyn std::error::Error>> {
+    // /health 실패가 확인된 뒤에만 호출한다. 종료 대상은 local-engine.exe 이름으로 한정한다.
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut has_entry = Process32FirstW(snapshot, &mut entry) != 0;
+        while has_entry {
+            let exe_len = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let exe_name = String::from_utf16_lossy(&entry.szExeFile[..exe_len]);
+            if exe_name.eq_ignore_ascii_case("local-engine.exe") {
+                let process = OpenProcess(PROCESS_TERMINATE, 0, entry.th32ProcessID);
+                let mut terminated = false;
+                if !process.is_null() {
+                    terminated = TerminateProcess(process, 1) != 0;
+                    CloseHandle(process);
+                }
+                if !terminated {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &entry.th32ProcessID.to_string()])
+                        .status();
+                }
+            }
+            has_entry = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn kill_unhealthy_local_engine_processes() -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
 fn spawn_local_engine(
     app: &tauri::AppHandle,
     config_dir: &Path,
     data_dir: &Path,
     lock_path_str: &str,
+    repair_unhealthy: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = app.state::<SidecarChildren>();
-    if state
+    if local_engine_is_healthy(Duration::from_millis(1200)) {
+        return Ok(());
+    }
+
+    if let Some(child) = state
         .local_engine
         .lock()
         .expect("local-engine child lock")
-        .is_some()
+        .take()
     {
-        return Ok(());
+        let _ = child.kill();
+    }
+
+    if repair_unhealthy {
+        kill_unhealthy_local_engine_processes()?;
+        std::thread::sleep(Duration::from_millis(500));
+        if local_engine_is_healthy(Duration::from_millis(1200)) {
+            return Ok(());
+        }
     }
 
     let (mut engine_events, engine_child) = app
@@ -219,8 +326,16 @@ fn ensure_local_engine(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("데이터 폴더 확인 실패: {e}"))?;
     fs::create_dir_all(&data_dir).map_err(|e| format!("데이터 폴더 생성 실패: {e}"))?;
     let lock_path_str = data_dir.join("app.lock").to_string_lossy().into_owned();
-    spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str)
-        .map_err(|e| format!("local-engine 시작 실패: {e}"))
+    spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str, true)
+        .map_err(|e| format!("local-engine 복구 실패: {e}"))?;
+    if wait_for_local_engine_health(Duration::from_secs(10)) {
+        Ok(())
+    } else {
+        Err(
+            "local-engine 재시작 후에도 /health 응답이 없습니다. 앱 재시작을 시도해 주세요."
+                .to_owned(),
+        )
+    }
 }
 
 #[tauri::command]
@@ -314,7 +429,7 @@ pub fn run() {
                 control_server: Mutex::new(Some(child)),
                 local_engine: Mutex::new(None),
             });
-            spawn_local_engine(app.handle(), &config_dir, &data_dir, &lock_path_str)?;
+            spawn_local_engine(app.handle(), &config_dir, &data_dir, &lock_path_str, true)?;
             Ok(())
         })
         .build(tauri::generate_context!())
