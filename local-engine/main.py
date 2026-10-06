@@ -304,16 +304,30 @@ app.include_router(whisper_router)
 app.include_router(auth_router)
 
 
+def _allow_private_network_preflight(request: Request, response):
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS and request.headers.get("access-control-request-private-network") == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+
+
 @app.middleware("http")
 async def require_api_secret(request: Request, call_next):
     if request.method == "OPTIONS" or request.url.path in {"/health", "/health/details", "/api-secret"}:
-        return await call_next(request)
+        response = await call_next(request)
+        _allow_private_network_preflight(request, response)
+        return response
     if os.getenv("DEV_SKIP_AUTH") == "1":
-        return await call_next(request)
+        response = await call_next(request)
+        _allow_private_network_preflight(request, response)
+        return response
     supplied = request.headers.get(API_SECRET_HEADER, "")
     if not secrets.compare_digest(supplied, API_SECRET):
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-    return await call_next(request)
+        response = JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        _allow_private_network_preflight(request, response)
+        return response
+    response = await call_next(request)
+    _allow_private_network_preflight(request, response)
+    return response
 
 
 _MAX_REQUEST_BYTES = MAX_AUDIO  # 가장 큰 파일 종류(오디오) 기준. 세부 종류별 제한은 라우터가 담당.
@@ -406,6 +420,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def allow_private_network_access(request: Request, call_next):
+    response = await call_next(request)
+    _allow_private_network_preflight(request, response)
+    return response
 
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 
