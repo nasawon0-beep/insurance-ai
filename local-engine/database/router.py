@@ -1550,20 +1550,55 @@ def list_tags(conn=Depends(get_conn)):
 
 @router.get("/diagnostics")
 def diagnostics(conn=Depends(get_conn)):
-    """설정·진단 화면 한 번에: 엔진 / 암호화 / Whisper / 데이터 / RAG."""
+    """설정·진단 화면 한 번에: 엔진 / 암호화 / Whisper / 데이터 / RAG.
+
+    /health 는 liveness 전용이므로 무거운 진단은 여기에서만 best-effort로 실행한다.
+    개별 단계 실패는 부분 error로 담고 500으로 전파하지 않는다.
+    """
     import json as _json
     import urllib.request as _u
 
     engine: dict = {"local_engine": "ok"}
     try:
-        with _u.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
+        with _u.urlopen("http://localhost:11434/api/tags", timeout=1) as r:
             engine["ollama"] = "connected"
             engine["models"] = [m["name"] for m in _json.loads(r.read()).get("models", [])]
     except Exception as e:
         engine["ollama"] = "disconnected"
         engine["error"] = str(e)
 
-    from .crypto import get_cipher
+    try:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+        from ollama_diagnostics import ollama_runtime_status, optimization_recommendations
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(ollama_runtime_status)
+        try:
+            runtime = future.result(timeout=1)
+        except FutureTimeoutError:
+            runtime = {"error": "ollama_runtime_status timed out after 1s"}
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        engine["ollama_runtime"] = runtime
+        if "error" not in runtime:
+            engine["ollama_optimization"] = optimization_recommendations(runtime)
+    except Exception as e:
+        engine["ollama_runtime"] = {"error": str(e)}
+
+    try:
+        from .crypto import get_cipher
+
+        cipher = get_cipher()
+        plaintext_count = repo.count_plaintext_values(conn)
+        customer_db = {
+            "encryption": "AES-256-GCM (field-level)",
+            "key_source": cipher.key_source,
+            "plaintext_count": plaintext_count,
+        }
+        if plaintext_count > 0 or cipher.key_source == "keyfile":
+            customer_db["warning"] = True
+    except Exception as e:
+        customer_db = {"encryption": "unavailable", "error": str(e)}
 
     try:
         import whisper
@@ -1579,21 +1614,35 @@ def diagnostics(conn=Depends(get_conn)):
 
     try:
         backups = _backup.list_backups()
-    except Exception:
+    except Exception as e:
         backups = []
+        backup_error = str(e)
+    else:
+        backup_error = None
+
+    try:
+        data = repo.dashboard_counts(conn)
+    except Exception as e:
+        data = {"error": str(e)}
+
+    try:
+        audit = repo.audit_stats(conn)
+    except Exception as e:
+        audit = {"error": str(e)}
+
+    backups_info = {"count": len(backups), "latest": backups[0]["created_at"] if backups else None}
+    if backup_error:
+        backups_info["error"] = backup_error
 
     return {
         "engine": engine,
-        "customer_db": {
-            "encryption": "AES-256-GCM (field-level)",
-            "key_source": get_cipher().key_source,
-        },
+        "customer_db": customer_db,
         "whisper": winfo,
         "ocr": _ocr_info(),
-        "backups": {"count": len(backups), "latest": backups[0]["created_at"] if backups else None},
-        "data": repo.dashboard_counts(conn),
+        "backups": backups_info,
+        "data": data,
         "rag": rag_info,
-        "audit": repo.audit_stats(conn),
+        "audit": audit,
     }
 
 

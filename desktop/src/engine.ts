@@ -83,7 +83,7 @@ export async function engineFetch(
   init: RequestInit = {},
   retryWithFreshSecret = true,
 ): Promise<Response> {
-  if (path === "/health") return fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 2500);
+  if (path === "/health") return fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 1000);
 
   const headers = new Headers(init.headers);
   headers.set(API_SECRET_HEADER, await getApiSecret());

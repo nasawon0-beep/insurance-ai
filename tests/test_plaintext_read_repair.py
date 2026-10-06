@@ -143,13 +143,13 @@ def test_health_reports_plaintext_count_and_warning(client, db_path):
     _init(db_path)
 
     # 평문 없음 → plaintext_count 0, warning 없음
-    body = client.get("/health").json()["customer_db"]
+    body = client.get("/diagnostics").json()["customer_db"]
     assert body["plaintext_count"] == 0
     assert "warning" not in body
 
     # 평문 심으면 count > 0 + warning True
     _insert_plaintext_customer(db_path, "c-health-1")
-    body = client.get("/health").json()["customer_db"]
+    body = client.get("/diagnostics").json()["customer_db"]
     assert body["plaintext_count"] > 0
     assert body["warning"] is True
 
@@ -321,6 +321,6 @@ def test_health_degrades_on_db_error(client, db_path, monkeypatch):
         raise sqlite3.OperationalError("boom")
 
     monkeypatch.setattr(repo, "count_plaintext_values", boom)
-    body = client.get("/health").json()
+    body = client.get("/diagnostics").json()
     assert body["customer_db"]["encryption"] == "unavailable"
     assert "error" in body["customer_db"]

@@ -504,8 +504,8 @@ def test_pii_is_encrypted_at_rest(client, db_path):
     assert c["name"] == "비밀고객" and c["phone"] == "010-9999-8888"
 
 
-def test_health_reports_encryption(client):
-    body = client.get("/health").json()
+def test_diagnostics_reports_encryption(client):
+    body = client.get("/diagnostics").json()
     assert body["customer_db"]["encryption"].startswith("AES-256-GCM")
     assert body["customer_db"]["key_source"] == "env"
 

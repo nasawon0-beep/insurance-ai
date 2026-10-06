@@ -31,9 +31,6 @@ import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
 
 type EngineStatus = {
   local_engine?: string;
-  ollama?: "connected" | "disconnected";
-  models_available?: string[];
-  error?: string;
 };
 
 type SttStatus = {
@@ -165,14 +162,11 @@ function EngineStrip() {
     return () => clearInterval(t);
   }, []);
   const ok = status?.local_engine === "ok";
-  const ollamaOk = status?.ollama === "connected";
-  if (status === null || (ok && ollamaOk)) return null;
+  if (status === null || ok) return null;
 
   return (
     <div style={{ fontSize: 12, color: "#8a6500", background: "var(--color-bg-surface)", padding: 8, marginBottom: 12 }}>
-      {ok
-        ? "⚠ AI 분석 기능이 지금 안 됩니다. (고객 관리는 정상 작동합니다.)"
-        : "⚠ 일부 기능이 일시적으로 멈췄습니다. 앱을 껐다 다시 켜 주세요."}
+      ⚠ 일부 기능이 일시적으로 멈췄습니다. 앱을 껐다 다시 켜 주세요.
     </div>
   );
 }

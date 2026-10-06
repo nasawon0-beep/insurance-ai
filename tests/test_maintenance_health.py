@@ -27,8 +27,8 @@ def maintenance_env(tmp_path, monkeypatch):
     crypto.reset_cache()
 
 
-def _health(main):
-    return TestClient(main.app).get("/health")
+def _health_details(main):
+    return TestClient(main.app).get("/health/details")
 
 
 def test_api_secret_allows_windows_webview_null_origin(maintenance_env):
@@ -57,7 +57,7 @@ def test_backup_failure_is_reported_and_health_stays_up(maintenance_env, monkeyp
     monkeypatch.setattr(backup, "make_backup", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
 
     main._startup_maintenance()
-    response = _health(main)
+    response = TestClient(main.app).get("/health/details")
     maintenance = response.json()["maintenance"]
     assert response.status_code == 200
     assert maintenance["backup_startup"]["state"] == "error"
@@ -73,7 +73,7 @@ def test_usage_prune_failure_does_not_stop_startup(maintenance_env, monkeypatch)
     monkeypatch.setattr(usage, "prune", lambda conn: (_ for _ in ()).throw(RuntimeError("prune failed")))
     main._startup_maintenance()
 
-    response = _health(main)
+    response = TestClient(main.app).get("/health/details")
     assert response.status_code == 200
     status = response.json()["maintenance"]["usage_prune"]
     assert status["state"] == "error"
@@ -92,7 +92,7 @@ def test_recent_backup_has_no_warning(maintenance_env, monkeypatch):
     monkeypatch.setenv("ENGINE_BACKUP", "1")
     main._startup_maintenance()
 
-    maintenance = _health(main).json()["maintenance"]
+    maintenance = TestClient(main.app).get("/health/details").json()["maintenance"]
     assert maintenance["backup_startup"]["state"] in ("ok", "skipped")
     assert maintenance["last_backup_at"] is not None
     assert "warning" not in maintenance
@@ -114,7 +114,7 @@ def test_stale_backup_warns(maintenance_env, monkeypatch):
     monkeypatch.setattr(backup, "startup_backup", lambda: None)
     main._startup_maintenance()
 
-    maintenance = _health(main).json()["maintenance"]
+    maintenance = TestClient(main.app).get("/health/details").json()["maintenance"]
     assert maintenance["warning"] is True
     assert maintenance["last_backup_age_days"] >= 3
 
@@ -124,7 +124,7 @@ def test_disabled_backup_does_not_warn(maintenance_env, monkeypatch):
     monkeypatch.setenv("ENGINE_BACKUP", "0")
     main._startup_maintenance()
 
-    maintenance = _health(main).json()["maintenance"]
+    maintenance = TestClient(main.app).get("/health/details").json()["maintenance"]
     assert maintenance["backup_startup"]["disabled"] is True
     assert "warning" not in maintenance
 
@@ -138,7 +138,7 @@ def test_fresh_install_retries_backup_after_migration(maintenance_env, monkeypat
 
     main._startup_maintenance()
 
-    maintenance = _health(main).json()["maintenance"]
+    maintenance = TestClient(main.app).get("/health/details").json()["maintenance"]
     assert dbp.exists()
     assert maintenance["backup_startup"]["state"] == "ok"
     assert maintenance["last_backup_at"] is not None
@@ -157,7 +157,7 @@ def test_health_ignores_safety_copy_for_last_backup(maintenance_env):
     old = datetime.now() - timedelta(days=3, minutes=1)
     os.utime(safety, (old.timestamp(), old.timestamp()))
 
-    maintenance = _health(main).json()["maintenance"]
+    maintenance = TestClient(main.app).get("/health/details").json()["maintenance"]
     assert maintenance["last_backup_at"] == datetime.fromtimestamp(
         snapshot.stat().st_mtime
     ).isoformat(timespec="seconds")
@@ -168,7 +168,7 @@ def test_invalid_stale_days_keeps_maintenance_fields(maintenance_env, monkeypatc
     main, _ = maintenance_env
 
     monkeypatch.setenv("ENGINE_BACKUP_STALE_DAYS", "abc")
-    response = _health(main)
+    response = TestClient(main.app).get("/health/details")
 
     assert response.status_code == 200
     maintenance = response.json()["maintenance"]

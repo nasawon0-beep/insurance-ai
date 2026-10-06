@@ -9,6 +9,7 @@ parser/ (POST /parse/pdf), rag/ (POST /rag/index, GET /rag/search, GET /rag/ask)
 database/ (고객 관리 /customers, /policies, /coverage-analysis) 가 이미 붙었다.
 지금은 절대 0.0.0.0으로 열지 않는다 (문서 42번 원칙).
 """
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import getpass
@@ -38,6 +39,21 @@ from ollama_diagnostics import ollama_runtime_status, optimization_recommendatio
 
 API_SECRET_HEADER = "X-Insurance-AI-Secret"
 logger = logging.getLogger(__name__)
+
+
+def _run_with_timeout(fn, timeout: float, label: str):
+    """Run optional diagnostics with a hard caller-side timeout."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError:
+        return {"error": f"{label} timed out after {timeout:g}s"}
+    except Exception as exc:
+        return {"error": str(exc)}
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
 
 _MAINT_STATUS = {
     "backup": {"state": "pending"}, "usage_prune": {"state": "pending"},
@@ -290,7 +306,7 @@ app.include_router(auth_router)
 
 @app.middleware("http")
 async def require_api_secret(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path in {"/health", "/api-secret"}:
+    if request.method == "OPTIONS" or request.url.path in {"/health", "/health/details", "/api-secret"}:
         return await call_next(request)
     if os.getenv("DEV_SKIP_AUTH") == "1":
         return await call_next(request)
@@ -402,13 +418,12 @@ def api_secret(request: Request):
     return {"secret": API_SECRET}
 
 
-@app.get("/health")
-def health():
-    """Desktop 홈 화면에서 폴링할 엔드포인트."""
+def _diagnostic_status() -> dict[str, object]:
+    """무거운 상세 진단. 각 단계는 실패해도 부분 error로만 담는다."""
     engine_status: dict[str, object] = {"local_engine": "ok"}
 
     try:
-        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=3) as resp:
+        with urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=1) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         models = [m["name"] for m in data.get("models", [])]
         engine_status["ollama"] = "connected"
@@ -417,12 +432,13 @@ def health():
         engine_status["ollama"] = "disconnected"
         engine_status["error"] = str(e)
 
-    try:
-        ollama_runtime = ollama_runtime_status()
-        engine_status["ollama_runtime"] = ollama_runtime
-        engine_status["ollama_optimization"] = optimization_recommendations(ollama_runtime)
-    except Exception as e:
-        engine_status["ollama_runtime"] = {"error": str(e)}
+    ollama_runtime = _run_with_timeout(ollama_runtime_status, 1, "ollama_runtime_status")
+    engine_status["ollama_runtime"] = ollama_runtime
+    if "error" not in ollama_runtime:
+        try:
+            engine_status["ollama_optimization"] = optimization_recommendations(ollama_runtime)
+        except Exception as e:
+            engine_status["ollama_optimization"] = [str(e)]
 
     # 고객 DB 암호화 상태 (설정·진단 화면에서 표시)
     try:
@@ -492,6 +508,18 @@ def health():
     return engine_status
 
 
+@app.get("/health")
+def health():
+    """Liveness 전용: 무거운 Ollama/DB/backup 진단 없이 즉시 응답."""
+    return {"local_engine": "ok"}
+
+
+@app.get("/health/details")
+def health_details():
+    """기존 /health 상세 진단은 별도 endpoint로 분리."""
+    return _diagnostic_status()
+
+
 def _port_taken(host: str, port: int) -> bool:
     import socket
 
@@ -508,7 +536,10 @@ def _port_taken(host: str, port: int) -> bool:
 def _healthy(host: str, port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=1) as r:
-            return r.status == 200
+            if r.status != 200:
+                return False
+            body = r.read(256).decode("utf-8", errors="ignore")
+            return '"local_engine"' in body and '"ok"' in body
     except Exception:
         return False
 
