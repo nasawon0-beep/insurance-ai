@@ -592,15 +592,18 @@ def test_capture_pdf_is_analyzed(client, monkeypatch):
         lambda data, max_pages=8: "계약자 김서류\n010-7777-1234\n서울시 강남구\n회사원",
     )
     _mock_single(monkeypatch, {"name": "김서류", "phone": "010-7777-1234", "address": "서울시 강남구"})
-    b = client.post(
+    r = client.post(
         "/capture",
         files={"file": ("청약서.pdf", b"%PDF-1.4 fake", "application/pdf")},
-    ).json()
+    )
+    assert r.status_code == 200, r.text
+    b = r.json()
     assert len(b["items"]) == 1
     assert b["items"][0]["fields"]["name"] == "김서류"
     assert b["items"][0]["fields"]["phone"] == "010-7777-1234"
     assert b["items"][0]["consultation"] is None
     assert "policies" in b["items"][0]  # 보험 문서 → policies 키 포함
+    assert any("계약별 담보 원장 추출" in w for w in b["items"][0]["warnings"])
 
 
 def test_capture_pdf_extracts_policy_and_coverages(client, monkeypatch):

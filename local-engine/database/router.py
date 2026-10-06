@@ -1180,14 +1180,21 @@ async def capture(
                 doc_text = ctx_prefix + doc_text
             if kind == "pdf":
                 source_hash = hashlib.sha256(data).hexdigest()
+                policy_coverage_rows = []
+                policy_coverage_warning = None
                 # 계약별 담보 원장은 보장분석 진단표와 분리해 검수 화면으로만 전달한다.
                 # 저장은 사용자가 [검수 완료 후 저장]을 누른 뒤 별도 엔드포인트에서 수행한다.
                 # 고객 정보 추출용 doc_text는 앞쪽 페이지만 보지만, 계약별 담보 원장은
                 # 별첨/가입담보 상세가 뒤쪽에 올 수 있어 PDF 전체 페이지를 다시 스캔한다.
-                parsed_for_coverages = parse_pdf_bytes(data, file.filename or "document.pdf")
-                policy_coverage_rows = policy_coverages.parse_policy_coverages_from_pages(
-                    [(p.page, p.text) for p in parsed_for_coverages.pages], file.filename, source_hash
-                )
+                # 단, 계약별 담보 원장 추출 실패가 기존 고객/계약/보장분석 capture 흐름을 죽이면 안 된다.
+                try:
+                    parsed_for_coverages = parse_pdf_bytes(data, file.filename or "document.pdf")
+                    policy_coverage_rows = policy_coverages.parse_policy_coverages_from_pages(
+                        [(p.page, p.text) for p in parsed_for_coverages.pages], file.filename, source_hash
+                    )
+                except Exception as e:
+                    logger.warning("policy coverage extraction failed during capture: %s", e, exc_info=True)
+                    policy_coverage_warning = "계약별 담보 원장 추출에 실패했습니다. 기존 고객정보/계약/보장분석 결과는 계속 검수할 수 있습니다."
                 doc_type = _doc_type(doc_text, file.filename)
                 # 긴 제안서는 앞쪽이 약관 보일러플레이트라, 실제 요약표(계약자/피보험자/보험료)가
                 # 시작되는 지점부터 잘라 추출 파이프라인에 넘긴다.
@@ -1205,6 +1212,8 @@ async def capture(
                 ex = extract_customer_fields(guide + focused + extra)
                 f = _strip_fabricated(ex["fields"], doc_text + extra)
                 warns = list(ex["warnings"])
+                if policy_coverage_warning:
+                    warns.append(policy_coverage_warning)
 
                 # 이름이 마스킹(나*원)됐거나 비었으면 파일명에서 복구
                 nm = str(f.get("name") or "")
