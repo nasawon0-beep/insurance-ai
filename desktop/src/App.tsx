@@ -2276,8 +2276,22 @@ function App() {
 
   useEffect(() => {
     if (auth !== "in" || needsOnboarding) return;
-    void recoverLocalEngine(false);
-  }, [auth, needsOnboarding, recoverLocalEngine]);
+    // Do not restart local-engine automatically after login. The Tauri sidecar
+    // is already started by the app; repeated recovery attempts cause stutter
+    // and can interrupt analysis. Only check health and leave manual restart
+    // to the explicit button.
+    void waitForEngineHealth()
+      .then(() => {
+        void loadEngineSettings();
+        setEngineNotice({ status: "idle" });
+      })
+      .catch((error) => {
+        setEngineNotice({
+          status: "error",
+          message: `로컬 엔진 연결 확인 실패. 상단의 "로컬 엔진 재시작"을 눌러 주세요. (${error instanceof Error ? error.message : String(error)})`,
+        });
+      });
+  }, [auth, needsOnboarding, waitForEngineHealth]);
 
   useEffect(() => {
     // 앱 실행(프로세스) 당 1회만. 앱 시작 3초 뒤 백그라운드에서 자동 확인한다.

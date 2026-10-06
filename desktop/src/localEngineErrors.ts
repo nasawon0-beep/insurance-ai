@@ -8,8 +8,8 @@ export function isFetchNetworkError(error: unknown): boolean {
 export function formatLocalEngineNetworkError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    `로컬 엔진 복구 중입니다. 잠시 후 자동으로 다시 시도됩니다. ` +
-    `계속 실패하면 상단의 "로컬 엔진 재시작" 또는 "앱 재시작"을 눌러 주세요. (${message})`
+    `로컬 엔진 요청이 끊겼습니다. 진행 중인 분석이 있으면 잠시 기다린 뒤 다시 시도해 주세요. ` +
+    `계속 실패할 때만 상단의 "로컬 엔진 재시작" 또는 "앱 재시작"을 눌러 주세요. (${message})`
   );
 }
 

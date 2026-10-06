@@ -25,11 +25,6 @@ function getActorId(): string | null {
   }
 }
 
-function isNetworkError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Failed to fetch|NetworkError|Load failed|abort|timed?\s*out/i.test(message);
-}
-
 function isLongRunningEnginePath(path: string): boolean {
   return LONG_RUNNING_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
@@ -72,14 +67,6 @@ async function getApiSecret(): Promise<string> {
         return body.secret;
       })
       .catch(async (error) => {
-        if (isNetworkError(error)) {
-          console.warn("local-engine /api-secret fetch failed; asking Tauri to recover local-engine", error);
-          await ensureLocalEngineRecovered();
-          const res = await fetchWithTimeout(`${LOCAL_ENGINE_URL}/api-secret`);
-          if (!res.ok) throw new Error(`Engine authentication failed after recovery: HTTP ${res.status}`);
-          const body = await res.json();
-          if (typeof body.secret === "string" && body.secret) return body.secret;
-        }
         console.warn("local-engine /api-secret fetch failed; trying Tauri secret bridge", error);
         const bridged = await invoke<string>("local_engine_api_secret");
         if (!bridged) throw new Error("Engine authentication failed: missing bridged secret");
@@ -112,10 +99,9 @@ export async function engineFetch(
     }
     return response;
   } catch (error) {
-    if (retryWithFreshSecret && !isLongRunningEnginePath(path) && isNetworkError(error)) {
-      await ensureLocalEngineRecovered();
-      return engineFetch(path, init, false);
-    }
+    // Do not auto-restart local-engine from ordinary request failures.
+    // Restarting during uploads/analysis makes the UI stutter and can kill in-flight work.
+    // The user can still use the explicit "로컬 엔진 재시작" button.
     throw error;
   }
 }
