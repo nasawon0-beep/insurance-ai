@@ -6,6 +6,13 @@ export { LOCAL_ENGINE_URL };
 const API_SECRET_HEADER = "X-Insurance-AI-Secret";
 const ACTOR_HEADER = "X-Actor-Id";
 const ENGINE_TIMEOUT_MS = 5000;
+const LONG_RUNNING_ENGINE_TIMEOUT_MS = 180000;
+const LONG_RUNNING_PATH_PREFIXES = [
+  "/capture",
+  "/parse/pdf",
+  "/import/preview",
+  "/import/commit",
+];
 let secretPromise: Promise<string> | null = null;
 let recoveryPromise: Promise<void> | null = null;
 
@@ -21,6 +28,14 @@ function getActorId(): string | null {
 function isNetworkError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /Failed to fetch|NetworkError|Load failed|abort|timed?\s*out/i.test(message);
+}
+
+function isLongRunningEnginePath(path: string): boolean {
+  return LONG_RUNNING_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+function timeoutForEnginePath(path: string): number {
+  return isLongRunningEnginePath(path) ? LONG_RUNNING_ENGINE_TIMEOUT_MS : ENGINE_TIMEOUT_MS;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = ENGINE_TIMEOUT_MS): Promise<Response> {
@@ -90,14 +105,14 @@ export async function engineFetch(
   const actorId = getActorId();
   if (actorId) headers.set(ACTOR_HEADER, actorId);
   try {
-    const response = await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, { ...init, headers });
+    const response = await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, { ...init, headers }, timeoutForEnginePath(path));
     if (response.status === 401 && retryWithFreshSecret) {
       secretPromise = null;
       return engineFetch(path, init, false);
     }
     return response;
   } catch (error) {
-    if (retryWithFreshSecret && isNetworkError(error)) {
+    if (retryWithFreshSecret && !isLongRunningEnginePath(path) && isNetworkError(error)) {
       await ensureLocalEngineRecovered();
       return engineFetch(path, init, false);
     }
