@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -55,7 +56,7 @@ from rag import answer as rag_answer
 from rag import index_parsed_doc
 
 from . import backup as _backup
-from . import coverage, policy_qa, repo
+from . import coverage, policy_coverages, policy_qa, repo
 from . import export_data as _export
 from . import import_data as _import
 from .import_data import ai_classifier as _ai_classifier
@@ -961,11 +962,18 @@ def _parse_coverage_status(doc_text: str) -> list:
     return rows
 
 
-def _coverage_review(doc_type: str, doc_text: str, coverage_status: list) -> dict:
+def _coverage_review(doc_type: str, doc_text: str, coverage_status: list, policy_coverage_rows: Optional[list] = None) -> dict:
     _rows, pages = _parse_coverage_detail_rows(doc_text)
+    policy_coverage_rows = policy_coverage_rows or []
+    policy_keys = {
+        (r.get("insurer"), r.get("product_name"))
+        for r in policy_coverage_rows
+        if r.get("insurer") or r.get("product_name")
+    }
     def count(pred) -> int:
         return sum(1 for row in coverage_status if pred(row))
     unsupported = doc_type == "보장분석" and not coverage_status
+    unclassified = sum(1 for r in policy_coverage_rows if (r.get("standard_name") or "") in ("", "기타"))
     return {
         "document_type": "미지원 양식" if unsupported else doc_type,
         "detected_detail_pages": pages,
@@ -975,6 +983,11 @@ def _coverage_review(doc_type: str, doc_text: str, coverage_status: list) -> dic
         "heart_item_count": count(lambda r: r.get("coverage_group") == "심장질환"),
         "surgery_item_count": count(lambda r: r.get("coverage_group") == "수술비"),
         "needs_review_item_count": count(lambda r: r.get("status") == "확인필요" or r.get("coverage_group") in (None, "", "기타")),
+        "policy_coverage_contract_count": len(policy_keys),
+        "policy_coverage_item_count": len(policy_coverage_rows),
+        "policy_coverage_unclassified_count": unclassified,
+        "policy_coverage_link_failed_count": 0,
+        "unsupported_policy_coverage_count": unclassified,
         "save_requires_review": True,
         "supported": not unsupported,
     }
@@ -1162,9 +1175,19 @@ async def capture(
         else:
             # PDF / 텍스트 파일 → 글자(또는 OCR)를 뽑아 분석.
             doc_text = _document_to_text(data, file.filename, kind)
+            raw_doc_text = doc_text
             if ctx_prefix:
                 doc_text = ctx_prefix + doc_text
             if kind == "pdf":
+                source_hash = hashlib.sha256(data).hexdigest()
+                # 계약별 담보 원장은 보장분석 진단표와 분리해 검수 화면으로만 전달한다.
+                # 저장은 사용자가 [검수 완료 후 저장]을 누른 뒤 별도 엔드포인트에서 수행한다.
+                # 고객 정보 추출용 doc_text는 앞쪽 페이지만 보지만, 계약별 담보 원장은
+                # 별첨/가입담보 상세가 뒤쪽에 올 수 있어 PDF 전체 페이지를 다시 스캔한다.
+                parsed_for_coverages = parse_pdf_bytes(data, file.filename or "document.pdf")
+                policy_coverage_rows = policy_coverages.parse_policy_coverages_from_pages(
+                    [(p.page, p.text) for p in parsed_for_coverages.pages], file.filename, source_hash
+                )
                 doc_type = _doc_type(doc_text, file.filename)
                 # 긴 제안서는 앞쪽이 약관 보일러플레이트라, 실제 요약표(계약자/피보험자/보험료)가
                 # 시작되는 지점부터 잘라 추출 파이프라인에 넘긴다.
@@ -1280,6 +1303,20 @@ async def capture(
                 own_default = not (doc_type == "보장분석" or "보유계약리스트" in doc_text)
                 for _p in policies:
                     _p["is_own"] = own_default
+                    p_key = policy_coverages.compact(_p.get("product_name"))
+                    i_key = policy_coverages.compact(_p.get("insurer"))
+                    p_match_key = p_key.replace("무배당", "").replace("(무)", "").replace("메리츠", "")
+                    matched_cov = []
+                    for _c in policy_coverage_rows:
+                        c_prod = policy_coverages.compact(_c.get("product_name"))
+                        c_ins = policy_coverages.compact(_c.get("insurer"))
+                        c_match_key = c_prod.replace("무배당", "").replace("(무)", "").replace("메리츠", "")
+                        product_match = p_key and c_prod and (p_key in c_prod or c_prod in p_key or p_match_key[:12] in c_match_key or c_match_key[:12] in p_match_key)
+                        insurer_match = i_key and c_ins and (i_key in c_ins or c_ins in i_key)
+                        if product_match or (insurer_match and not c_prod):
+                            matched_cov.append(_c)
+                    if matched_cov:
+                        _p["policy_coverages"] = matched_cov
 
                 issued = next((p.get("issued_date") for p in policies if p.get("issued_date")), None)
                 est_warn = _estimate_birthdate_from_age(f, doc_text + extra, issued)
@@ -1296,7 +1333,8 @@ async def capture(
                     ),
                     "policies": policies,
                     "coverage_status": coverage_status,
-                    "coverage_review": _coverage_review(doc_type, doc_text, coverage_status),
+                    "policy_coverages": policy_coverage_rows,
+                    "coverage_review": _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows),
                     "coverages_text": cov_raw,
                 })
             else:
@@ -1793,6 +1831,8 @@ def usage_export(
 @router.get("/customers/{cid}")
 def get_customer(cid: str, request: Request, conn=Depends(get_conn)):
     c = repo.customer_detail(conn, cid)
+    if c is not None:
+        c = policy_coverages.attach_coverages_to_policies(conn, c)
     if c is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
     enabled = _rrn_on(conn)
@@ -1938,7 +1978,44 @@ def add_policy(cid: str, body: PolicyIn, request: Request, conn=Depends(get_conn
 def list_policies(cid: str, conn=Depends(get_conn)):
     if repo.get_customer(conn, cid) is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
-    return {"policies": repo.list_policies(conn, cid)}
+    policies = repo.list_policies(conn, cid)
+    coverages = policy_coverages.list_policy_coverages(conn, cid)
+    by_policy: dict[str, list[dict]] = {}
+    for cov in coverages:
+        if cov.get("policy_id"):
+            by_policy.setdefault(cov["policy_id"], []).append(cov)
+    for p in policies:
+        p["coverages"] = by_policy.get(p["id"], [])
+        p["coverage_count"] = len(p["coverages"])
+    return {"policies": policies}
+
+
+@router.get("/customers/{cid}/policy-coverages")
+def list_policy_coverages(cid: str, policy_id: Optional[str] = Query(None), conn=Depends(get_conn)):
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    return {"policy_coverages": policy_coverages.list_policy_coverages(conn, cid, policy_id)}
+
+
+@router.post("/customers/{cid}/policy-coverages/bulk", status_code=201)
+async def add_policy_coverages_bulk(cid: str, request: Request, conn=Depends(get_conn)):
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    try:
+        raw = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="JSON 본문이 필요합니다.")
+    if not isinstance(raw, dict) or not isinstance(raw.get("items"), list):
+        raise HTTPException(status_code=422, detail="items 배열이 필요합니다.")
+    if raw.get("review_confirmed") is not True:
+        raise HTTPException(status_code=409, detail="계약별 담보는 검수 완료 후 저장해야 합니다.")
+    try:
+        result = policy_coverages.create_many(conn, cid, raw["items"], require_review=True)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if result["created"]:
+        _audit(conn, request, action="create", entity="policy_coverage", entity_id=repo._new_id(), customer_id=cid, fields=f"{result['created']} rows")
+    return result
 
 
 @router.patch("/policies/{pid}")

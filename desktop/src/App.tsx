@@ -1071,6 +1071,30 @@ function CapturePanel({
                   <span style={{ fontSize: 11, color: "#b00" }} title={row.warnings.join(" / ")}>⚠</span>
                 )}
               </div>
+              {row.action !== "skip" && row.coverage_review && (
+                <div style={{ margin: "8px 0", padding: "8px 10px", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 6, maxWidth: 640, fontSize: 12 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>검수 화면 — 보장분석/계약별 담보 분리 저장</div>
+                  <div>
+                    계약별 담보: 계약 {row.coverage_review.policy_coverage_contract_count ?? 0}개 · 담보 {row.coverage_review.policy_coverage_item_count ?? 0}건 · 미분류 {row.coverage_review.policy_coverage_unclassified_count ?? 0}건 · policy_id 연결 실패는 저장 시 재검사
+                  </div>
+                  <div>
+                    보장분석 진단표: {row.coverage_review.coverage_item_count ?? 0}개 항목 · 확인필요 {row.coverage_review.needs_review_item_count ?? 0}건 · 상세 페이지 {(row.coverage_review.detected_detail_pages ?? []).join(", ") || "-"}
+                  </div>
+                  {row.policy_coverages?.length > 0 && (
+                    <details style={{ marginTop: 4 }}>
+                      <summary>계약별 담보 후보 보기 ({row.policy_coverages.length}건)</summary>
+                      <div style={{ maxHeight: 160, overflow: "auto", marginTop: 4 }}>
+                        {row.policy_coverages.slice(0, 40).map((c: any, ci: number) => (
+                          <div key={ci} style={{ borderTop: ci ? "1px solid #fed7aa" : undefined, padding: "3px 0" }}>
+                            {c.insurer || "-"} / {c.product_name || "-"} / {c.rider_name || "-"} → {c.standard_name || "-"} / {c.amount_text || "-"} / p.{c.source_page || "-"}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  <div style={{ color: "#9a3412", marginTop: 4 }}>[검수 완료 후 저장] 버튼을 누를 때만 저장됩니다. 자동 저장은 하지 않습니다.</div>
+                </div>
+              )}
               {row.action !== "skip" && row.policies?.length > 0 && (
                 <PolicyList
                   policies={row.policies}

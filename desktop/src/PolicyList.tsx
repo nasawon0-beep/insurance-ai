@@ -6,7 +6,26 @@ export { normalizeCoverageRows } from "./coverageRows";
 export type { CoverageRow } from "./coverageRows";
 
 // 보험 문서(가입제안서 1건 / 보장분석 N건)에서 뽑은 계약을 검토·저장하는 공용 UI + 저장 헬퍼.
-export type PolicyDraft = Record<string, string | number | boolean | null>;
+export type PolicyCoverageDraft = {
+  policy_id?: string | null;
+  source_document_id?: string | null;
+  source_file_name?: string | null;
+  source_hash?: string | null;
+  source_page?: number | null;
+  insurer?: string | null;
+  product_name?: string | null;
+  rider_no?: string | null;
+  coverage_type?: string | null;
+  rider_name?: string | null;
+  standard_name?: string | null;
+  amount?: number | null;
+  amount_text?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  confidence?: number | null;
+  raw_text?: string | null;
+};
+export type PolicyDraft = Record<string, string | number | boolean | null | PolicyCoverageDraft[] | undefined>;
 
 // 계약자(피보험자)와의 관계 드롭다운. "" = 본인계약(계약자 = 피보험자).
 export const POLICYHOLDER_RELS = [
@@ -126,6 +145,11 @@ export function PolicyList({
               />
               내 계약
             </label>
+            {Array.isArray(p.policy_coverages) && p.policy_coverages.length > 0 && (
+              <div style={{ flexBasis: "100%", fontSize: 11, color: "#475569", background: "#fff", border: "1px solid #dbe4f5", borderRadius: 4, padding: "4px 6px" }}>
+                담보 원장 {p.policy_coverages.length}건 검출 · 예: {p.policy_coverages.slice(0, 3).map((c) => `${c.rider_name ?? "담보"} ${c.amount_text ?? ""}`).join(" / ")}
+              </div>
+            )}
           </div>
         </div>
       ))}
@@ -372,8 +396,10 @@ export async function savePolicies(
   cid: string,
   policies: PolicyDraft[],
   checked: boolean[],
-): Promise<{ saved: number; err?: string; failures: Array<{ index: number; label: string; error: string }> }> {
+): Promise<{ saved: number; err?: string; failures: Array<{ index: number; label: string; error: string }>; coverageSaved: number; coverageLinkFailed: number }> {
   let saved = 0;
+  let coverageSaved = 0;
+  let coverageLinkFailed = 0;
   let err: string | undefined;
   const failures: Array<{ index: number; label: string; error: string }> = [];
   for (let i = 0; i < policies.length; i++) {
@@ -390,7 +416,7 @@ export async function savePolicies(
         .filter(Boolean)
         .join(" · ") || null;
     try {
-      await api(`/customers/${cid}/policies`, {
+      const created = await api(`/customers/${cid}/policies`, {
         method: "POST",
         body: JSON.stringify({
           insurer: p.insurer || null,
@@ -412,10 +438,23 @@ export async function savePolicies(
         }),
       });
       saved++;
+      const policyId = typeof created === "object" && created && "id" in created ? String((created as { id: string }).id) : null;
+      const coverages = Array.isArray(p.policy_coverages) ? p.policy_coverages : [];
+      if (policyId && coverages.length > 0) {
+        const coverageResult = await api(`/customers/${cid}/policy-coverages/bulk`, {
+          method: "POST",
+          body: JSON.stringify({
+            review_confirmed: true,
+            items: coverages.map((c) => ({ ...c, policy_id: policyId })),
+          }),
+        }) as { created?: number; policy_link_failed?: number };
+        coverageSaved += Number(coverageResult.created ?? 0);
+        coverageLinkFailed += Number(coverageResult.policy_link_failed ?? 0);
+      }
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
       failures.push({ index: i, label, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  return { saved, err, failures };
+  return { saved, err, failures, coverageSaved, coverageLinkFailed };
 }

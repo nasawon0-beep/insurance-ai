@@ -55,6 +55,23 @@ type Wrap = <Args extends unknown[]>(
   rethrow?: boolean,
 ) => (...args: Args) => Promise<void>;
 
+type PolicyCoverage = {
+  id: string;
+  customer_id: string;
+  policy_id: string | null;
+  source_page: number | null;
+  insurer: string | null;
+  product_name: string | null;
+  rider_name: string | null;
+  standard_name: string | null;
+  amount: number | null;
+  amount_text: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  coverage_type: string | null;
+  link_status?: string | null;
+};
+
 type Policy = {
   id: string;
   customer_id: string;
@@ -77,6 +94,8 @@ type Policy = {
   // 계약자(피보험자와 다를 때). customer_id 는 피보험자. 비어있으면 본인계약.
   policyholder_name?: string | null;
   policyholder_rel?: string | null;
+  coverages?: PolicyCoverage[];
+  coverage_count?: number;
 };
 
 type Consultation = {
@@ -1846,6 +1865,7 @@ function PoliciesSection({
   const [editForm, setEditForm] = useState<PolicyForm>(EMPTY_POLICY);
   const [editOrigEnd, setEditOrigEnd] = useState(""); // 편집 시작 시점의 만기일 (안 건드렸는지 판단용)
   const [dateHints, setDateHints] = useState<Record<string, boolean>>({});
+  const [expandedCoveragePolicyId, setExpandedCoveragePolicyId] = useState<string | null>(null);
 
   const toBody = (f: PolicyForm) => ({
     ...Object.fromEntries(
@@ -2073,6 +2093,7 @@ function PoliciesSection({
                   </td>
                 </tr>
               ) : (
+                <>
                 <tr key={p.id} style={{ borderBottom: "1px solid #eee" }}>
                   <td style={policyCellStyle} title={p.insurer || undefined}>{p.insurer || "-"}</td>
                   <td style={policyCellStyle} title={p.product_name || undefined}>
@@ -2092,6 +2113,9 @@ function PoliciesSection({
                         {p.policyholder_rel ? ` (${p.policyholder_rel})` : ""}
                       </span>
                     ) : null}
+                    <div style={{ marginTop: 3, fontSize: 11, color: "#64748b" }}>
+                      보험기간 {p.start_date || p.insured_period || "-"}{p.end_date ? ` ~ ${p.end_date}` : ""} · 납입기간 {p.payment_period || p.payment_end_date || "-"}
+                    </div>
                   </td>
                   <td style={policyCellStyle} title={p.policy_number || undefined}>{p.policy_number || "-"}</td>
                   <td style={policyCellStyle}>{p.premium != null ? p.premium.toLocaleString() : "-"}</td>
@@ -2137,6 +2161,12 @@ function PoliciesSection({
                     )}
                     {" "}
                     <button onClick={() => startEdit(p)}>수정</button>{" "}
+                    <button
+                      disabled={(p.coverage_count ?? p.coverages?.length ?? 0) === 0}
+                      onClick={() => setExpandedCoveragePolicyId(expandedCoveragePolicyId === p.id ? null : p.id)}
+                    >
+                      담보 보기 ({p.coverage_count ?? p.coverages?.length ?? 0})
+                    </button>{" "}
                     {pendingPolicyDelete === p.id ? (
                       <span style={{ fontSize: 11, color: "#b00" }}>
                         삭제할까요?{" "}
@@ -2154,6 +2184,38 @@ function PoliciesSection({
                     )}
                   </td>
                 </tr>
+                {expandedCoveragePolicyId === p.id && (
+                  <tr key={`${p.id}-coverages`} style={{ background: "var(--color-bg-surface)" }}>
+                    <td colSpan={7} style={{ padding: 10 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>담보 원장 {p.coverages?.length ?? 0}건</div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
+                              <th style={{ padding: 5 }}>회사 담보명</th>
+                              <th style={{ padding: 5 }}>표준명/신정원 담보명</th>
+                              <th style={{ padding: 5 }}>가입금액</th>
+                              <th style={{ padding: 5 }}>보험기간</th>
+                              <th style={{ padding: 5 }}>출처</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(p.coverages ?? []).map((c) => (
+                              <tr key={c.id} style={{ borderBottom: "1px solid var(--color-border-default)" }}>
+                                <td style={{ padding: 5 }}>{c.rider_name || "-"}</td>
+                                <td style={{ padding: 5 }}>{c.standard_name || "-"}</td>
+                                <td style={{ padding: 5 }}>{c.amount_text || (c.amount != null ? c.amount.toLocaleString() : "-")}</td>
+                                <td style={{ padding: 5 }}>{c.start_date || "-"} ~ {c.end_date || "-"}</td>
+                                <td style={{ padding: 5 }}>{c.source_page ? `p.${c.source_page}` : "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </>
               ),
             )}
           </tbody>

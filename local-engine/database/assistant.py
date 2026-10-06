@@ -24,7 +24,7 @@ import urllib.request
 from datetime import date, timedelta
 from typing import Any, Optional
 
-from . import repo
+from . import policy_coverages, repo
 
 logger = logging.getLogger(__name__)
 
@@ -683,6 +683,45 @@ def _policy_line(policy: dict) -> str:
     )
 
 
+def _policy_coverage_direct_answer(conn, customer_id: str, customer_name: str, question: str) -> Optional[str]:
+    """계약별 담보 원장(policy_coverages) 직접 조회."""
+    q = question or ""
+    if not any(k in q for k in ("담보", "질병종수술", "유사암", "통합암", "전이암", "뇌혈관", "허혈성", "삼성화재", "메리츠")):
+        return None
+    rows = policy_coverages.list_policy_coverages(conn, customer_id)
+    if not rows:
+        return None
+    nq = policy_coverages.compact(q)
+    filtered = []
+    for r in rows:
+        hay = policy_coverages.compact(" ".join(str(r.get(k) or "") for k in ("insurer", "product_name", "rider_name", "standard_name", "amount_text")))
+        if "삼성화재" in q and "삼성화재" not in hay:
+            continue
+        if "메리츠" in q and "메리츠" not in hay:
+            continue
+        standard = policy_coverages.normalize_standard_name(q, q)
+        if standard != "기타" and policy_coverages.compact(standard) not in hay and not any(tok in hay for tok in ["질병종수술", "유사암진단", "통합암", "특정암진단", "뇌혈관", "허혈성"] if tok in nq):
+            continue
+        if "암" in q and not any(tok in hay for tok in ("암", "유사암", "통합암", "특정암", "전이암")):
+            continue
+        filtered.append(r)
+    if not filtered:
+        return None
+    lines = []
+    for r in filtered[:20]:
+        period = ""
+        if r.get("start_date") or r.get("end_date"):
+            period = f" / {r.get('start_date') or '-'}~{r.get('end_date') or '-'}"
+        src = f" / p.{r.get('source_page')}" if r.get("source_page") else ""
+        lines.append(
+            f"{r.get('insurer') or '-'} / {r.get('product_name') or '-'} / "
+            f"{r.get('rider_name') or '-'} ({r.get('standard_name') or '-'}) "
+            f"{r.get('amount_text') or ''}{period}{src}"
+        )
+    more = f"\n  · 외 {len(filtered) - len(lines)}건" if len(filtered) > len(lines) else ""
+    return f"{customer_name} 고객의 계약별 담보 원장 기준입니다.\n" + "\n".join(f"  · {line}" for line in lines) + more
+
+
 def _rule_based_coverage_answer(
     question: str,
     coverage_block: str,
@@ -873,6 +912,18 @@ def _direct_db_answer(conn, question: str, history: Optional[list], customer_id:
     if own_only:
         policies = [p for p in policies if p.get("is_own")]
     coverage_items = _latest_coverage_items(conn, customer_id)
+    policy_coverage_answer = _policy_coverage_direct_answer(conn, customer_id, customer_name, q)
+    if policy_coverage_answer:
+        return {
+            "answer": policy_coverage_answer,
+            "used_customers": [{"id": customer_id, "name": customer_name}],
+            "data_scope": "filtered",
+            "model": "db_direct",
+            "no_data": False,
+            "grounded": True,
+            "own_only": own_only,
+            "routing_type": "db_direct",
+        }
     coverage_block = _RRN13_RE.sub("[주민번호 제외]", _customer_coverage_block(conn, customer_id))
     direct_answer = _rule_based_coverage_answer(
         q,

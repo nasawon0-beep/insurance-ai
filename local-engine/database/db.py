@@ -88,6 +88,32 @@ CREATE TABLE IF NOT EXISTS consultations (
     updated_at   TEXT NOT NULL
 );
 
+-- 계약별 담보 원장: 보장분석 진단표와 분리된 고객 상세 > 가입목록용 담보 행.
+CREATE TABLE IF NOT EXISTS policy_coverages (
+    id                 TEXT PRIMARY KEY,
+    customer_id        TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    policy_id          TEXT REFERENCES policies(id) ON DELETE SET NULL,
+    source_document_id TEXT,
+    source_file_name   TEXT,
+    source_hash        TEXT,
+    source_page        INTEGER,
+    insurer            TEXT,
+    product_name       TEXT,
+    rider_no           TEXT,
+    coverage_type      TEXT,
+    rider_name         TEXT,
+    standard_name      TEXT,
+    amount             INTEGER,
+    amount_text        TEXT,
+    start_date         TEXT,
+    end_date           TEXT,
+    confidence         REAL,
+    raw_text           TEXT,
+    link_status        TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS import_batch_rrn (
     batch_id    TEXT NOT NULL,
     customer_id TEXT NOT NULL,
@@ -120,6 +146,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_policies_customer ON policies(customer_id);
+CREATE INDEX IF NOT EXISTS idx_policy_coverages_customer ON policy_coverages(customer_id);
+CREATE INDEX IF NOT EXISTS idx_policy_coverages_policy ON policy_coverages(policy_id);
+CREATE INDEX IF NOT EXISTS idx_policy_coverages_standard ON policy_coverages(standard_name);
 CREATE INDEX IF NOT EXISTS idx_consultations_customer ON consultations(customer_id);
 CREATE INDEX IF NOT EXISTS idx_consultations_followup ON consultations(follow_up_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_rrn_hash ON customers(rrn_hash);
