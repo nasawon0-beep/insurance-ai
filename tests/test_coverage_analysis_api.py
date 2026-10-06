@@ -30,7 +30,7 @@ def _make_customer(client):
     return r.json()
 
 
-def test_recalculate_persists_46_items_and_filters_customer_response(client, monkeypatch):
+def test_recalculate_persists_50_items_and_filters_customer_response(client, monkeypatch):
     from database import coverage
 
     monkeypatch.setattr(coverage, "rag_search", lambda *args, **kwargs: {"hits": []})
@@ -52,7 +52,7 @@ def test_recalculate_persists_46_items_and_filters_customer_response(client, mon
     assert recalculated.status_code == 200, recalculated.text
     body = recalculated.json()
     assert body["status"] == "completed"
-    assert body["items_count"] == 46
+    assert body["items_count"] == 50
 
     internal = client.get(
         f"/customers/{customer['id']}/coverage-analysis",
@@ -61,7 +61,7 @@ def test_recalculate_persists_46_items_and_filters_customer_response(client, mon
     assert internal.status_code == 200, internal.text
     internal_body = internal.json()
     internal_items = [item for cat in internal_body["categories"] for item in cat["items"]]
-    assert len(internal_items) == 46
+    assert len(internal_items) == 50
     assert len(internal_body["categories"]) == 13
     assert any(item["priority"] == "최우선" for item in internal_items)
     assert any(item["priority"] == "중요" for item in internal_items)
@@ -111,7 +111,7 @@ def test_coverage_schema_tables_are_created(client):
         }
     finally:
         conn.close()
-    assert counts["coverage_catalog"] == 46
+    assert counts["coverage_catalog"] == 50
     assert counts["coverage_analysis_runs"] == 1
-    assert counts["coverage_analysis"] == 46
+    assert counts["coverage_analysis"] == 50
     assert counts["coverage_adjustment_factors"] >= 0

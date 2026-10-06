@@ -71,14 +71,18 @@ test("coverage analysis maps coverage_json rows into thirteen tabs", () => {
   assert.match(coverage, /buildCoverageResponseFromRows/);
 });
 
-test("coverage catalog defines the full backend catalog of forty-six items", () => {
+test("coverage catalog defines the full backend catalog of fifty items", () => {
   const catalog = read("desktop/src/coverageCatalog.ts");
   const itemCount = (catalog.match(/id: "/g) ?? []).length;
   const categoryCount = new Set([...catalog.matchAll(/category: "([^"]+)"/g)].map((match) => match[1])).size;
 
-  assert.equal(itemCount, 46);
+  assert.equal(itemCount, 50);
   assert.equal(categoryCount, 13);
   assert.match(catalog, /name: "질병사망", category: "사망", recommended: 100000000/);
+  assert.match(catalog, /name: "통합암 진단비", category: "암"/);
+  assert.match(catalog, /name: "특정암 진단비", category: "암"/);
+  assert.match(catalog, /name: "뇌산정특례대상 진단비", category: "뇌혈관질환"/);
+  assert.match(catalog, /name: "심장산정특례대상 진단비", category: "심장질환"/);
   assert.match(catalog, /name: "골절 진단비", category: "치아 \/ 화상 \/ 골절", recommended: 300000/);
 });
 
@@ -90,11 +94,21 @@ test("coverage analysis screens expand saved coverage_json rows with uninsured c
   assert.match(coverage, /for \(const catalogItem of COVERAGE_CATALOG\)/);
   assert.match(coverage, /status: matchedRow\?\.status \|\| "미가입"/);
   assert.match(coverage, /current_amount: currentAmount/);
-  assert.match(coverage, /gap_amount: Math\.max\(0, catalogItem\.recommended - currentAmount\)/);
+  assert.match(coverage, /gap_amount: gapAmount/);
   assert.match(coverage, /summary[\s\S]*total_items: COVERAGE_CATALOG\.length/);
 
   assert.match(customers, /import \{ expandCoverageRowsWithCatalog/);
   assert.match(customers, /expandCoverageRowsWithCatalog\(rows\)/);
+});
+
+test("coverage analysis tab renders full detail table summary and filters", () => {
+  const coverage = read("desktop/src/CoverageAnalysis.tsx");
+
+  assert.match(coverage, /COVERAGE_FILTERS/);
+  assert.match(coverage, /전체\/미가입\/부족\/충분/);
+  assert.match(coverage, /보장별 상세표 전체/);
+  assert.match(coverage, /<th>보장군<\/th>[\s\S]*<th>보장상세<\/th>[\s\S]*<th>출처<\/th>/);
+  assert.match(coverage, /evidence_pages\?\.length \? `p\.\$\{item\.evidence_pages\.join/);
 });
 
 test("coverage analysis supports inline row editing and saves coverage_json", () => {

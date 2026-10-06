@@ -691,6 +691,186 @@ _GAP_END = ("보유계약리스트", "가입담보 상세", "※ 간편", "전�
 _CS_SPLIT = re.compile(r"\s*(미가입|부족|충분)\s*(\d{1,3})\s*%\s*")
 _CS_AMT = re.compile(r"보장\s*([0-9억,만원.]+)\s*권장금액\s*([0-9억,만원.]+)")
 
+_DETAIL_PAGE_MARKERS = ("진단상세", "보장별 상세", "보장별 상세 내역")
+_DETAIL_HEADER_MARKERS = ("권장금액", "가입금액", "부족금액", "과부족")
+_DETAIL_STATUSES = {"미가입", "부족", "충분", "확인필요"}
+_DETAIL_GROUPS = (
+    "사망", "후유장해", "암", "뇌혈관질환", "심장질환", "치매", "실손의료비", "수술비",
+    "입원비(일당)", "입원비 / 일당", "치료비", "운전자", "법률,배상책임", "법률 / 배상책임", "치아,화상,골절", "치아 / 화상 / 골절",
+)
+_DETAIL_COVERAGE_GROUPS = {
+    "질병사망": "사망", "상해사망": "사망",
+    "질병 3%이상 후유장해": "후유장해", "상해 3%이상 후유장해": "후유장해",
+    "일반암 진단비": "암", "유사암 진단비": "암", "통합암 진단비": "암", "특정암 진단비": "암",
+    "뇌혈관 진단비": "뇌혈관질환", "뇌졸중 진단비": "뇌혈관질환", "뇌출혈 진단비": "뇌혈관질환", "뇌산정특례대상 진단비": "뇌혈관질환",
+    "허혈성심장질환 진단비": "심장질환", "급성심근경색증 진단비": "심장질환", "심장산정특례대상 진단비": "심장질환",
+    "중증치매진단": "치매", "경증치매진단": "치매",
+    "질병입원": "실손의료비", "질병통원": "실손의료비", "상해입원": "실손의료비", "상해통원": "실손의료비",
+    "암수술비": "수술비", "뇌혈관수술비": "수술비", "허혈심장질환수술비": "수술비", "질병수술비": "수술비", "상해수술비": "수술비", "질병종수술": "수술비", "상해종수술": "수술비",
+    "질병일당": "입원비(일당)", "상해일당": "입원비(일당)", "질병 간병인지원 입원일당": "입원비(일당)", "상해 간병인지원 입원일당": "입원비(일당)", "질병 간병인사용 입원일당": "입원비(일당)", "상해 간병인사용 입원일당": "입원비(일당)", "1인실 입원일당": "입원비(일당)",
+    "고액항암 치료비(표적)": "치료비", "중입자방사선치료비": "치료비", "암 주요치료비": "치료비", "2대질환 주요치료비": "치료비",
+    "교통사고처리 지원금": "운전자", "변호사 선임비용": "운전자", "벌금": "운전자", "자동차사고 부상치료비": "운전자",
+    "일상생활 배상책임": "법률,배상책임", "민사소송 법률비용": "법률,배상책임", "화재벌금": "법률,배상책임",
+    "치아보철 치료비": "치아,화상,골절", "치아보존 치료비": "치아,화상,골절", "화상 진단비": "치아,화상,골절", "골절 진단비": "치아,화상,골절",
+}
+_DETAIL_NAMES = sorted(_DETAIL_COVERAGE_GROUPS, key=len, reverse=True)
+_NAME_ALIASES = {
+    "질병 3% 이상 후유장해": "질병 3%이상 후유장해",
+    "상해 3% 이상 후유장해": "상해 3%이상 후유장해",
+    "질병 종수술": "질병종수술", "질병 1~5종 수술비": "질병종수술", "질병 1-5종 수술비": "질병종수술", "질병 1~5종 수술비(5종)": "질병종수술", "질병 1~7종 수술비": "질병종수술", "[건강]질병 1~5종 수술비(5종)": "질병종수술",
+    "상해 종수술": "상해종수술", "상해 1~5종 수술비": "상해종수술", "상해 1-5종 수술비": "상해종수술",
+    "통합암진단비": "통합암 진단비", "통합암진단비(유사암제외)": "통합암 진단비",
+    "특정암진단비": "특정암 진단비", "전이암진단비": "특정암 진단비", "림프절전이암진단비": "특정암 진단비", "특정전이암진단비": "특정암 진단비", "10대특정암진단비": "특정암 진단비", "15대특정암진단비": "특정암 진단비", "4대고액암진단비": "특정암 진단비", "특정소액암진단비": "특정암 진단비", "특정소화기암진단비": "특정암 진단비",
+    "뇌산정특례": "뇌산정특례대상 진단비", "뇌혈관 산정특례": "뇌산정특례대상 진단비",
+    "심장산정특례": "심장산정특례대상 진단비", "심장질환 산정특례": "심장산정특례대상 진단비",
+}
+_DETAIL_ALIAS_NAMES = sorted(_NAME_ALIASES, key=len, reverse=True)
+_MONEY_RE = re.compile(r"-?(?:\d[\d,]*\s*억\d[\d,]*\s*만(?:원)?|\d[\d,]*\s*억(?:원)?|\d[\d,]*\s*만(?:원)?|\d[\d,]*\s*원|0)(?![%\d])")
+
+
+def _normalize_coverage_name(name: str) -> str:
+    compact = re.sub(r"\s+", "", (name or "").strip())
+    for alias, canonical in _NAME_ALIASES.items():
+        if re.sub(r"\s+", "", alias) == compact:
+            return canonical
+    for canonical in _DETAIL_COVERAGE_GROUPS:
+        if re.sub(r"\s+", "", canonical) == compact:
+            return canonical
+    return (name or "").strip()
+
+
+def _parse_detail_amount(text: str) -> int:
+    t = (text or "").replace(",", "").replace("원", "").strip()
+    if not t:
+        return 0
+    sign = -1 if t.startswith("-") else 1
+    t = t.lstrip("-").strip()
+    total = 0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*억", t)
+    if m:
+        total += int(float(m.group(1)) * 100_000_000)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*만", t)
+    if m:
+        total += int(float(m.group(1)) * 10_000)
+    if total == 0:
+        m = re.search(r"\d+(?:\.\d+)?", t)
+        if m:
+            total = int(float(m.group(0)))
+    return sign * total
+
+
+def _format_detail_amount(value: int) -> str:
+    sign = "-" if value < 0 else ""
+    n = abs(int(value or 0))
+    if n == 0:
+        return "0원"
+    eok, rem = divmod(n, 100_000_000)
+    man = rem // 10_000
+    if eok and man:
+        return f"{sign}{eok:,}억{man:,}만"
+    if eok:
+        return f"{sign}{eok:,}억"
+    if man:
+        return f"{sign}{man:,}만"
+    return f"{sign}{n:,}원"
+
+
+def _split_pdf_pages(doc_text: str) -> list[tuple[int, str]]:
+    chunks = [p.strip() for p in re.split(r"\n\s*\n", doc_text or "") if p.strip()]
+    if not chunks:
+        return []
+    return [(idx + 1, text) for idx, text in enumerate(chunks)]
+
+
+def _detect_detail_pages(doc_text: str) -> list[tuple[int, str]]:
+    pages: list[tuple[int, str]] = []
+    for page_no, page_text in _split_pdf_pages(doc_text):
+        has_title = any(marker in page_text for marker in _DETAIL_PAGE_MARKERS)
+        header_hits = sum(1 for marker in _DETAIL_HEADER_MARKERS if marker in page_text)
+        if has_title and header_hits >= 2:
+            pages.append((page_no, page_text))
+    return pages
+
+
+def _find_detail_name(line: str) -> tuple[str, int, int] | None:
+    compact_line = re.sub(r"\s+", "", line)
+    for name in _DETAIL_NAMES:
+        idx = line.find(name)
+        if idx >= 0:
+            return name, idx, idx + len(name)
+        c = re.sub(r"\s+", "", name)
+        ci = compact_line.find(c)
+        if ci >= 0:
+            # 공백 차이(3% 이상) 대응: 원문에서는 대략 첫 글자 위치만 필요하다.
+            rough = line.find(name[0])
+            return name, max(rough, 0), max(rough, 0) + len(name)
+    for alias in _DETAIL_ALIAS_NAMES:
+        idx = line.find(alias)
+        if idx >= 0:
+            return _NAME_ALIASES[alias], idx, idx + len(alias)
+    return None
+
+
+def _parse_detail_line(line: str, page_no: int, current_group: str | None) -> dict | None:
+    status = next((s for s in _DETAIL_STATUSES if re.search(rf"\s{s}\s*$", line)), None)
+    if not status:
+        return None
+    found = _find_detail_name(line)
+    if not found:
+        return None
+    name, start, end = found
+    name = _normalize_coverage_name(name)
+    before = line[:start].strip()
+    group = before if before in _DETAIL_GROUPS else (_DETAIL_COVERAGE_GROUPS.get(name) or current_group or "기타")
+    rest = line[end: line.rfind(status)].strip()
+    amounts = _MONEY_RE.findall(rest)
+    if len(amounts) < 3:
+        return None
+    rec_txt, cur_txt, gap_txt = amounts[:3]
+    rec = _parse_detail_amount(rec_txt)
+    cur = _parse_detail_amount(cur_txt)
+    gap = _parse_detail_amount(gap_txt)
+    pct = 0 if rec <= 0 else max(0, min(100, round((cur / rec) * 100)))
+    return {
+        "source_page": page_no,
+        "coverage_group": group,
+        "coverage_name": name,
+        "name": name,
+        "recommended_amount": rec,
+        "current_amount": max(cur, 0),
+        "shortage_amount": gap,
+        "recommended": _format_detail_amount(rec),
+        "current": _format_detail_amount(max(cur, 0)),
+        "status": status,
+        "pct": pct,
+        "raw_text": line,
+        "confidence": 0.96,
+    }
+
+
+def _parse_coverage_detail_rows(doc_text: str) -> tuple[list, list[int]]:
+    pages = _detect_detail_pages(doc_text)
+    out: list = []
+    seen: set[str] = set()
+    for page_no, page_text in pages:
+        current_group: str | None = None
+        for raw in page_text.splitlines():
+            line = raw.strip()
+            if not line or "보장군" in line or "보장별 상세" in line or "단위" in line or line.startswith("*") or "GA2-" in line:
+                continue
+            if line in _DETAIL_GROUPS:
+                current_group = line
+                continue
+            parsed = _parse_detail_line(line, page_no, current_group)
+            if not parsed:
+                continue
+            if parsed["coverage_name"] in seen:
+                continue
+            seen.add(parsed["coverage_name"])
+            current_group = parsed["coverage_group"]
+            out.append(parsed)
+    return out, [p for p, _ in pages]
+
 
 def _parse_coverage_status_pct(doc_text: str) -> list:
     """보장분석서 '보장현황' 그리드(미가입/부족/충분 NN%) → [{name, status, pct, current, recommended}]."""
@@ -775,14 +955,29 @@ def _parse_coverage_status_ga(doc_text: str) -> list:
 
 
 def _parse_coverage_status(doc_text: str) -> list:
-    """보장분석서 '보장현황' → [{name, status, pct, current, recommended}].
-    두 레이아웃(미가입 NN% / GA 전체 보장현황 비교표)을 모두 지원한다."""
-    out = _parse_coverage_status_pct(doc_text)
-    have = {o["name"] for o in out}
-    for g in _parse_coverage_status_ga(doc_text):
-        if g["name"] not in have:
-            out.append(g)
-    return out
+    """보장분석서 보장별 상세표 → [{source_page, coverage_group, coverage_name, ...}].
+    상세표가 없는 보장현황/계약별 담보 양식은 자동 저장하지 않기 위해 빈 배열을 반환한다."""
+    rows, _pages = _parse_coverage_detail_rows(doc_text)
+    return rows
+
+
+def _coverage_review(doc_type: str, doc_text: str, coverage_status: list) -> dict:
+    _rows, pages = _parse_coverage_detail_rows(doc_text)
+    def count(pred) -> int:
+        return sum(1 for row in coverage_status if pred(row))
+    unsupported = doc_type == "보장분석" and not coverage_status
+    return {
+        "document_type": "미지원 양식" if unsupported else doc_type,
+        "detected_detail_pages": pages,
+        "coverage_item_count": len(coverage_status),
+        "cancer_item_count": count(lambda r: r.get("coverage_group") == "암"),
+        "brain_item_count": count(lambda r: r.get("coverage_group") == "뇌혈관질환"),
+        "heart_item_count": count(lambda r: r.get("coverage_group") == "심장질환"),
+        "surgery_item_count": count(lambda r: r.get("coverage_group") == "수술비"),
+        "needs_review_item_count": count(lambda r: r.get("status") == "확인필요" or r.get("coverage_group") in (None, "", "기타")),
+        "save_requires_review": True,
+        "supported": not unsupported,
+    }
 
 _DOCTYPE_KEYS = (
     ("보장분석", ("보장분석", "보유계약리스트", "간편보장분석", "보장현황", "전체 보장현황")),
@@ -1010,6 +1205,8 @@ async def capture(
                     policies = plist["policies"]
                     warns += plist["warnings"]
                     coverage_status = _parse_coverage_status(doc_text)
+                    if doc_type == "보장분석" and not coverage_status:
+                        warns.append("보장별 상세표를 찾지 못했습니다. 이 문서는 미지원 양식으로 자동 보장분석 저장을 하지 않습니다. 가입현황/계약별 담보는 검수 후 별도 확인하세요.")
                     consult_extra = coverage_status  # 구조화 리스트
                     cov_raw = _slice_section(doc_text, _GAP_START, _GAP_END, 3500)
                 else:
@@ -1099,6 +1296,7 @@ async def capture(
                     ),
                     "policies": policies,
                     "coverage_status": coverage_status,
+                    "coverage_review": _coverage_review(doc_type, doc_text, coverage_status),
                     "coverages_text": cov_raw,
                 })
             else:

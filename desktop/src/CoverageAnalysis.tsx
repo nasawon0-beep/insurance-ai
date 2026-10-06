@@ -76,6 +76,8 @@ type EditDraft = {
   recommended: string;
 };
 
+type CoverageFilter = "전체" | "부족" | "미가입" | "충분" | "암" | "뇌혈관" | "심장" | "수술비" | "입원비" | "운전자" | "기타";
+
 const COVERAGE_TABS: CoverageTab[] = [
   { key: "death", label: "사망" },
   { key: "disability", label: "후유장해" },
@@ -94,6 +96,7 @@ const COVERAGE_TABS: CoverageTab[] = [
 
 const RECENT_CUSTOMERS_KEY = "coverageAnalysis.recentCustomerIds";
 const DEBUG_PREFIX = "[CoverageAnalysis]";
+const COVERAGE_FILTERS: CoverageFilter[] = ["전체", "부족", "미가입", "충분", "암", "뇌혈관", "심장", "수술비", "입원비", "운전자", "기타"];
 
 function categoryIdForCoverageName(name: string): string | null {
   const catalogItem = findCoverageCatalogItem(name);
@@ -105,13 +108,14 @@ function categoryIdForCoverageName(name: string): string | null {
 function parseWonAmount(value: string | null | undefined): number {
   if (!value) return 0;
   const text = value.replace(/,/g, "").trim();
+  const sign = text.startsWith("-") ? -1 : 1;
   const eokMatch = text.match(/(\d+(?:\.\d+)?)\s*억/);
   const manMatch = text.match(/(\d+(?:\.\d+)?)\s*만/);
   if (eokMatch || manMatch) {
-    return Math.round(Number(eokMatch?.[1] ?? 0) * 100000000 + Number(manMatch?.[1] ?? 0) * 10000);
+    return sign * Math.round(Number(eokMatch?.[1] ?? 0) * 100000000 + Number(manMatch?.[1] ?? 0) * 10000);
   }
   const plain = text.match(/\d+(?:\.\d+)?/);
-  return plain ? Math.round(Number(plain[0])) : 0;
+  return plain ? sign * Math.round(Number(plain[0])) : 0;
 }
 
 function statusTone(status: string): string {
@@ -164,6 +168,18 @@ function countByStatus(items: CoverageItem[], status: string): number {
   return items.filter((item) => item.status === status).length;
 }
 
+function filterMatches(item: CoverageItem, filter: CoverageFilter): boolean {
+  if (filter === "전체") return true;
+  if (["부족", "미가입", "충분"].includes(filter)) return item.status === filter;
+  if (filter === "암") return item.category_group === "암";
+  if (filter === "뇌혈관") return item.category_group.includes("뇌혈관");
+  if (filter === "심장") return item.category_group.includes("심장");
+  if (filter === "수술비") return item.category_group.includes("수술");
+  if (filter === "입원비") return item.category_group.includes("입원");
+  if (filter === "운전자") return item.category_group.includes("운전자");
+  return !["암", "뇌혈관질환", "심장질환", "수술비", "입원비/일당", "입원비 / 일당", "운전자"].some((group) => item.category_group.includes(group));
+}
+
 function categoryStatusSummary(items: CoverageItem[]): string {
   if (items.some((item) => item.status === "미가입")) return "미가입";
   if (items.some((item) => item.status === "부족")) return "부족";
@@ -189,8 +205,9 @@ function buildCoverageResponseFromRows(customerId: string, rows: CoverageRow[], 
     if (!categoryId) continue;
     const category = categoryById.get(categoryId);
     if (!category) continue;
-    const currentAmount = parseWonAmount(matchedRow?.current);
-    const recommendedAmount = matchedRow?.recommended ? parseWonAmount(matchedRow.recommended) : catalogItem.recommended;
+    const currentAmount = matchedRow?.current_amount ?? parseWonAmount(matchedRow?.current);
+    const recommendedAmount = matchedRow?.recommended_amount ?? (matchedRow?.recommended ? parseWonAmount(matchedRow.recommended) : catalogItem.recommended);
+    const gapAmount = matchedRow?.shortage_amount ?? Math.max(0, recommendedAmount - currentAmount);
     category.items.push({
       id: catalogItem.id,
       source_index: matched?.index ?? -1,
@@ -202,9 +219,10 @@ function buildCoverageResponseFromRows(customerId: string, rows: CoverageRow[], 
       recommended_text: matchedRow?.recommended ?? formatAmount(catalogItem.recommended),
       recommended_amount: recommendedAmount,
       current_amount: currentAmount,
-      gap_amount: Math.max(0, catalogItem.recommended - currentAmount),
-      customer_summary: matchedRow ? `고객 목록 보장분석 표 기준 · 충족률 ${matchedRow.pct}%` : "coverage.py 카탈로그 기준 · PDF 미검출 미가입",
+      gap_amount: gapAmount,
+      customer_summary: matchedRow ? `보장별 상세표 기준 · 충족률 ${matchedRow.pct}%` : "coverage.py 카탈로그 기준 · PDF 미검출 미가입",
       internal_memo: matchedRow ? `consultations.coverage_json 원본: 현재 ${matchedRow.current ?? "-"} / 권장 ${matchedRow.recommended ?? "-"}` : "consultations.coverage_json에 없는 항목을 미가입으로 보강",
+      evidence_pages: matchedRow?.source_page ? [matchedRow.source_page] : undefined,
     });
   }
 
@@ -249,6 +267,7 @@ export default function CoverageAnalysisScreen() {
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>(COVERAGE_TABS[0].key);
+  const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -366,6 +385,7 @@ export default function CoverageAnalysisScreen() {
   }, [data]);
 
   const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
+  const filteredItems = useMemo(() => allItems.filter((item) => filterMatches(item, coverageFilter)), [allItems, coverageFilter]);
 
   const customerSuggestions = useMemo(() => {
     const normalizedQuery = customerQuery.trim().toLowerCase();
@@ -387,12 +407,6 @@ export default function CoverageAnalysisScreen() {
 
     return ordered.slice(0, 10);
   }, [customerQuery, customers, recentCustomerIds]);
-
-  const activeCategory = useMemo(() => {
-    const tab = COVERAGE_TABS.find((item) => item.key === activeTab) ?? COVERAGE_TABS[0];
-    const names = [tab.label, ...(tab.aliases ?? [])];
-    return names.map((name) => categoriesByName.get(name)).find((category): category is CoverageCategory => !!category) ?? null;
-  }, [activeTab, categoriesByName]);
 
   const shortageTotal = countByStatus(allItems, "부족") + countByStatus(allItems, "미가입");
 
@@ -552,6 +566,12 @@ export default function CoverageAnalysisScreen() {
             <p className="coverage-summary-label">부족/미가입</p>
             <p className="coverage-summary-value">{shortageTotal}개</p>
           </div>
+          <div className="coverage-summary-card">
+            <p className="coverage-summary-label">전체/미가입/부족/충분</p>
+            <p className="coverage-summary-value">
+              {allItems.length} / {countByStatus(allItems, "미가입")} / {countByStatus(allItems, "부족")} / {countByStatus(allItems, "충분")}
+            </p>
+          </div>
         </section>
       )}
 
@@ -563,7 +583,19 @@ export default function CoverageAnalysisScreen() {
       )}
 
       {data && (
-        <section className="coverage-analysis-panel" aria-label="보장분석 카테고리">
+        <section className="coverage-analysis-panel" aria-label="보장분석 상세표">
+          <div className="coverage-filter-row" role="group" aria-label="보장분석 필터">
+            {COVERAGE_FILTERS.map((filter) => (
+              <button
+                key={filter}
+                type="button"
+                className={`coverage-filter ${coverageFilter === filter ? "is-active" : ""}`}
+                onClick={() => setCoverageFilter(filter)}
+              >
+                {filter}
+              </button>
+            ))}
+          </div>
           <div className="coverage-tabs" role="tablist" aria-label="보장 카테고리">
             {COVERAGE_TABS.map((tab) => {
               const category = [tab.label, ...(tab.aliases ?? [])].map((name) => categoriesByName.get(name)).find(Boolean);
@@ -585,31 +617,34 @@ export default function CoverageAnalysisScreen() {
 
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
-              <h3>{COVERAGE_TABS.find((tab) => tab.key === activeTab)?.label}</h3>
-              <CoverageBadge status={activeCategory?.status_summary ?? "확인필요"} />
+              <h3>보장별 상세표 전체</h3>
+              <span>{coverageFilter} {filteredItems.length}개</span>
             </div>
 
-            {!activeCategory || activeCategory.items.length === 0 ? (
+            {filteredItems.length === 0 ? (
               <div className="coverage-empty in-panel">표시할 세부 담보가 없습니다.</div>
             ) : (
               <div className="coverage-table-wrap">
                 <table className="coverage-table">
                   <thead>
                     <tr>
-                      <th>담보명</th>
-                      <th>상태</th>
+                      <th>보장군</th>
+                      <th>보장상세</th>
                       <th>권장금액</th>
                       <th>가입금액</th>
                       <th>부족금액</th>
+                      <th>상태</th>
+                      <th>출처</th>
                       <th>관리</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {activeCategory.items.map((item) => {
+                    {filteredItems.map((item) => {
                       const editing = editingRowId === item.id;
                       const saving = savingRowId === item.id;
                       return (
                         <tr key={item.id}>
+                          <td>{item.category_group}</td>
                           <td>
                             <div className="coverage-table-title">{item.coverage_name}</div>
                             {item.customer_summary && <p>{item.customer_summary}</p>}
@@ -621,25 +656,6 @@ export default function CoverageAnalysisScreen() {
                                   {item.evidence_pages?.length ? ` · 근거 p.${item.evidence_pages.join(", ")}` : ""}
                                 </div>
                               </div>
-                            )}
-                          </td>
-                          <td>
-                            {editing ? (
-                              <select
-                                className="coverage-edit-select"
-                                value={editDraft.status}
-                                disabled={saving}
-                                onChange={(e) => setEditDraft((current) => ({ ...current, status: e.target.value }))}
-                              >
-                                <option value="충분">충분</option>
-                                <option value="부족">부족</option>
-                                <option value="미가입">미가입</option>
-                              </select>
-                            ) : (
-                              <>
-                                <span className="coverage-status-icon" aria-hidden="true">{statusIcon(item.status)}</span>
-                                <CoverageBadge status={item.status} />
-                              </>
                             )}
                           </td>
                           <td>
@@ -669,6 +685,26 @@ export default function CoverageAnalysisScreen() {
                             )}
                           </td>
                           <td className="is-gap">{formatAmount(item.gap_amount)}</td>
+                          <td>
+                            {editing ? (
+                              <select
+                                className="coverage-edit-select"
+                                value={editDraft.status}
+                                disabled={saving}
+                                onChange={(e) => setEditDraft((current) => ({ ...current, status: e.target.value }))}
+                              >
+                                <option value="충분">충분</option>
+                                <option value="부족">부족</option>
+                                <option value="미가입">미가입</option>
+                              </select>
+                            ) : (
+                              <>
+                                <span className="coverage-status-icon" aria-hidden="true">{statusIcon(item.status)}</span>
+                                <CoverageBadge status={item.status} />
+                              </>
+                            )}
+                          </td>
+                          <td>{item.evidence_pages?.length ? `p.${item.evidence_pages.join(", ")}` : "-"}</td>
                           <td>
                             {editing ? (
                               <div className="coverage-row-actions">

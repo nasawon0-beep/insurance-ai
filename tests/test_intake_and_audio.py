@@ -676,7 +676,12 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
         "보장 1,100만원 권장금액 1억원 보장 0원 권장금액 1억5,000만원\n"
         "보유계약리스트\n한화생명 케어백간병플러스보험 110세 매월납/10년 98,500원\n"
         "삼성화재 건강보험 New내돈내삼 90세 매월납/56년 87,200원\n"
-        "GA2-2지점 이영희 컨설턴트 010-2345-6789\n"
+        "GA2-2지점 이영희 컨설턴트 010-2345-6789\n\n"
+        "진단상세 보장별 상세 05\n"
+        "보장별 상세 내역 (단위: 원)\n"
+        "보장군 보장상세 권장금액 가입금액 부족금액 과부족\n"
+        "사망 질병사망 1억 1,100만 8,900만 부족\n"
+        "암 일반암 진단비 1억5,000만 0 1억5,000만 미가입\n"
     )
     monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
     # 모델이 마스킹된 이름·가짜 주민번호(생년월일 9자리)를 냈다고 가정
@@ -707,7 +712,7 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     # 보장현황이 구조화되어 나온다 (표로 렌더)
     cs = {c["name"]: c for c in it["coverage_status"]}
     assert cs["질병사망"]["status"] == "부족" and cs["질병사망"]["pct"] == 11
-    assert cs["질병사망"]["recommended"] == "1억원"
+    assert cs["질병사망"]["recommended_amount"] == 100000000
     assert cs["일반암 진단비"]["status"] == "미가입"
     assert "질병사망: 부족 11%" in k["content"]        # 상담이력 텍스트에도 정리돼 들어감
 
@@ -718,6 +723,41 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     client.post(f"/customers/{cid}/consultations", json=k)
     saved = client.get(f"/customers/{cid}").json()["consultations"][0]
     assert _json.loads(saved["coverage_json"])[1]["name"] == "일반암 진단비"
+
+
+def test_bojang_analysis_without_detail_table_is_review_only(client, monkeypatch):
+    """보장별 상세표가 없는 보장분석서는 coverage_json 자동 저장 대상이 아니다."""
+    doc = (
+        "김고객 고객님을 위한 간편보장분석\n보장현황 미가입 부족 충분\n"
+        "일반암 진단비 미가입 0%\n보장 0원 권장금액 1억5,000만원\n"
+        "보유계약리스트\n삼성화재 건강보험 90세 매월납/20년 50,000원\n"
+    )
+    monkeypatch.setattr(_router_mod, "_pdf_extract_text", lambda data, max_pages=8: doc)
+    _mock_single(
+        monkeypatch,
+        {"name": "김고객"},
+        policies_list=[{"insurer": "삼성화재", "product_name": "건강보험", "premium_won": 50000}],
+    )
+    b = client.post("/capture", files={"file": ("260923_M보장분석_김고객님.pdf", b"%PDF x", "application/pdf")}).json()
+    it = b["items"][0]
+    assert it["coverage_status"] == []
+    assert it["consultation"]["coverage_json"] is None
+    assert it["coverage_review"]["document_type"] == "미지원 양식"
+    assert any("보장별 상세표" in w for w in it["warnings"])
+
+
+def test_parse_coverage_detail_rows_amounts_and_aliases():
+    doc = (
+        "앞페이지\n\n진단상세 보장별 상세 05\n보장별 상세 내역 (단위: 원)\n"
+        "보장군 보장상세 권장금액 가입금액 부족금액 과부족\n"
+        "암 통합암진단비(유사암제외) 5,000만 5,000만 0 충분\n"
+        "특정암진단비 5,000만 2억2,060만 -1억7,060만 충분\n"
+        "질병 3% 이상 후유장해 5,000만 0 5,000만 미가입\n"
+    )
+    rows = {r["coverage_name"]: r for r in _router_mod._parse_coverage_status(doc)}
+    assert rows["통합암 진단비"]["current_amount"] == 50000000
+    assert rows["특정암 진단비"]["shortage_amount"] == -170600000
+    assert rows["질병 3%이상 후유장해"]["status"] == "미가입"
 
 
 def test_capture_scanned_pdf_reports_no_text(client, monkeypatch):
@@ -952,8 +992,8 @@ def test_capture_proposal_fills_contractor_and_premium(client, monkeypatch):
     assert any("계약자" in w and "피보험자" in w for w in it["warnings"])
 
 
-def test_parse_coverage_status_ga_total_layout():
-    """GA '전체 보장현황' 비교표(미가입/부족 NN% 형식이 아닌) 레이아웃도 파싱한다."""
+def test_parse_coverage_status_ga_total_layout_is_not_auto_saved():
+    """보장별 상세표가 아닌 GA 전체 보장현황은 검수 대상으로 두고 자동 저장하지 않는다."""
     doc = (
         "강현철 님의 전체 보장현황\n"
         "※ 기준담보/권장금액 : 기본형(37개)/표준형\n"
@@ -962,9 +1002,7 @@ def test_parse_coverage_status_ga_total_layout():
         "사망\n"
         "호남GA 좋은사람들 2026-09-02\n"
     )
-    cs = {c["name"]: c for c in _router_mod._parse_coverage_status(doc)}
-    assert cs["상해사망"]["status"] == "가입"
-    assert cs["상해사망"]["current"] == "7,100만"
-    assert cs["질병통원의료비"]["status"] == "미가입"
-    assert "사망" not in cs
-    assert not any("호남GA" in n for n in cs)
+    assert _router_mod._parse_coverage_status(doc) == []
+    review = _router_mod._coverage_review("보장분석", doc, [])
+    assert review["document_type"] == "미지원 양식"
+    assert review["supported"] is False

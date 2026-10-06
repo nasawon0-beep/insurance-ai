@@ -355,6 +355,7 @@ export default function CustomersScreen({
   const [policyChecked, setPolicyChecked] = useState<boolean[]>([]);
   const [pendingDocType, setPendingDocType] = useState<string | undefined>(undefined);
   const [pendingCoverage, setPendingCoverage] = useState<CoverageRow[]>([]);
+  const [pendingCoverageReview, setPendingCoverageReview] = useState<any | null>(null);
   const [audioIntakeBusy, setAudioIntakeBusy] = useState(false);
   const [fileKind, setFileKind] = useState<"audio" | "doc" | null>(null); // 분석 중 파일 종류
   const [dragOver, setDragOver] = useState(false);
@@ -798,6 +799,7 @@ export default function CustomersScreen({
             });
             setPendingConsult(null);
             setPendingCoverage([]);
+            setPendingCoverageReview(null);
           } catch (e) {
             setNotice("고객은 등록됐지만 상담 이력 저장에 실패했습니다: " + String(e));
           }
@@ -844,6 +846,7 @@ export default function CustomersScreen({
           });
           setPendingConsult(null);
           setPendingCoverage([]);
+          setPendingCoverageReview(null);
           consultSaved = true;
         }
         const pol = await savePolicyFor(selectedId);
@@ -925,6 +928,7 @@ export default function CustomersScreen({
         setPendingDocType(it.doc_type);
       }
       if (it.coverage_status?.length) setPendingCoverage(it.coverage_status);
+      setPendingCoverageReview(it.coverage_review ?? null);
       if (it.warnings?.length) note.push("확인 필요: " + it.warnings.join(" / "));
       if (it.match) setDupMatch({ id: it.match.id, name: it.match.name, reason: it.match_reason });
       if (note.length) setNotice(note.join(" · "));
@@ -1654,6 +1658,19 @@ export default function CustomersScreen({
                   setPendingPolicies((ps) => ps.map((p, j) => (j === pi ? { ...p, ...patch } : p)))
                 }
               />
+            )}
+            {pendingCoverageReview && (
+              <div style={{ border: "1px solid #f0c36d", background: "#fff8e5", borderRadius: 8, padding: 12, marginBottom: 10, fontSize: 13 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>보장분석 저장 전 검수</div>
+                <div>문서 유형: {pendingCoverageReview.document_type ?? "-"}</div>
+                <div>감지된 보장별 상세 페이지: {(pendingCoverageReview.detected_detail_pages ?? []).length ? (pendingCoverageReview.detected_detail_pages ?? []).map((p: number) => `p.${p}`).join(", ") : "없음"}</div>
+                <div>보장분석 항목 수: {pendingCoverageReview.coverage_item_count ?? 0}</div>
+                <div>암/뇌혈관/심장/수술비: {pendingCoverageReview.cancer_item_count ?? 0} / {pendingCoverageReview.brain_item_count ?? 0} / {pendingCoverageReview.heart_item_count ?? 0} / {pendingCoverageReview.surgery_item_count ?? 0}</div>
+                <div>미분류/확인필요 항목 수: {pendingCoverageReview.needs_review_item_count ?? 0}</div>
+                <div style={{ marginTop: 6, fontWeight: 600 }}>
+                  {pendingCoverageReview.supported === false ? "미지원 양식입니다. 보장분석은 자동 저장하지 않습니다." : "검수 완료 후 저장 버튼을 눌러 저장하세요."}
+                </div>
+              </div>
             )}
             {pendingCoverage.length > 0 && (
               <CoverageTableEditable

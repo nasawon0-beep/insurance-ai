@@ -26,12 +26,7 @@ CATALOG_VERSION = "2026-09-25"
 ANALYZER_VERSION = "2026-09-25"
 MIN_SCORE_KEEP = 0.15
 TOP_K_PER_SUBCOVERAGE = 3
-_EXCLUDED_MVP_SUBCOVERAGES = {
-    "통합암 진단비",
-    "특정암 진단비",
-    "뇌산정특례대상 진단비",
-    "심장산정특례대상 진단비",
-}
+_EXCLUDED_MVP_SUBCOVERAGES: set[str] = set()
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -128,10 +123,38 @@ def _load_json(path: str) -> dict[str, Any]:
         return json.load(f)
 
 
+def _load_catalog_from_desktop_ts() -> list[dict[str, Any]]:
+    """개발/테스트 환경에서 JSON 카탈로그가 비어 있으면 프론트 카탈로그를 단일 소스로 사용한다."""
+    ts_path = Path(__file__).resolve().parents[2] / "desktop" / "src" / "coverageCatalog.ts"
+    if not ts_path.exists():
+        return []
+    text = ts_path.read_text(encoding="utf-8")
+    rows: list[dict[str, Any]] = []
+    for order, m in enumerate(re.finditer(
+        r'\{ id: "([^"]+)", name: "([^"]+)", category: "([^"]+)", recommended: (\d+)',
+        text,
+    ), start=1):
+        cid, name, group, recommended = m.groups()
+        rows.append({
+            "id": cid,
+            "category_id": cid.split(":", 1)[0],
+            "category_group": group,
+            "coverage_name": name,
+            "display_order": order,
+            "recommended_amount": int(recommended),
+            "base_weight": _base_weight(group, name),
+            "primary_query": name,
+            "keywords": [name, name.replace(" ", "")],
+            "exclude_keywords": [],
+            "distinction_rule": None,
+        })
+    return rows
+
+
 def _base_weight(group: str, name: str) -> int:
     core = {
         "일반암 진단비", "뇌혈관 진단비", "허혈성심장질환 진단비",
-        "질병입원", "질병통원", "상해입원", "상해통원", "질병 3% 이상 후유장해",
+        "질병입원", "질병통원", "상해입원", "상해통원", "질병 3%이상 후유장해",
     }
     important_groups = {"수술비", "입원비 / 일당", "치료비"}
     important_names = {
@@ -163,6 +186,8 @@ def load_coverage_catalog(path: str | None = None) -> list[dict[str, Any]]:
     amounts_path = os.environ.get("COVERAGE_RECOMMENDED_AMOUNTS_PATH", default_amounts)
     rag = _load_json(rag_path)
     amounts = _load_json(amounts_path)["recommended_amounts"]
+    if not rag.get("categories"):
+        return _load_catalog_from_desktop_ts()
     out: list[dict[str, Any]] = []
     order = 0
     for cat in rag["categories"]:
@@ -320,7 +345,7 @@ def _calculate_priority(
     score += {"미가입": 30, "부족": 20, "확인필요": 10}.get(status, 0)
     score += 20 if gap_ratio >= 0.8 else 15 if gap_ratio >= 0.5 else 8 if gap_ratio >= 0.2 else 3
     group, name = item["category_group"], item["coverage_name"]
-    if name in {"일반암 진단비", "뇌혈관 진단비", "허혈성심장질환 진단비", "질병 3% 이상 후유장해"}:
+    if name in {"일반암 진단비", "뇌혈관 진단비", "허혈성심장질환 진단비", "질병 3%이상 후유장해"}:
         score += 10
     if group in {"수술비", "입원비 / 일당", "치료비"} and context.get("core_diagnosis_has_gap"):
         score -= 15
@@ -343,7 +368,7 @@ def _calculate_priority(
         score += 25
     elif group == "사망":
         score -= 30
-    if profile.get("has_young_children") and name in {"질병 3% 이상 후유장해", "일반암 진단비", "뇌혈관 진단비", "허혈성심장질환 진단비"}:
+    if profile.get("has_young_children") and name in {"질병 3%이상 후유장해", "일반암 진단비", "뇌혈관 진단비", "허혈성심장질환 진단비"}:
         score += 10
     if profile.get("frequent_driving") and group == "운전자":
         score += 20
