@@ -21,6 +21,7 @@ from typing import Any, Optional
 from rag import search as rag_search
 
 from . import repo
+from .coverage_catalog import COVERAGE_CATALOG as EMBEDDED_COVERAGE_CATALOG
 
 CATALOG_VERSION = "2026-09-25"
 ANALYZER_VERSION = "2026-09-25"
@@ -123,6 +124,35 @@ def _load_json(path: str) -> dict[str, Any]:
         return json.load(f)
 
 
+def _catalog_row(raw: dict[str, Any], order: int | None = None) -> dict[str, Any]:
+    """프론트/내장 카탈로그를 coverage_catalog 테이블 스키마로 정규화한다."""
+    cid = raw["id"]
+    group = str(raw.get("category_group") or raw.get("group") or raw.get("category") or "")
+    name = str(raw.get("coverage_name") or raw.get("name") or "")
+    aliases = list(raw.get("aliases") or [])
+    keywords = list(raw.get("keywords") or [])
+    for token in [name, name.replace(" ", ""), *aliases]:
+        if token and token not in keywords:
+            keywords.append(token)
+    return {
+        "id": cid,
+        "category_id": raw.get("category_id") or cid.split(":", 1)[0],
+        "category_group": group,
+        "coverage_name": name,
+        "display_order": int(raw.get("display_order") or order or 0),
+        "recommended_amount": int(raw.get("recommended_amount") or raw.get("recommended") or 0),
+        "base_weight": int(raw.get("base_weight") or _base_weight(group, name)),
+        "primary_query": raw.get("primary_query") or name,
+        "keywords": keywords,
+        "exclude_keywords": list(raw.get("exclude_keywords") or []),
+        "distinction_rule": raw.get("distinction_rule"),
+    }
+
+
+def _embedded_catalog() -> list[dict[str, Any]]:
+    return [_catalog_row(row, order) for order, row in enumerate(EMBEDDED_COVERAGE_CATALOG, start=1)]
+
+
 def _load_catalog_from_desktop_ts() -> list[dict[str, Any]]:
     """개발/테스트 환경에서 JSON 카탈로그가 비어 있으면 프론트 카탈로그를 단일 소스로 사용한다."""
     ts_path = Path(__file__).resolve().parents[2] / "desktop" / "src" / "coverageCatalog.ts"
@@ -135,19 +165,7 @@ def _load_catalog_from_desktop_ts() -> list[dict[str, Any]]:
         text,
     ), start=1):
         cid, name, group, recommended = m.groups()
-        rows.append({
-            "id": cid,
-            "category_id": cid.split(":", 1)[0],
-            "category_group": group,
-            "coverage_name": name,
-            "display_order": order,
-            "recommended_amount": int(recommended),
-            "base_weight": _base_weight(group, name),
-            "primary_query": name,
-            "keywords": [name, name.replace(" ", "")],
-            "exclude_keywords": [],
-            "distinction_rule": None,
-        })
+        rows.append(_catalog_row({"id": cid, "name": name, "group": group, "recommended": recommended}, order))
     return rows
 
 
@@ -170,6 +188,11 @@ def _base_weight(group: str, name: str) -> int:
 
 
 def load_coverage_catalog(path: str | None = None) -> list[dict[str, Any]]:
+    # 패키징 환경은 desktop/src 및 JSON 리소스가 없거나 비어 있을 수 있으므로
+    # 백엔드 내장 카탈로그를 기본 소스로 사용한다.
+    if path is None and not os.environ.get("COVERAGE_RAG_QUERIES_PATH") and not os.environ.get("COVERAGE_RECOMMENDED_AMOUNTS_PATH"):
+        return _embedded_catalog()
+
     # PyInstaller 번들 경로 지원
     if getattr(sys, 'frozen', False):
         # PyInstaller로 패키징된 경우
@@ -184,10 +207,13 @@ def load_coverage_catalog(path: str | None = None) -> list[dict[str, Any]]:
     
     rag_path = path or os.environ.get("COVERAGE_RAG_QUERIES_PATH", default_rag)
     amounts_path = os.environ.get("COVERAGE_RECOMMENDED_AMOUNTS_PATH", default_amounts)
-    rag = _load_json(rag_path)
-    amounts = _load_json(amounts_path)["recommended_amounts"]
+    try:
+        rag = _load_json(rag_path)
+        amounts = _load_json(amounts_path)["recommended_amounts"]
+    except Exception:
+        return _embedded_catalog()
     if not rag.get("categories"):
-        return _load_catalog_from_desktop_ts()
+        return _load_catalog_from_desktop_ts() or _embedded_catalog()
     out: list[dict[str, Any]] = []
     order = 0
     for cat in rag["categories"]:
@@ -292,7 +318,88 @@ def _policy_text(policy: dict[str, Any]) -> str:
     return " ".join(str(p) for p in parts if p)
 
 
-def _extract_current_amount(item: dict[str, Any], policies: list[dict[str, Any]]) -> tuple[int, list[str]]:
+def _compact(text: Any) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def _coverage_text(row: dict[str, Any]) -> str:
+    return " ".join(str(row.get(k) or "") for k in ("standard_name", "rider_name", "amount_text", "raw_text"))
+
+
+def _coverage_amount(row: dict[str, Any]) -> int:
+    try:
+        amount = int(row.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount > 0:
+        return amount
+    parsed = _parse_amounts(str(row.get("amount_text") or ""))
+    return max(parsed) if parsed else 0
+
+
+def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
+    name = item["coverage_name"]
+    hay = _compact(_coverage_text(row))
+    if not hay:
+        return False
+
+    def has(*tokens: str) -> bool:
+        return all(_compact(t) in hay for t in tokens if t)
+
+    # 입원비/일당은 실손 입원과 일당/간병인 일당을 분리해서 판정한다.
+    if name == "질병입원":
+        return has("질병", "입원") and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+    if name == "상해입원":
+        return has("상해", "입원") and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+    if name == "질병통원":
+        return has("질병", "통원")
+    if name == "상해통원":
+        return has("상해", "통원")
+    if name == "질병일당":
+        return has("질병") and ("일당" in hay or "입원일당" in hay) and not any(t in hay for t in ("상해", "간병인", "1인실", "상급병실"))
+    if name == "상해일당":
+        return has("상해") and ("일당" in hay or "입원일당" in hay) and not any(t in hay for t in ("질병", "간병인", "1인실", "상급병실"))
+    if name == "질병 간병인지원 입원일당":
+        return has("질병", "간병인", "지원") and "일당" in hay
+    if name == "상해 간병인지원 입원일당":
+        return has("상해", "간병인", "지원") and "일당" in hay
+    if name == "질병 간병인사용 입원일당":
+        return has("질병", "간병인", "사용") and "일당" in hay
+    if name == "상해 간병인사용 입원일당":
+        return has("상해", "간병인", "사용") and "일당" in hay
+    if name == "1인실 입원일당":
+        return ("1인실" in hay or "상급병실" in hay) and "일당" in hay
+
+    names = [name, name.replace(" ", ""), *item.get("keywords", [])]
+    excludes = [_compact(ex) for ex in item.get("exclude_keywords", [])]
+    if any(ex and ex in hay for ex in excludes):
+        return False
+    return any(_compact(candidate) and _compact(candidate) in hay for candidate in names)
+
+
+def _extract_current_amount_from_coverages(item: dict[str, Any], coverages: list[dict[str, Any]]) -> tuple[int, list[str]]:
+    total = 0
+    matched: list[str] = []
+    seen_rows: set[str] = set()
+    for row in coverages:
+        if not _matches_policy_coverage(item, row):
+            continue
+        amount = _coverage_amount(row)
+        row_id = str(row.get("id") or id(row))
+        if amount > 0 and row_id not in seen_rows:
+            total += amount
+            seen_rows.add(row_id)
+        if row.get("policy_id"):
+            matched.append(str(row["policy_id"]))
+    return total, sorted(set(matched))
+
+
+def _extract_current_amount(item: dict[str, Any], policies: list[dict[str, Any]], coverages: list[dict[str, Any]] | None = None) -> tuple[int, list[str]]:
+    if coverages:
+        current, matched_policy_ids = _extract_current_amount_from_coverages(item, coverages)
+        if current > 0 or matched_policy_ids:
+            return current, matched_policy_ids
+
     best = 0
     matched: list[str] = []
     names = [item["coverage_name"], item["coverage_name"].replace(" ", "")]
@@ -451,11 +558,24 @@ def _internal_memo(item: dict[str, Any], status: str, evidence_confidence: str) 
     return memo
 
 
-def _build_items(policies: list[dict[str, Any]], doc_ids: list[str], profile: dict[str, Any]) -> list[dict[str, Any]]:
+def _list_customer_policy_coverages(conn: sqlite3.Connection, customer_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, customer_id, policy_id, standard_name, rider_name, amount, amount_text, raw_text
+        FROM policy_coverages
+        WHERE customer_id = ?
+          AND (policy_id IS NULL OR policy_id IN (SELECT id FROM policies WHERE customer_id = ?))
+        """,
+        (customer_id, customer_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _build_items(policies: list[dict[str, Any]], doc_ids: list[str], profile: dict[str, Any], coverages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     evidence_by_key = _gather_evidence_v2(doc_ids, _COVERAGE_CATALOG)
     items: list[dict[str, Any]] = []
     for item in _COVERAGE_CATALOG:
-        current, matched_policy_ids = _extract_current_amount(item, policies)
+        current, matched_policy_ids = _extract_current_amount(item, policies, coverages)
         key = f"{item['category_group']}::{item['coverage_name']}"
         evidence = evidence_by_key.get(key, [])
         amount_failed = bool(evidence and matched_policy_ids and current == 0)
@@ -556,9 +676,10 @@ def analyze(
         return None
     ensure_schema(conn)
     policies = repo.list_policies(conn, customer_id)
+    coverages = _list_customer_policy_coverages(conn, customer_id)
     doc_ids = repo.customer_document_ids(conn, customer_id)
     profile = profile or {}
-    items = _build_items(policies, doc_ids, profile)
+    items = _build_items(policies, doc_ids, profile, coverages)
     run_id = _persist_run(conn, customer_id, items, profile, mode) if persist else None
     summary_customer, summary_internal = _summary(items, audience=audience)
     return {

@@ -115,3 +115,47 @@ def test_coverage_schema_tables_are_created(client):
     assert counts["coverage_analysis_runs"] == 1
     assert counts["coverage_analysis"] == 50
     assert counts["coverage_adjustment_factors"] >= 0
+
+
+def test_recalculate_uses_policy_coverages_for_hospitalization_daily_amount(client, monkeypatch):
+    from database import coverage
+
+    monkeypatch.setattr(coverage, "rag_search", lambda *args, **kwargs: {"hits": []})
+    customer = _make_customer(client)
+    policy = client.post(
+        f"/customers/{customer['id']}/policies",
+        json={"insurer": "테스트보험", "product_name": "건강보험"},
+    )
+    assert policy.status_code == 201, policy.text
+    pid = policy.json()["id"]
+
+    created = client.post(
+        f"/customers/{customer['id']}/policy-coverages/bulk",
+        json={
+            "review_confirmed": True,
+            "items": [
+                {
+                    "policy_id": pid,
+                    "standard_name": "질병입원일당",
+                    "rider_name": "질병 입원일당(1일이상)",
+                    "amount": 30000,
+                    "amount_text": "3만원",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    recalculated = client.post(f"/customers/{customer['id']}/coverage-analysis/recalculate", json={})
+    assert recalculated.status_code == 200, recalculated.text
+    run_id = recalculated.json()["run_id"]
+    internal = client.get(
+        f"/customers/{customer['id']}/coverage-analysis",
+        params={"audience": "internal", "run_id": run_id},
+    )
+    assert internal.status_code == 200, internal.text
+    items = [item for cat in internal.json()["categories"] for item in cat["items"]]
+    daily = next(item for item in items if item["coverage_name"] == "질병일당")
+    assert daily["current_amount"] == 30000
+    assert daily["status"] != "미가입"
+    assert daily["matched_policy_ids"] == [pid]
