@@ -185,13 +185,6 @@ function filterMatches(item: CoverageItem, filter: CoverageFilter): boolean {
   return !knownGroups.includes(item.category_group);
 }
 
-function tabMatches(item: CoverageItem, tabKey: string): boolean {
-  if (tabKey === "all") return true;
-  const tab = COVERAGE_TABS.find((entry) => entry.key === tabKey);
-  if (!tab) return true;
-  return item.category_id === tab.key || [tab.label, ...(tab.aliases ?? [])].includes(item.category_group);
-}
-
 function categoryStatusSummary(items: CoverageItem[]): string {
   if (items.some((item) => item.status === "미가입")) return "미가입";
   if (items.some((item) => item.status === "부족")) return "부족";
@@ -278,7 +271,7 @@ export default function CoverageAnalysisScreen() {
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>("all");
+  const [activeTab, setActiveTab] = useState<string>(COVERAGE_TABS[0].key);
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
@@ -398,10 +391,9 @@ export default function CoverageAnalysisScreen() {
 
   const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
   const filteredItems = useMemo(
-    () => allItems.filter((item) => tabMatches(item, activeTab) && filterMatches(item, coverageFilter)),
-    [activeTab, allItems, coverageFilter],
+    () => allItems.filter((item) => filterMatches(item, coverageFilter)),
+    [allItems, coverageFilter],
   );
-  const activeTabLabel = activeTab === "all" ? "전체" : COVERAGE_TABS.find((tab) => tab.key === activeTab)?.label ?? "전체";
 
   const customerSuggestions = useMemo(() => {
     const normalizedQuery = customerQuery.trim().toLowerCase();
@@ -613,15 +605,6 @@ export default function CoverageAnalysisScreen() {
             ))}
           </div>
           <div className="coverage-tabs" role="tablist" aria-label="보장 카테고리">
-            <button
-              type="button"
-              className={`coverage-tab ${activeTab === "all" ? "is-active" : ""}`}
-              onClick={() => setActiveTab("all")}
-              role="tab"
-              aria-selected={activeTab === "all"}
-            >
-              전체
-            </button>
             {COVERAGE_TABS.map((tab) => {
               const category = [tab.label, ...(tab.aliases ?? [])].map((name) => categoriesByName.get(name)).find(Boolean);
               return (
@@ -644,7 +627,6 @@ export default function CoverageAnalysisScreen() {
             <div className="coverage-table-heading">
               <h3>보장별 상세표 전체</h3>
               <span>{coverageFilter} {filteredItems.length}개</span>
-              {activeTab !== "all" && <span>{activeTabLabel}</span>}
             </div>
 
             {filteredItems.length === 0 ? (
