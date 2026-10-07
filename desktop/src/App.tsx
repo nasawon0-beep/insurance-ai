@@ -2083,13 +2083,16 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
     <button
       onClick={() => setView("assistant")}
       style={{
-        padding: "6px 14px",
-        border: "1px solid var(--color-border-default)",
-        borderBottom: view === "assistant" ? "2px solid #2563eb" : "2px solid transparent",
+        padding: "8px 16px",
+        border: "none",
+        borderBottom: view === "assistant" ? "2px solid #3b82f6" : "2px solid transparent",
         background: "none",
-        fontWeight: view === "assistant" ? 600 : 400,
+        fontWeight: view === "assistant" ? 700 : 500,
+        fontSize: 14,
+        color: view === "assistant" ? "#3b82f6" : "var(--color-text-primary)",
         cursor: "pointer",
         position: "relative",
+        letterSpacing: "0.01em",
       }}
     >
       AI 문의
@@ -2097,8 +2100,8 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
         <span
           style={{
             position: "absolute",
-            top: 4,
-            right: 4,
+            top: 2,
+            right: 2,
             background: "#ef4444",
             color: "#fff",
             fontSize: 10,

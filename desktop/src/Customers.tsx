@@ -1218,10 +1218,10 @@ export default function CustomersScreen({
   } : null;
 
   return (
-    <div style={{ display: "flex", gap: 16, padding: 16, maxWidth: 1040, margin: "0 auto" }}>
+    <div style={{ display: "flex", gap: 20, padding: 16, maxWidth: 1180, margin: "0 auto" }}>
       {/* 왼쪽: 고객 목록 (고객 목록 탭에서만) */}
       {screen === "list" && (
-      <div style={{ width: 260, flexShrink: 0 }}>
+      <div style={{ width: 300, flexShrink: 0 }}>
         <button onClick={() => startNew()} style={{ width: "100%", marginBottom: 6, padding: "10px 16px", fontWeight: 700, fontSize: 14, background: "var(--primary-600)", color: "#fff", border: "2px solid var(--primary-500)", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.2)" }}>
           새 고객
         </button>

@@ -85,8 +85,12 @@ export function PolicyList({
   onEdit: (i: number, patch: PolicyDraft) => void;
 }) {
   const [expandedCoverageIndex, setExpandedCoverageIndex] = useState<number | null>(null);
+  const [coverageViewMode, setCoverageViewMode] = useState<"cards" | "modal">("cards");
+  const [modalCoverageIndex, setModalCoverageIndex] = useState<number | null>(null);
   if (!policies.length) return null;
   const label = docType === "보장분석" ? "보유 보험계약" : "보험계약";
+  const modalPolicy = modalCoverageIndex == null ? null : policies[modalCoverageIndex];
+  const modalCoverages = Array.isArray(modalPolicy?.policy_coverages) ? modalPolicy.policy_coverages : [];
   return (
     <div style={{ margin: "8px 0", padding: "8px 10px", background: "#eef4ff", borderRadius: 6, maxWidth: 640 }}>
       <div style={{ fontSize: 13, fontWeight: 600 }}>
@@ -95,6 +99,45 @@ export function PolicyList({
       <div style={{ fontSize: 11, color: "#888", margin: "2px 0 6px" }}>
         보험사나 상품명 중 하나는 있어야 저장됩니다.
       </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8, fontSize: 11, color: "#475569" }}>
+        <span>담보 보기 방식</span>
+        <button type="button" onClick={() => setCoverageViewMode("cards")} style={{ fontSize: 11, fontWeight: coverageViewMode === "cards" ? 700 : 400 }}>
+          카드 그리드
+        </button>
+        <button type="button" onClick={() => setCoverageViewMode("modal")} style={{ fontSize: 11, fontWeight: coverageViewMode === "modal" ? 700 : 400 }}>
+          팝업으로 보기
+        </button>
+      </div>
+      {modalPolicy && modalCoverages.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="계약별 담보 목록"
+          style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setModalCoverageIndex(null)}
+        >
+          <div style={{ width: "min(920px, 96vw)", maxHeight: "82vh", overflow: "auto", background: "var(--color-bg-surface)", color: "var(--color-text-primary)", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,0.25)", padding: 18 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>계약별 담보 {modalCoverages.length}건</div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3 }}>
+                  {String(modalPolicy.insurer ?? "-")} · {String(modalPolicy.product_name ?? "-")}
+                </div>
+              </div>
+              <button type="button" onClick={() => setModalCoverageIndex(null)} style={{ fontSize: 12 }}>닫기</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+              {modalCoverages.map((coverage, ci) => (
+                <div key={`${coverage.rider_name ?? "coverage"}-${ci}`} style={{ border: "1px solid var(--color-border-default)", borderRadius: 8, padding: 10, background: "var(--color-bg-base)" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>{coverage.rider_name || coverage.standard_name || "담보명 미확인"}</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>가입금액: {coverage.amount_text || (coverage.amount != null ? coverage.amount.toLocaleString() : "-")}</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>기간: {coverage.start_date || "-"} ~ {coverage.end_date || "-"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {policies.map((p, i) => (
         <div
           key={i}
@@ -152,30 +195,25 @@ export function PolicyList({
                   <span>
                     담보 원장 {p.policy_coverages.length}건 검출 · 예: {p.policy_coverages.slice(0, 3).map((c) => `${c.rider_name ?? "담보"} ${c.amount_text ?? ""}`).join(" / ")}
                   </span>
-                  <button type="button" onClick={() => setExpandedCoverageIndex(expandedCoverageIndex === i ? null : i)} style={{ fontSize: 11 }}>
-                    {expandedCoverageIndex === i ? "담보 접기" : "담보 보기"}
-                  </button>
+                  {coverageViewMode === "modal" ? (
+                    <button type="button" onClick={() => setModalCoverageIndex(i)} style={{ fontSize: 11 }}>
+                      팝업 열기
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => setExpandedCoverageIndex(expandedCoverageIndex === i ? null : i)} style={{ fontSize: 11 }}>
+                      {expandedCoverageIndex === i ? "담보 접기" : "카드 펼치기"}
+                    </button>
+                  )}
                 </div>
-                {expandedCoverageIndex === i && (
-                  <div style={{ overflowX: "auto", marginTop: 6 }}>
-                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
-                      <thead>
-                        <tr style={{ textAlign: "left", borderBottom: "1px solid #dbe4f5" }}>
-                          <th style={{ padding: 4 }}>담보명</th>
-                          <th style={{ padding: 4 }}>가입금액</th>
-                          <th style={{ padding: 4 }}>보장기간</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {p.policy_coverages.map((coverage, ci) => (
-                          <tr key={`${coverage.rider_name ?? "coverage"}-${ci}`} style={{ borderBottom: "1px solid #eef2f7" }}>
-                            <td style={{ padding: 4 }}>{coverage.rider_name || coverage.standard_name || "-"}</td>
-                            <td style={{ padding: 4 }}>{coverage.amount_text || (coverage.amount != null ? coverage.amount.toLocaleString() : "-")}</td>
-                            <td style={{ padding: 4 }}>{coverage.start_date || "-"} ~ {coverage.end_date || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {coverageViewMode === "cards" && expandedCoverageIndex === i && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 6, marginTop: 8, maxHeight: 260, overflow: "auto", paddingRight: 2 }}>
+                    {p.policy_coverages.map((coverage, ci) => (
+                      <div key={`${coverage.rider_name ?? "coverage"}-${ci}`} style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: 7, background: "#f8fafc" }}>
+                        <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 4 }}>{coverage.rider_name || coverage.standard_name || "담보명 미확인"}</div>
+                        <div>가입금액: {coverage.amount_text || (coverage.amount != null ? coverage.amount.toLocaleString() : "-")}</div>
+                        <div>기간: {coverage.start_date || "-"} ~ {coverage.end_date || "-"}</div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
