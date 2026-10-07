@@ -118,13 +118,6 @@ function parseWonAmount(value: string | null | undefined): number {
   return plain ? sign * Math.round(Number(plain[0])) : 0;
 }
 
-function statusTone(status: string): string {
-  if (status === "충분") return "sufficient";
-  if (status === "부족") return "shortage";
-  if (status === "미가입") return "uninsured";
-  return "unknown";
-}
-
 function statusIcon(status: string): string {
   if (status === "충분") return "✓";
   if (status === "부족") return "!";
@@ -271,7 +264,6 @@ export default function CoverageAnalysisScreen() {
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>(COVERAGE_TABS[0].key);
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
@@ -382,12 +374,6 @@ export default function CoverageAnalysisScreen() {
       return next;
     });
   }, [customerId, data]);
-
-  const categoriesByName = useMemo(() => {
-    const map = new Map<string, CoverageCategory>();
-    for (const category of data?.categories ?? []) map.set(category.category_group, category);
-    return map;
-  }, [data]);
 
   const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
   const filteredItems = useMemo(
@@ -604,25 +590,6 @@ export default function CoverageAnalysisScreen() {
               </button>
             ))}
           </div>
-          <div className="coverage-tabs" role="tablist" aria-label="보장 카테고리">
-            {COVERAGE_TABS.map((tab) => {
-              const category = [tab.label, ...(tab.aliases ?? [])].map((name) => categoriesByName.get(name)).find(Boolean);
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={`coverage-tab ${activeTab === tab.key ? "is-active" : ""}`}
-                  onClick={() => setActiveTab(tab.key)}
-                  role="tab"
-                  aria-selected={activeTab === tab.key}
-                >
-                  <span className={`coverage-dot coverage-dot--${statusTone(category?.status_summary ?? "확인필요")}`} />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
               <h3>보장별 상세표 전체</h3>
@@ -642,7 +609,6 @@ export default function CoverageAnalysisScreen() {
                       <th>가입금액</th>
                       <th>부족금액</th>
                       <th>상태</th>
-                      <th>출처</th>
                       <th>관리</th>
                     </tr>
                   </thead>
@@ -712,7 +678,6 @@ export default function CoverageAnalysisScreen() {
                               </>
                             )}
                           </td>
-                          <td>{item.evidence_pages?.length ? `p.${item.evidence_pages.join(", ")}` : "-"}</td>
                           <td>
                             {editing ? (
                               <div className="coverage-row-actions">
