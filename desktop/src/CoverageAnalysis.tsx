@@ -171,13 +171,25 @@ function countByStatus(items: CoverageItem[], status: string): number {
 function filterMatches(item: CoverageItem, filter: CoverageFilter): boolean {
   if (filter === "전체") return true;
   if (["부족", "미가입", "충분"].includes(filter)) return item.status === filter;
-  if (filter === "암") return item.category_group === "암";
-  if (filter === "뇌혈관") return item.category_group.includes("뇌혈관");
-  if (filter === "심장") return item.category_group.includes("심장");
-  if (filter === "수술비") return item.category_group.includes("수술");
-  if (filter === "입원비") return item.category_group.includes("입원");
-  if (filter === "운전자") return item.category_group.includes("운전자");
-  return !["암", "뇌혈관질환", "심장질환", "수술비", "입원비/일당", "입원비 / 일당", "운전자"].some((group) => item.category_group.includes(group));
+  const groupByFilter: Partial<Record<CoverageFilter, string[]>> = {
+    암: ["암"],
+    뇌혈관: ["뇌혈관질환"],
+    심장: ["심장질환"],
+    수술비: ["수술비"],
+    입원비: ["입원비/일당", "입원비 / 일당"],
+    운전자: ["운전자"],
+  };
+  const groups = groupByFilter[filter];
+  if (groups) return groups.includes(item.category_group);
+  const knownGroups = Object.values(groupByFilter).flat();
+  return !knownGroups.includes(item.category_group);
+}
+
+function tabMatches(item: CoverageItem, tabKey: string): boolean {
+  if (tabKey === "all") return true;
+  const tab = COVERAGE_TABS.find((entry) => entry.key === tabKey);
+  if (!tab) return true;
+  return item.category_id === tab.key || [tab.label, ...(tab.aliases ?? [])].includes(item.category_group);
 }
 
 function categoryStatusSummary(items: CoverageItem[]): string {
@@ -266,7 +278,7 @@ export default function CoverageAnalysisScreen() {
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>(COVERAGE_TABS[0].key);
+  const [activeTab, setActiveTab] = useState<string>("all");
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
@@ -385,7 +397,11 @@ export default function CoverageAnalysisScreen() {
   }, [data]);
 
   const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
-  const filteredItems = useMemo(() => allItems.filter((item) => filterMatches(item, coverageFilter)), [allItems, coverageFilter]);
+  const filteredItems = useMemo(
+    () => allItems.filter((item) => tabMatches(item, activeTab) && filterMatches(item, coverageFilter)),
+    [activeTab, allItems, coverageFilter],
+  );
+  const activeTabLabel = activeTab === "all" ? "전체" : COVERAGE_TABS.find((tab) => tab.key === activeTab)?.label ?? "전체";
 
   const customerSuggestions = useMemo(() => {
     const normalizedQuery = customerQuery.trim().toLowerCase();
@@ -597,6 +613,15 @@ export default function CoverageAnalysisScreen() {
             ))}
           </div>
           <div className="coverage-tabs" role="tablist" aria-label="보장 카테고리">
+            <button
+              type="button"
+              className={`coverage-tab ${activeTab === "all" ? "is-active" : ""}`}
+              onClick={() => setActiveTab("all")}
+              role="tab"
+              aria-selected={activeTab === "all"}
+            >
+              전체
+            </button>
             {COVERAGE_TABS.map((tab) => {
               const category = [tab.label, ...(tab.aliases ?? [])].map((name) => categoriesByName.get(name)).find(Boolean);
               return (
@@ -619,6 +644,7 @@ export default function CoverageAnalysisScreen() {
             <div className="coverage-table-heading">
               <h3>보장별 상세표 전체</h3>
               <span>{coverageFilter} {filteredItems.length}개</span>
+              {activeTab !== "all" && <span>{activeTabLabel}</span>}
             </div>
 
             {filteredItems.length === 0 ? (

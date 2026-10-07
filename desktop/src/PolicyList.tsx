@@ -84,6 +84,7 @@ export function PolicyList({
   onToggle: (i: number, v: boolean) => void;
   onEdit: (i: number, patch: PolicyDraft) => void;
 }) {
+  const [expandedCoverageIndex, setExpandedCoverageIndex] = useState<number | null>(null);
   if (!policies.length) return null;
   const label = docType === "보장분석" ? "보유 보험계약" : "보험계약";
   return (
@@ -146,8 +147,37 @@ export function PolicyList({
               내 계약
             </label>
             {Array.isArray(p.policy_coverages) && p.policy_coverages.length > 0 && (
-              <div style={{ flexBasis: "100%", fontSize: 11, color: "#475569", background: "#fff", border: "1px solid #dbe4f5", borderRadius: 4, padding: "4px 6px" }}>
-                담보 원장 {p.policy_coverages.length}건 검출 · 예: {p.policy_coverages.slice(0, 3).map((c) => `${c.rider_name ?? "담보"} ${c.amount_text ?? ""}`).join(" / ")}
+              <div style={{ flexBasis: "100%", fontSize: 11, color: "#475569", background: "#fff", border: "1px solid #dbe4f5", borderRadius: 4, padding: "6px 8px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span>
+                    담보 원장 {p.policy_coverages.length}건 검출 · 예: {p.policy_coverages.slice(0, 3).map((c) => `${c.rider_name ?? "담보"} ${c.amount_text ?? ""}`).join(" / ")}
+                  </span>
+                  <button type="button" onClick={() => setExpandedCoverageIndex(expandedCoverageIndex === i ? null : i)} style={{ fontSize: 11 }}>
+                    {expandedCoverageIndex === i ? "담보 접기" : "담보 보기"}
+                  </button>
+                </div>
+                {expandedCoverageIndex === i && (
+                  <div style={{ overflowX: "auto", marginTop: 6 }}>
+                    <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", borderBottom: "1px solid #dbe4f5" }}>
+                          <th style={{ padding: 4 }}>담보명</th>
+                          <th style={{ padding: 4 }}>가입금액</th>
+                          <th style={{ padding: 4 }}>보장기간</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {p.policy_coverages.map((coverage, ci) => (
+                          <tr key={`${coverage.rider_name ?? "coverage"}-${ci}`} style={{ borderBottom: "1px solid #eef2f7" }}>
+                            <td style={{ padding: 4 }}>{coverage.rider_name || coverage.standard_name || "-"}</td>
+                            <td style={{ padding: 4 }}>{coverage.amount_text || (coverage.amount != null ? coverage.amount.toLocaleString() : "-")}</td>
+                            <td style={{ padding: 4 }}>{coverage.start_date || "-"} ~ {coverage.end_date || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>

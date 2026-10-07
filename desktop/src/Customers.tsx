@@ -113,6 +113,48 @@ type Consultation = {
 
 type CustomerDetail = Customer & { policies: Policy[]; consultations: Consultation[] };
 
+function dedupPolicyCoverages(coverages: PolicyCoverage[] | undefined): PolicyCoverage[] {
+  const seen = new Set<string>();
+  const result: PolicyCoverage[] = [];
+  for (const coverage of coverages ?? []) {
+    const key = coverage.id || [coverage.policy_id, coverage.rider_name, coverage.standard_name, coverage.amount_text, coverage.start_date, coverage.end_date].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(coverage);
+  }
+  return result;
+}
+
+function dedupPolicies(policies: Policy[]): Policy[] {
+  const byId = new Map<string, Policy>();
+  const ordered: Policy[] = [];
+  for (const policy of policies) {
+    const key = policy.id || [policy.insurer, policy.product_name, policy.policy_number, policy.start_date].join("|");
+    const existing = byId.get(key);
+    if (!existing) {
+      const normalized = { ...policy, coverages: dedupPolicyCoverages(policy.coverages) };
+      byId.set(key, normalized);
+      ordered.push(normalized);
+      continue;
+    }
+    const mergedCoverages = dedupPolicyCoverages([...(existing.coverages ?? []), ...(policy.coverages ?? [])]);
+    const merged: Policy = {
+      ...existing,
+      ...Object.fromEntries(Object.entries(policy).filter(([, value]) => value !== null && value !== undefined && value !== "")),
+      coverages: mergedCoverages,
+      coverage_count: Math.max(existing.coverage_count ?? 0, policy.coverage_count ?? 0, mergedCoverages.length),
+    };
+    byId.set(key, merged);
+    const index = ordered.findIndex((item) => (item.id || [item.insurer, item.product_name, item.policy_number, item.start_date].join("|")) === key);
+    if (index >= 0) ordered[index] = merged;
+  }
+  return ordered;
+}
+
+function normalizeCustomerDetail(detail: CustomerDetail): CustomerDetail {
+  return { ...detail, policies: dedupPolicies(detail.policies ?? []) };
+}
+
 type AskResult = {
   answer: string;
   basis?: "clause" | "policy_summary" | "none";
@@ -564,7 +606,7 @@ export default function CustomersScreen({
 
   const reloadDetail = useCallback(async (id: string) => {
     const gen = ++detailGenRef.current;
-    const d: CustomerDetail = await api(`/customers/${id}`);
+    const d: CustomerDetail = normalizeCustomerDetail(await api(`/customers/${id}`));
     if (gen !== detailGenRef.current) return null;
     setDetail(d);
     return d;
@@ -2001,7 +2043,7 @@ function PoliciesSection({
     whiteSpace: "nowrap" as const,
     overflow: "hidden",
     textOverflow: "ellipsis",
-    borderRight: "1px solid var(--color-border-default)",
+    borderRight: "1px solid #eee",
   };
   const policyLastCellStyle = { ...policyCellStyle, borderRight: "none" };
   const policyBadgeStyle = { marginLeft: 6, fontSize: 11, borderRadius: 4, padding: "1px 5px" };
@@ -2016,15 +2058,15 @@ function PoliciesSection({
         </span>
       </h3>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 700 }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, tableLayout: "fixed", width: "100%", minWidth: 700 }}>
           <colgroup>
+            <col style={{ width: 120 }} />
+            <col style={{ width: "auto" }} />
             <col style={{ width: 130 }} />
-            <col style={{ minWidth: 140 }} />
-            <col style={{ width: 110 }} />
-            <col style={{ width: 90 }} />
+            <col style={{ width: 100 }} />
             <col style={{ width: 140 }} />
-            <col style={{ width: 80 }} />
-            <col style={{ width: 180 }} />
+            <col style={{ width: 90 }} />
+            <col style={{ width: 200 }} />
           </colgroup>
           <thead>
             <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
