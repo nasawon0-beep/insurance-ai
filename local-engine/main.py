@@ -26,6 +26,7 @@ import os
 import threading
 import urllib.request
 import json
+from collections import defaultdict, deque
 
 from parser import router as parser_router
 from rag import router as rag_router
@@ -59,6 +60,25 @@ _MAINT_STATUS = {
     "backup": {"state": "pending"}, "usage_prune": {"state": "pending"},
     "audit_prune": {"state": "pending"},
 }
+_COVERAGE_PROGRESS_LOCK = threading.Lock()
+_COVERAGE_PROGRESS: dict[str, deque[dict]] = defaultdict(lambda: deque(maxlen=200))
+
+
+def _record_coverage_progress(customer_id: str, payload: dict):
+    event = {"ts": _utcnow_iso(), **payload}
+    with _COVERAGE_PROGRESS_LOCK:
+        _COVERAGE_PROGRESS[customer_id].append(event)
+
+
+def _coverage_progress_snapshot(customer_id: str) -> dict:
+    with _COVERAGE_PROGRESS_LOCK:
+        events = list(_COVERAGE_PROGRESS.get(customer_id, []))
+    return {
+        "customer_id": customer_id,
+        "latest": events[-1] if events else None,
+        "events": events[-50:],
+        "count": len(events),
+    }
 
 
 def _resource_path(name: str) -> Path:
@@ -270,6 +290,8 @@ async def recalculate_coverage_analysis(
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     body = body or {}
     mode = body.get("mode") or "full"
+    with _COVERAGE_PROGRESS_LOCK:
+        _COVERAGE_PROGRESS[customer_id].clear()
     result = coverage.analyze(
         conn,
         customer_id,
@@ -278,6 +300,7 @@ async def recalculate_coverage_analysis(
         force_recalculate=bool(body.get("force", True)),
         profile=body.get("profile") or {},
         mode=mode,
+        progress_callback=lambda payload: _record_coverage_progress(customer_id, payload),
     )
     if result is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
@@ -296,6 +319,11 @@ async def recalculate_coverage_analysis(
             "result": f"/customers/{customer_id}/coverage-analysis?run_id={run_id}"
         },
     }
+
+
+@app.get("/customers/{customer_id}/coverage-analysis/progress")
+async def coverage_analysis_progress(customer_id: str):
+    return _coverage_progress_snapshot(customer_id)
 
 app.include_router(parser_router)
 app.include_router(rag_router)

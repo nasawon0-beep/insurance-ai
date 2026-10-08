@@ -473,11 +473,38 @@ function CapturePanel({
 
   const recalculateCoverageIfNeeded = async (cid: string, row: any) => {
     if (row.doc_type !== "보장분석") return false;
-    await api(`/customers/${cid}/coverage-analysis/recalculate`, {
-      method: "POST",
-      body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
-    });
-    return true;
+    setPhase("보장분석 준비 중…");
+    onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message: "보장분석 준비 중…" });
+    let done = false;
+    const pollProgress = async () => {
+      while (!done) {
+        try {
+          const progress = await api(`/customers/${cid}/coverage-analysis/progress`, { method: "GET" });
+          const latest = progress?.latest;
+          if (latest?.message) {
+            const count = latest.current && latest.total ? ` (${latest.current}/${latest.total})` : "";
+            const message = `${latest.message}${count}`;
+            setPhase(message);
+            onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message });
+          }
+        } catch {
+          // 진행률 조회 실패는 분석 자체를 중단하지 않는다.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+      }
+    };
+    const polling = pollProgress();
+    try {
+      await api(`/customers/${cid}/coverage-analysis/recalculate`, {
+        method: "POST",
+        body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
+      });
+      onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "done", message: "보장분석 완료" });
+      return true;
+    } finally {
+      done = true;
+      await polling.catch(() => undefined);
+    }
   };
 
   const run = async () => {

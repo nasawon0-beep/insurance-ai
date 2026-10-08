@@ -8,15 +8,16 @@ CRM 보장분석.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
-import os
 import re
 import sqlite3
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from rag import search as rag_search
 
@@ -28,6 +29,57 @@ ANALYZER_VERSION = "2026-09-25"
 MIN_SCORE_KEEP = 0.15
 TOP_K_PER_SUBCOVERAGE = 3
 _EXCLUDED_MVP_SUBCOVERAGES: set[str] = set()
+logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _analysis_log_path(customer_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(customer_id or "unknown"))
+    path = Path(__file__).resolve().parents[1] / "logs" / f"coverage_analysis_{safe_id}.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _append_analysis_log(customer_id: str, event: str, **fields: Any) -> None:
+    payload = {"ts": datetime.now().isoformat(timespec="milliseconds"), "event": event, **fields}
+    line = json.dumps(payload, ensure_ascii=False, default=str)
+    try:
+        with _analysis_log_path(customer_id).open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        logger.exception("coverage analysis log write failed: customer_id=%s event=%s", customer_id, event)
+    logger.info("coverage_analysis %s", line)
+
+
+def _emit_progress(
+    customer_id: str,
+    callback: ProgressCallback | None,
+    step: str,
+    message: str,
+    *,
+    status: str = "running",
+    current: int | None = None,
+    total: int | None = None,
+    elapsed_ms: int | None = None,
+    **fields: Any,
+) -> None:
+    payload: dict[str, Any] = {
+        "customer_id": customer_id,
+        "step": step,
+        "message": message,
+        "status": status,
+        "current": current,
+        "total": total,
+        "elapsed_ms": elapsed_ms,
+        **fields,
+    }
+    log_fields = {k: v for k, v in payload.items() if v is not None and k != "customer_id"}
+    _append_analysis_log(customer_id, step, **log_fields)
+    if callback:
+        try:
+            callback({k: v for k, v in payload.items() if v is not None})
+        except Exception:
+            logger.exception("coverage progress callback failed: customer_id=%s step=%s", customer_id, step)
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -485,15 +537,36 @@ def _calculate_priority(
     return score, priority
 
 
-def _gather_evidence_v2(doc_ids: list[str], catalog: list[dict[str, Any]] | None = None) -> dict[str, list[dict[str, Any]]]:
+def _gather_evidence_v2(
+    doc_ids: list[str],
+    catalog: list[dict[str, Any]] | None = None,
+    *,
+    customer_id: str = "unknown",
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     if not doc_ids:
+        _emit_progress(customer_id, progress_callback, "rag_search_skipped", "RAG 검색 생략: 연결된 문서가 없습니다.", status="completed")
         return {}
     by_key: dict[str, list[dict[str, Any]]] = {}
-    for item in catalog or _COVERAGE_CATALOG:
+    rows = catalog or _COVERAGE_CATALOG
+    started = time.perf_counter()
+    _emit_progress(
+        customer_id,
+        progress_callback,
+        "rag_search_start",
+        f"RAG 근거 검색 시작 (0/{len(rows)})",
+        current=0,
+        total=len(rows),
+        doc_ids=doc_ids,
+    )
+    for idx, item in enumerate(rows, start=1):
+        item_started = time.perf_counter()
         try:
             hits = rag_search(item["primary_query"], top_k=TOP_K_PER_SUBCOVERAGE, doc_ids=doc_ids).get("hits", [])
-        except Exception:
+            rag_error = None
+        except Exception as exc:
             hits = []
+            rag_error = str(exc)
         filtered: list[dict[str, Any]] = []
         for h in hits:
             text = h.get("text") or ""
@@ -517,6 +590,30 @@ def _gather_evidence_v2(doc_ids: list[str], catalog: list[dict[str, Any]] | None
             filtered.append(row)
         filtered.sort(key=lambda r: r.get("adjusted_score", 0), reverse=True)
         by_key[f"{item['category_group']}::{item['coverage_name']}"] = filtered[:TOP_K_PER_SUBCOVERAGE]
+        elapsed_ms = int((time.perf_counter() - item_started) * 1000)
+        _emit_progress(
+            customer_id,
+            progress_callback,
+            "rag_search_item",
+            f"RAG 검색 중 ({idx}/{len(rows)}) {item['coverage_name']}",
+            current=idx,
+            total=len(rows),
+            elapsed_ms=elapsed_ms,
+            coverage_name=item["coverage_name"],
+            hit_count=len(hits),
+            kept_count=len(filtered[:TOP_K_PER_SUBCOVERAGE]),
+            error=rag_error,
+        )
+    _emit_progress(
+        customer_id,
+        progress_callback,
+        "rag_search_complete",
+        f"RAG 근거 검색 완료 ({len(rows)}개)",
+        status="completed",
+        current=len(rows),
+        total=len(rows),
+        elapsed_ms=int((time.perf_counter() - started) * 1000),
+    )
     return by_key
 
 
@@ -571,10 +668,25 @@ def _list_customer_policy_coverages(conn: sqlite3.Connection, customer_id: str) 
     return [dict(r) for r in rows]
 
 
-def _build_items(policies: list[dict[str, Any]], doc_ids: list[str], profile: dict[str, Any], coverages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    evidence_by_key = _gather_evidence_v2(doc_ids, _COVERAGE_CATALOG)
+def _build_items(
+    policies: list[dict[str, Any]],
+    doc_ids: list[str],
+    profile: dict[str, Any],
+    coverages: list[dict[str, Any]] | None = None,
+    *,
+    customer_id: str = "unknown",
+    progress_callback: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
+    evidence_by_key = _gather_evidence_v2(
+        doc_ids,
+        _COVERAGE_CATALOG,
+        customer_id=customer_id,
+        progress_callback=progress_callback,
+    )
     items: list[dict[str, Any]] = []
-    for item in _COVERAGE_CATALOG:
+    build_started = time.perf_counter()
+    total = len(_COVERAGE_CATALOG)
+    for idx, item in enumerate(_COVERAGE_CATALOG, start=1):
         current, matched_policy_ids = _extract_current_amount(item, policies, coverages)
         key = f"{item['category_group']}::{item['coverage_name']}"
         evidence = evidence_by_key.get(key, [])
@@ -594,6 +706,15 @@ def _build_items(policies: list[dict[str, Any]], doc_ids: list[str], profile: di
             "evidence": evidence,
             "matched_policy_ids": matched_policy_ids,
         })
+        if idx == 1 or idx == total or idx % 10 == 0:
+            _emit_progress(
+                customer_id,
+                progress_callback,
+                "coverage_item",
+                f"보장분석 중 ({idx}/{total}) {item['coverage_name']}",
+                current=idx,
+                total=total,
+            )
     context = {"core_diagnosis_has_gap": _core_diagnosis_has_gap(items)}
     for row in items:
         score, priority = _calculate_priority(row, row["status"], row["gap_ratio"], profile, context)
@@ -602,6 +723,16 @@ def _build_items(policies: list[dict[str, Any]], doc_ids: list[str], profile: di
         row["customer_display"] = 0 if priority == "표시제외" else 1
         row["customer_summary"] = _customer_summary(row["coverage_name"], row["status"], row["recommended_amount"], row["current_amount"], row["gap_amount"])
         row["internal_memo"] = _internal_memo(row, row["status"], row["evidence_confidence"])
+    _emit_progress(
+        customer_id,
+        progress_callback,
+        "coverage_items_complete",
+        f"보장분석 계산 완료 ({len(items)}개)",
+        status="completed",
+        current=len(items),
+        total=len(items),
+        elapsed_ms=int((time.perf_counter() - build_started) * 1000),
+    )
     return items
 
 
@@ -671,17 +802,43 @@ def analyze(
     catalog_path: str | None = None,
     profile: dict[str, Any] | None = None,
     mode: str = "full",
+    progress_callback: ProgressCallback | None = None,
 ) -> Optional[dict[str, Any]]:
+    total_started = time.perf_counter()
+    _emit_progress(customer_id, progress_callback, "analysis_start", "보장분석 시작", source="coverage.analyze")
     if repo.get_customer(conn, customer_id) is None:
+        _emit_progress(customer_id, progress_callback, "analysis_failed", "고객을 찾을 수 없습니다.", status="failed")
         return None
+    step_started = time.perf_counter()
     ensure_schema(conn)
+    _emit_progress(customer_id, progress_callback, "schema_ready", "보장분석 DB 스키마 확인 완료", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000))
+    step_started = time.perf_counter()
     policies = repo.list_policies(conn, customer_id)
+    _emit_progress(customer_id, progress_callback, "policies_loaded", f"계약 목록 로드 완료 ({len(policies)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_count=len(policies))
+    step_started = time.perf_counter()
     coverages = _list_customer_policy_coverages(conn, customer_id)
+    _emit_progress(customer_id, progress_callback, "policy_coverages_loaded", f"담보 원장 로드 완료 ({len(coverages)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_coverage_count=len(coverages))
+    step_started = time.perf_counter()
     doc_ids = repo.customer_document_ids(conn, customer_id)
+    _emit_progress(customer_id, progress_callback, "documents_loaded", f"RAG 문서 목록 로드 완료 ({len(doc_ids)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), doc_count=len(doc_ids), doc_ids=doc_ids)
     profile = profile or {}
-    items = _build_items(policies, doc_ids, profile, coverages)
-    run_id = _persist_run(conn, customer_id, items, profile, mode) if persist else None
+    items = _build_items(
+        policies,
+        doc_ids,
+        profile,
+        coverages,
+        customer_id=customer_id,
+        progress_callback=progress_callback,
+    )
+    if persist:
+        step_started = time.perf_counter()
+        _emit_progress(customer_id, progress_callback, "persist_start", "보장분석 결과 DB 저장 시작")
+        run_id = _persist_run(conn, customer_id, items, profile, mode)
+        _emit_progress(customer_id, progress_callback, "persist_complete", "보장분석 결과 DB 저장 완료", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), run_id=run_id)
+    else:
+        run_id = None
     summary_customer, summary_internal = _summary(items, audience=audience)
+    _emit_progress(customer_id, progress_callback, "analysis_complete", "보장분석 완료", status="completed", elapsed_ms=int((time.perf_counter() - total_started) * 1000), run_id=run_id, item_count=len(items))
     return {
         "overall": summary_customer,
         "categories": _legacy_categories(items),
