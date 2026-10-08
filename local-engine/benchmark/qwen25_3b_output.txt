@@ -1,0 +1,62 @@
+{
+  "items": [
+    {
+      "coverage_name": "일반암 진단비",
+      "current_amount": 30000000,
+      "recommended_amount": 50000000,
+      "status": "부족",
+      "reason": "현재 보장액이 권장 보장액(50,000,000원)보다 20,000,000원(3[2D[K
+(30,000,000원 - 50,000,000원)이 적다"
+    },
+    {
+      "coverage_name": "유사암 진단비",
+      "current_amount": 5000000,
+      "recommended_amount": 10000000,
+      "status": "부족",
+      "reason": "현재 보장액이 권장 보장액(10,000,000원)보다 5,000,000원(5,[3D[K
+(5,000,000원 - 10,000,000원)이 적다"
+    },
+    {
+      "coverage_name": "뇌혈관질환 진단비",
+      "current_amount": 10000000,
+      "recommended_amount": 20000000,
+      "status": "부족",
+      "reason": "현재 보장액이 권장 보장액(20,000,000원)보다 10,000,000원(1[2D[K
+(10,000,000원 - 20,000,000원)이 적다"
+    },
+    {
+      "coverage_name": "허혈성심장질환 진단비",
+      "current_amount": 10000000,
+      "recommended_amount": 20000000,
+      "status": "부족",
+      "reason": "현재 보장액이 권장 보장액(20,000,000원)보다 10,000,000원(1[2D[K
+(10,000,000원 - 20,000,000원)이 적다"
+    },
+    {
+      "coverage_name": "질병입원일당",
+      "current_amount": 30000,
+      "recommended_amount": 50000000,
+      "status": "미가입",
+      "reason": "현재 보장액이 권장 보장액(50,000,000원)보다 49,700,000원(5[2D[K
+(50,000,000원 - 30,000원)이 적다"
+    },
+    {
+      "coverage_name": "상해입원일당",
+      "current_amount": 30000,
+      "recommended_amount": 50000000,
+      "status": "미가입",
+      "reason": "현재 보장액이 권장 보장액(50,000,000원)보다 49,700,000원(5[2D[K
+(50,000,000원 - 30,000원)이 적다"
+    },
+    {
+      "coverage_name": "운전자 벌금",
+      "current_amount": 20000000,
+      "recommended_amount": 20000000,
+      "status": "충분",
+      "reason": "현재 보장액이 권장 보장액(20,000,000원)과 동일하다"
+    }
+  ],
+  "top_recommendations": ["일반암 진단비", "유사암 진단비", "뇌혈관질환 진단[K
+비"]
+}
+

@@ -1,0 +1,57 @@
+```json
+{
+  "items": [
+    {
+      "coverage_name": "일반암 진단비",
+      "current_amount": 30000000,
+      "recommended_amount": 50000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "유사암 진단비",
+      "current_amount": 5000000,
+      "recommended_amount": 10000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "뇌혈관질환 진단비",
+      "current_amount": 10000000,
+      "recommended_amount": 20000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "허혈성심장질환 진단비",
+      "current_amount": 10000000,
+      "recommended_amount": 20000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "질병입원일당",
+      "current_amount": 30000,
+      "recommended_amount": 50000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "상해입원일당",
+      "current_amount": 30000,
+      "recommended_amount": 50000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    },
+    {
+      "coverage_name": "운전자 벌금",
+      "current_amount": 20000000,
+      "recommended_amount": 20000000,
+      "status": "부족",
+      "reason": "현재보장액이 권장액보다 작습니다."
+    }
+  ],
+  "top_recommendations": ["우선순위 1", "우선순위 2", "우선순위 3"]
+}
+```
+
