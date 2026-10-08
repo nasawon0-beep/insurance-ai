@@ -723,6 +723,42 @@ def _build_items(
         row["customer_display"] = 0 if priority == "표시제외" else 1
         row["customer_summary"] = _customer_summary(row["coverage_name"], row["status"], row["recommended_amount"], row["current_amount"], row["gap_amount"])
         row["internal_memo"] = _internal_memo(row, row["status"], row["evidence_confidence"])
+
+    explanation_started = time.perf_counter()
+    _emit_progress(
+        customer_id,
+        progress_callback,
+        "llm_explanations_start",
+        "고객 설명문 생성 시작",
+        current=0,
+        total=len(items),
+    )
+    try:
+        from llm.local_llm import generate_coverage_explanations, model_status
+
+        explanations = generate_coverage_explanations(items)
+        llm_status = model_status()
+        source = "local_llm" if llm_status.get("loaded") else "template"
+    except Exception as exc:
+        logger.info("coverage explanation template fallback: %s", exc)
+        explanations = [
+            _customer_summary(row["coverage_name"], row["status"], row["recommended_amount"], row["current_amount"], row["gap_amount"])
+            for row in items
+        ]
+        source = "template"
+    for row, explanation in zip(items, explanations):
+        row["customer_summary"] = explanation
+    _emit_progress(
+        customer_id,
+        progress_callback,
+        "llm_explanations_complete",
+        f"고객 설명문 생성 완료 ({source})",
+        status="completed",
+        current=len(items),
+        total=len(items),
+        elapsed_ms=int((time.perf_counter() - explanation_started) * 1000),
+        source=source,
+    )
     _emit_progress(
         customer_id,
         progress_callback,
