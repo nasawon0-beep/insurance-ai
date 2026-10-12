@@ -1074,12 +1074,79 @@ def _short_form_title_name(text: str) -> Optional[str]:
 
 
 def _short_form_issued_date(text: str) -> Optional[str]:
-    m = re.search(r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})", text or "")
+    # 생년월일(예: 2004.10.22)을 보장분석일자로 오인하지 않도록 라벨이 붙은 날짜를 우선한다.
+    m = re.search(r"(?:보장분석일자|출력\s*이전|작성일자?|분석일자)[^0-9]{0,20}(20\d{2})[-./](\d{1,2})[-./](\d{1,2})", text or "")
+    if not m:
+        for cand in re.finditer(r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})", text or ""):
+            # 라벨 없는 2004.10.22 같은 고객 생년월일은 발행일 후보에서 제외한다.
+            if 2020 <= int(cand.group(1)) <= date.today().year + 1:
+                m = cand
+                break
     return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
 
 
 def _has_short_form_summary_coverages(rows: list[dict]) -> bool:
     return sum(1 for r in rows if r.get("insurer") == "알 수 없음" and r.get("product_name") == "보장분석 요약") >= 30
+
+
+_SHORT_CUSTOMER_BIRTH_RE = re.compile(
+    r"(?P<gender>[남여])\s*(?P<age>\d{1,3})\s*세[^\n0-9]{0,12}"
+    r"(?P<year>19\d{2}|20\d{2})[./-](?P<month>\d{1,2})[./-](?P<day>\d{1,2})"
+)
+_SHORT_ANY_DATE_RE = re.compile(r"(19\d{2}|20\d{2})[./-](\d{1,2})[./-](\d{1,2})")
+_BIRTH_EXCLUDE_LABELS = (
+    "보장분석일자", "분석일자", "작성일", "작성일자", "출력", "조회", "기준일", "컨설턴트", "GA2-",
+)
+
+
+def _valid_birth_year(year: int) -> bool:
+    return 1950 <= year <= 2010
+
+
+def _birth_age_matches(year: int, age: Optional[int], issued: Optional[str]) -> bool:
+    if age is None:
+        return True
+    if issued and re.match(r"\d{4}-\d{2}-\d{2}", issued):
+        ref_y = int(issued[:4])
+    else:
+        ref_y = date.today().year
+    return abs((ref_y - year) - age) <= 5
+
+
+def _birth_from_short_form_text(doc_text: str, issued: Optional[str] = None) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    """간편/보장분석서 고객 헤더에서 생년월일·성별·나이를 규칙 기반으로 추출한다.
+
+    최우선 패턴: "남 22세 · 2004.10.22". 문서 상단의 "보장분석일자 2026.09.23" 같은
+    최근 날짜는 생년월일 후보에서 제외한다.
+    """
+    text = doc_text or ""
+    for m in _SHORT_CUSTOMER_BIRTH_RE.finditer(text):
+        year, month, day = int(m.group("year")), int(m.group("month")), int(m.group("day"))
+        age = int(m.group("age"))
+        if _valid_birth_year(year) and _birth_age_matches(year, age, issued):
+            gender = "M" if m.group("gender") == "남" else "F"
+            return f"{year:04d}-{month:02d}-{day:02d}", gender, age
+
+    # 폴백: 생년/주민 라벨 또는 나이 라인이 있는 날짜만 후보화한다. 보장분석일자/출력일자는 제외.
+    for line in text.splitlines():
+        explicit_birth_line = any(k in line for k in ("생년", "주민"))
+        age_m = re.search(r"(?:만\s*)?(\d{1,3})\s*세", line)
+        if not explicit_birth_line and not age_m:
+            continue
+        if any(label in line for label in _BIRTH_EXCLUDE_LABELS):
+            continue
+        for m in _SHORT_ANY_DATE_RE.finditer(line):
+            year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            age = int(age_m.group(1)) if age_m else None
+            if not _valid_birth_year(year) or not _birth_age_matches(year, age, issued):
+                continue
+            gender = None
+            if re.search(r"(?:^|[\s(·,])남(?:[\s)·,]|$)", line):
+                gender = "M"
+            elif re.search(r"(?:^|[\s(·,])여(?:[\s)·,]|$)", line):
+                gender = "F"
+            return f"{year:04d}-{month:02d}-{day:02d}", gender, age
+    return None, None, None
 
 
 def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optional[str] = None) -> tuple[dict, list[str]]:
@@ -1101,21 +1168,11 @@ def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optio
             fields["gender"] = "F"
         elif re.search(r"(?:^|[\s(·,])남\s*\d{1,3}\s*세", doc_text):
             fields["gender"] = "M"
-    for line in doc_text.splitlines():
-        explicit_birth_line = any(k in line for k in ("생년", "주민"))
-        age_m = re.search(r"(?:만\s*)?(\d{2})\s*세", line)
-        if not explicit_birth_line and not age_m:
-            continue
-        m = re.search(r"(19\d{2}|20\d{2})[./-](\d{1,2})[./-](\d{1,2})", line)
-        if not m or int(m.group(1)) > date.today().year - 15:
-            continue
-        if age_m and not explicit_birth_line:
-            doc_age = int(age_m.group(1))
-            date_age = date.today().year - int(m.group(1))
-            if abs(date_age - doc_age) > 5:
-                continue
-        fields["birth_date"] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-        break
+    birth_date, detected_gender, _detected_age = _birth_from_short_form_text(doc_text, issued)
+    if birth_date:
+        fields["birth_date"] = birth_date
+    if detected_gender:
+        fields["gender"] = detected_gender
     warns: list[str] = []
     if not fields.get("name"):
         warns.append("이름을 찾지 못했습니다. 직접 입력하세요.")

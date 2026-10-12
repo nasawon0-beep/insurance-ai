@@ -728,6 +728,26 @@ def test_capture_bojang_analysis_multi_policy(client, monkeypatch):
     assert _json.loads(saved["coverage_json"])[1]["name"] == "일반암 진단비"
 
 
+def test_capture_bojang_analysis_customer_info_from_page3(client, monkeypatch):
+    """보장분석일자(2026)를 생년월일로 오인하지 않고 3페이지 고객 헤더를 우선한다."""
+    pages = [
+        (1, "최*환 고객님의보장분석 제안서\n보장분석일자 2026.09.23"),
+        (2, "최*환 고객님을 위한 간편보장분석\n보장현황 미가입 부족 충분"),
+        (3, "전체현황\n최*환 고객님 남 22세 · 2004.10.22 · 상령일 04월22일\n보유계약 리스트"),
+    ]
+    monkeypatch.setattr(_router_mod, "_pdf_extract_text_pages", lambda data: pages)
+    monkeypatch.setattr(_router_mod.policy_coverages, "parse_policy_coverages_from_pages", lambda *a, **k: [])
+
+    b = client.post(
+        "/capture",
+        files={"file": ("260923_M보장분석_최지환님.pdf", b"%PDF x", "application/pdf")},
+    ).json()
+    it = b["items"][0]
+    assert it["fields"]["name"] == "최지환"
+    assert it["fields"]["birth_date"] == "2004-10-22"
+    assert it["fields"]["gender"] == "M"
+
+
 def test_bojang_analysis_without_detail_table_is_review_only(client, monkeypatch):
     """보장별 상세표가 없는 보장분석서는 coverage_json 자동 저장 대상이 아니다."""
     doc = (
