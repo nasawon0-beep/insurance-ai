@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 import pdfplumber
+import pdf_oxide
+
+
+_TABLE_HINTS = (
+    "담보", "보험", "계약", "보험료", "가입금액", "납입", "만기", "보장",
+    "특약", "상품명", "증권번호", "피보험자", "계약자", "합계", "구분",
+)
 
 
 @dataclass
@@ -52,10 +59,24 @@ def _clean(text: str | None) -> str:
     return "\n".join(lines).strip()
 
 
+def _may_have_table(text: str) -> bool:
+    """무거운 pdfplumber 표 추출을 후보 페이지로 제한한다."""
+    if not text:
+        return False
+    if any(hint in text for hint in _TABLE_HINTS):
+        return True
+    # 표형 PDF는 셀 사이 공백/탭이 반복되는 경우가 많다.
+    return any("\t" in line or "  " in line for line in text.splitlines())
+
+
 def parse_pdf_bytes(data: bytes, filename: str = "document.pdf") -> ParsedDoc:
     """PDF 바이트 → ParsedDoc. 업로드 스트림을 그대로 넘길 때 사용."""
     pages: list[ParsedPage] = []
     pdf_meta: dict[str, Any] = {}
+
+    # PDF Oxide로 텍스트 추출 (pdfplumber 대비 훨씬 빠름).
+    pdf_doc = pdf_oxide.PdfDocument.from_bytes(data)
+    page_texts = [_clean(pdf_doc.extract_text(page_num)) for page_num in range(pdf_doc.page_count)]
 
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         raw_meta = pdf.metadata or {}
@@ -63,8 +84,9 @@ def parse_pdf_bytes(data: bytes, filename: str = "document.pdf") -> ParsedDoc:
         pdf_meta = {k: str(v) for k, v in raw_meta.items() if v is not None}
 
         for i, page in enumerate(pdf.pages, start=1):
-            text = _clean(page.extract_text())
-            tables = page.extract_tables() or []
+            text = page_texts[i - 1] if i <= len(page_texts) else ""
+            # 표 추출은 pdfplumber 유지. 단, 텍스트 기반 후보 페이지에만 적용해 병목을 줄인다.
+            tables = (page.extract_tables() or []) if _may_have_table(text) else []
             pages.append(
                 ParsedPage(
                     page=i,

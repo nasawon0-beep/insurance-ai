@@ -32,6 +32,11 @@ _DETAIL_ROW_RE = re.compile(
     r"(?P<rest>.+?)\s+(?P<amount>\d[\d,]*(?:\.\d+)?\s*(?:억|천|백|십)?\s*만|\d[\d,]*\s*원|\d[\d,]*)\s+"
     r"(?P<start>\d{4}[-.]\d{2}[-.]\d{2})\s+(?P<end>\d{4}[-.]\d{2}[-.]\d{2})$"
 )
+_KNOWN_INSURERS = (
+    "삼성화재", "메리츠화재", "메리츠", "한화생명", "한화손보", "현대해상", "KB손보",
+    "DB손보", "ABL생명", "흥국화재", "하나손보", "MG손보", "라이나생명",
+    "신한라이프생명", "흥국생명", "교보생명", "삼성생명", "NH농협생명",
+)
 
 _SHORT_FORM_STANDARD_NAMES = {
     "상해사망": "상해사망",
@@ -158,10 +163,21 @@ def _split_company_standard(body: str) -> tuple[str, str]:
 
 def _policy_from_appendix_page(lines: list[str]) -> dict:
     insurer = product = start = end = premium = None
-    for i, line in enumerate(lines[:8]):
-        if i == 1 and line.strip() not in {"가입담보명 및 가입금액 (단위 : 원)", "NO 구분 회사 담보명 신정원 담보명 가입금액"}:
+    for i, line in enumerate(lines):
+        # pdfplumber는 보험사/상품명을 별도 줄로 주지만, PDF Oxide는 같은 줄로 붙여 줄 수 있다.
+        if not insurer and line in _KNOWN_INSURERS:
+            insurer = line
+            if i + 1 < len(lines) and "계약자" not in lines[i + 1] and "가입담보" not in lines[i + 1]:
+                product = lines[i + 1].strip()
+        if not insurer:
+            for known in sorted(_KNOWN_INSURERS, key=len, reverse=True):
+                if line.startswith(known) and len(line) > len(known):
+                    insurer = known
+                    product = line[len(known):].strip() or product
+                    break
+        if not insurer and i == 1 and "상품별보험가입현황" not in compact(line) and line.strip() not in {"가입담보명 및 가입금액 (단위 : 원)", "NO 구분 회사 담보명 신정원 담보명 가입금액"}:
             insurer = line.strip()
-        if i == 2 and "NO 구분" not in line:
+        if insurer and not product and i == 2 and "NO 구분" not in line:
             product = line.strip()
         if "보험기간" in line:
             dates = _DATE_RE.findall(line)
@@ -178,11 +194,12 @@ def _parse_appendix_pages(pages: list[tuple[int, str]], source_file_name: str | 
     current_policy: dict = {}
     for page_no, text in pages:
         lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-        if "별첨 상품별 보험가입현황" in text or "상품별 가입담보상세" in text:
+        compact_text = compact(text)
+        if "별첨상품별보험가입현황" in compact_text or "상품별가입담보상세" in compact_text:
             pol = _policy_from_appendix_page(lines)
             if pol.get("insurer") or pol.get("product_name"):
                 current_policy = pol
-        if "가입담보명 및 가입금액" not in text and "상품별 가입담보상세" not in text:
+        if "가입담보명및가입금액" not in compact_text and "상품별가입담보상세" not in compact_text:
             continue
         for line in lines:
             m = _ROW_RE.match(line)
