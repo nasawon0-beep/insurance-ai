@@ -25,15 +25,18 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from . import policy_coverages, repo
+from utils.ollama_helper import get_configured_ollama_model, get_ollama_base_url
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE = get_ollama_base_url()
 # 문의 답변은 조회·문장화라 작은 모델로. 없으면 인테이크와 같은 모델.
 LLM_MODEL = os.environ.get(
     "ASSISTANT_LLM_MODEL", os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
 )
-SUMMARY_LLM_MODEL = os.environ.get("ASSISTANT_SUMMARY_LLM_MODEL", "qwen2.5:3b")
+SUMMARY_LLM_MODEL = os.environ.get(
+    "ASSISTANT_SUMMARY_LLM_MODEL", os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+)
 COMPLEX_LLM_MODEL = os.environ.get(
     "ASSISTANT_COMPLEX_LLM_MODEL", os.environ.get("ASSISTANT_LLM_MODEL", "qwen2.5:7b")
 )
@@ -75,6 +78,14 @@ def _ollama_options() -> dict[str, int | float]:
     if NUM_THREAD:
         options["num_thread"] = NUM_THREAD
     return options
+
+
+def _resolve_assistant_model(env_var: str, default_model: str, *, preferred: Optional[str] = None) -> str:
+    return get_configured_ollama_model(
+        env_var,
+        preferred=preferred or default_model or "qwen2.5:7b",
+        fallback=default_model or "qwen2.5:7b",
+    )
 
 _MEMO_CAP = 200
 _HISTORY_TURNS = 6
@@ -961,7 +972,11 @@ def answer(
     # 고객 상세 화면에서는 고객명 휴리스틱보다 customer_id 지정 DB 질문을 우선한다.
     if customer_id and _has_any_keyword(question, _DB_QUESTION_KEYWORDS) and routing_type != "rag":
         routing_type = "db_direct"
-    model = model or (SUMMARY_LLM_MODEL if routing_type == "summarize" else COMPLEX_LLM_MODEL)
+    if model is None:
+        if routing_type == "summarize":
+            model = _resolve_assistant_model("ASSISTANT_SUMMARY_LLM_MODEL", SUMMARY_LLM_MODEL, preferred="qwen2.5:3b")
+        else:
+            model = _resolve_assistant_model("ASSISTANT_COMPLEX_LLM_MODEL", COMPLEX_LLM_MODEL)
     own_only = _is_own_only_question(question)
 
     if routing_type == "rag":

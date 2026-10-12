@@ -1,7 +1,7 @@
 """
 AI 기반 CSV 컬럼/행 분류기.
 
-Ollama qwen2.5:3b를 사용하여:
+Ollama 로컬 모델을 사용하여:
 1. CSV 컬럼 헤더를 고객 필드로 자동 매핑
 2. 행 데이터에서 필드 추출
 
@@ -22,12 +22,16 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from .prompts import classify, extract_consultation, extract_customer, extract_policy
+from utils.ollama_helper import get_configured_ollama_model, get_ollama_base_url
 
 
 # Ollama 설정
-OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_BASE_URL = get_ollama_base_url()
 OLLAMA_TIMEOUT = 10.0
+
+
+def _ollama_model() -> str:
+    return get_configured_ollama_model("OLLAMA_MODEL", preferred="qwen2.5:3b", fallback="qwen2.5:7b")
 
 INSURER_KEYWORDS = (
     "삼성생명", "삼성화재", "kb", "kb손해보험", "현대해상", "한화생명",
@@ -270,7 +274,7 @@ async def classify_column_ai(column_name: str) -> Optional[dict]:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": _ollama_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {
@@ -387,7 +391,7 @@ async def extract_customer_ai(row_data: list) -> Optional[dict]:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": _ollama_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {
@@ -420,7 +424,7 @@ async def classify_row_ai(row_data: list, row_index: int = 0) -> Optional[dict]:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": _ollama_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 150},
@@ -449,7 +453,7 @@ async def extract_policy_ai(row_data: list) -> Optional[dict]:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": _ollama_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 300},
@@ -472,7 +476,7 @@ async def extract_consultation_ai(row_data: list) -> Optional[dict]:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": _ollama_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.1, "top_p": 0.9, "num_predict": 300},
