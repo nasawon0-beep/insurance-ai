@@ -33,6 +33,47 @@ _DETAIL_ROW_RE = re.compile(
     r"(?P<start>\d{4}[-.]\d{2}[-.]\d{2})\s+(?P<end>\d{4}[-.]\d{2}[-.]\d{2})$"
 )
 
+_SHORT_FORM_STANDARD_NAMES = {
+    "상해사망": "상해사망",
+    "질병사망": "질병사망",
+    "상해80%미만후유장해": "상해 3%이상 후유장해",
+    "질병80%미만후유장해": "질병 3%이상 후유장해",
+    "장기요양간병비": "질병 간병인사용 입원일당",
+    "경증치매진단": "경증치매진단",
+    "간병인/간호간병상해일당": "상해 간병인사용 입원일당",
+    "간병인/간호간병질병일당": "질병 간병인사용 입원일당",
+    "일반암": "일반암 진단비",
+    "유사암": "유사암 진단비",
+    "고액암": "특정암 진단비",
+    "고액(표적)항암치료비": "고액항암 치료비(표적)",
+    "뇌혈관질환": "뇌혈관 진단비",
+    "뇌졸중": "뇌졸중 진단비",
+    "뇌출혈": "뇌출혈 진단비",
+    "허혈성심장질환": "허혈성심장질환 진단비",
+    "급성심근경색증": "급성심근경색증 진단비",
+    "상해입원의료비": "상해입원",
+    "상해통원의료비": "상해통원",
+    "질병입원의료비": "질병입원",
+    "질병통원의료비": "질병통원",
+    "3대비급여실손": "1인실 입원일당",
+    "상해수술비": "상해수술비",
+    "질병수술비": "질병수술비",
+    "암수술비": "암수술비",
+    "뇌혈관질환수술비": "뇌혈관수술비",
+    "허혈성심장질환수술비": "허혈심장질환수술비",
+    "상해입원일당": "상해일당",
+    "질병입원일당": "질병일당",
+    "벌금(대인/스쿨존/대물)": "벌금",
+    "교통사고처리지원금": "교통사고처리 지원금",
+    "변호사선임비용": "변호사 선임비용",
+    "자동차사고부상": "자동차사고 부상치료비",
+    "골절진단비": "골절 진단비",
+    "보철치료비": "치아보철 치료비",
+    "가족/일상/자녀배상": "일상생활 배상책임",
+    "화재벌금": "화재벌금",
+}
+_SHORT_FORM_ROW_RE = re.compile(r"^(?P<name>[가-힣A-Za-z0-9·%()/]+)\s+(?P<rest>.+)$")
+
 _STD_ALIASES: list[tuple[str, str]] = [
     ("질병1~5종수술비", "질병종수술"), ("질병1-5종수술비", "질병종수술"), ("질병N종수술비", "질병종수술"), ("질병종수술", "질병종수술"),
     ("상해1~5종수술비", "상해종수술"), ("상해1-5종수술비", "상해종수술"), ("상해N종수술비", "상해종수술"), ("상해종수술", "상해종수술"),
@@ -205,15 +246,71 @@ def _parse_detail_list_pages(pages: list[tuple[int, str]], source_file_name: str
     return rows
 
 
+def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_name: str | None, source_hash: str | None) -> list[dict]:
+    """7p 짧은 보장분석서의 '전체 보장현황' 표(37개 기준담보)를 담보 원장으로 변환한다."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for page_no, text in pages:
+        if "전체 보장현황" not in text and "기준담보/권장금액" not in text:
+            continue
+        for raw in (text or "").splitlines():
+            line = raw.strip()
+            if not line or line in {"사망", "장해", "치매", "간병", "암 진단", "뇌/심장", "진단", "실손", "의료비", "수술", "입원", "운전자", "기타"}:
+                continue
+            m = _SHORT_FORM_ROW_RE.match(line)
+            if not m:
+                continue
+            rider = m.group("name").strip()
+            std = _SHORT_FORM_STANDARD_NAMES.get(rider)
+            if not std or rider in seen:
+                continue
+            tokens = m.group("rest").split()
+            if not tokens:
+                continue
+            amount_parts: list[str] = []
+            for tok in tokens:
+                if tok == "-":
+                    if not amount_parts:
+                        amount_parts = ["-"]
+                    break
+                if re.fullmatch(r"[\d,]+(?:억|만|원)?", tok):
+                    amount_parts.append(tok)
+                    continue
+                break
+            if amount_parts == ["-"] or not amount_parts:
+                amount_text = "-"
+                amount = 0
+            else:
+                amount_text = " ".join(amount_parts)
+                amount = parse_amount(amount_text) or 0
+            seen.add(rider)
+            rows.append({
+                "source_file_name": source_file_name,
+                "source_hash": source_hash,
+                "source_page": page_no,
+                "insurer": "알 수 없음",
+                "product_name": "보장분석 요약",
+                "coverage_type": None,
+                "rider_name": rider,
+                "standard_name": std,
+                "amount": amount,
+                "amount_text": amount_text,
+                "confidence": 0.9,
+                "raw_text": line,
+            })
+    return rows
+
+
 def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_name: str | None = None, source_hash: str | None = None) -> list[dict]:
     """PDF 페이지 텍스트에서 계약별 담보 원장 후보를 추출한다. 페이지 번호 하드코딩 없음."""
     rows = _parse_appendix_pages(pages, source_file_name, source_hash)
     seen = {(r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text")) for r in rows}
-    for r in _parse_detail_list_pages(pages, source_file_name, source_hash):
-        key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
-        if key not in seen:
-            rows.append(r)
-            seen.add(key)
+    for parser in (_parse_detail_list_pages, _parse_short_form_summary_pages):
+        for r in parser(pages, source_file_name, source_hash):
+            key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
+            if key not in seen:
+                rows.append(r)
+                seen.add(key)
     return rows
 
 

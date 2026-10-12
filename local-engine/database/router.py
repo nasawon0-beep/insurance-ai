@@ -518,11 +518,11 @@ def _strip_fabricated(fields: dict, source_text: str) -> dict:
     ph = re.sub(r"\D", "", str(fields.get("phone") or ""))
     if ph and ph not in digits:
         fields["phone"] = None
-    if not fields.get("rrn"):  # 성별은 rrn 에서 유도됐을 수 있으니 본문 표기로 보정
-        if "(여" in source_text or "여자" in source_text:
-            fields["gender"] = "F"
-        elif "(남" in source_text or "남자" in source_text:
-            fields["gender"] = "M"
+    # 성별은 보장분석 표지의 '(70세 ,여자)' / '(62세 ,남자)' 패턴을 최우선으로 반영한다.
+    if re.search(r"\(\s*\d{1,3}\s*세\s*,\s*여자\s*\)", source_text) or "(여" in source_text or "여자" in source_text:
+        fields["gender"] = "F"
+    elif re.search(r"\(\s*\d{1,3}\s*세\s*,\s*남자\s*\)", source_text) or "(남" in source_text or "남자" in source_text:
+        fields["gender"] = "M"
     return fields
 
 
@@ -1032,6 +1032,20 @@ def _name_from_filename(filename: Optional[str]) -> Optional[str]:
     return cands[-1] if cands else None
 
 
+def _short_form_title_name(text: str) -> Optional[str]:
+    m = re.search(r"([가-힣]{2,5})\s*님(?:의)?\s*건강을\s*위한", text or "")
+    return m.group(1) if m else None
+
+
+def _short_form_issued_date(text: str) -> Optional[str]:
+    m = re.search(r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})", text or "")
+    return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
+
+
+def _has_short_form_summary_coverages(rows: list[dict]) -> bool:
+    return sum(1 for r in rows if r.get("insurer") == "알 수 없음" and r.get("product_name") == "보장분석 요약") >= 30
+
+
 def _doc_consultation(doc_type: str, policies: list, extra_text, filename: Optional[str], issued: Optional[str]) -> dict:
     """보험 문서 → 상담 이력 1건. 채널 = 문서 종류. extra_text 는 담보 원문(str) 또는 보장현황(list)."""
     lines = [f"[{doc_type} 검토]"]
@@ -1215,7 +1229,10 @@ async def capture(
                 if policy_coverage_warning:
                     warns.append(policy_coverage_warning)
 
-                # 이름이 마스킹(나*원)됐거나 비었으면 파일명에서 복구
+                # 이름이 마스킹(나*원)됐거나 비었으면 표지/파일명에서 복구
+                title_nm = _short_form_title_name(doc_text)
+                if title_nm:
+                    f["name"] = title_nm
                 nm = str(f.get("name") or "")
                 if not nm or "*" in nm or "○" in nm or "◯" in nm:
                     fn_nm = _name_from_filename(file.filename)
@@ -1231,16 +1248,33 @@ async def capture(
                 # 계약: 보장분석/보유계약리스트면 여러 건, 아니면 증권 헤더 1건
                 coverage_status: list = []
                 if doc_type == "보장분석" or "보유계약리스트" in doc_text:
-                    plist = _intake.extract_policies_list(
-                        _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
-                    )
-                    policies = plist["policies"]
-                    warns += plist["warnings"]
-                    coverage_status = _parse_coverage_status(doc_text)
-                    if doc_type == "보장분석" and not coverage_status:
-                        warns.append("보장별 상세표를 찾지 못했습니다. 이 문서는 미지원 양식으로 자동 보장분석 저장을 하지 않습니다. 가입현황/계약별 담보는 검수 후 별도 확인하세요.")
-                    consult_extra = coverage_status  # 구조화 리스트
-                    cov_raw = _slice_section(doc_text, _GAP_START, _GAP_END, 3500)
+                    is_short_summary = _has_short_form_summary_coverages(policy_coverage_rows)
+                    if is_short_summary:
+                        issued_date = _short_form_issued_date(doc_text)
+                        policies = [{
+                            "insurer": "알 수 없음",
+                            "product_name": "보장분석 요약",
+                            "plan_type": None,
+                            "premium_won": None,
+                            "payment_cycle": None,
+                            "payment_period": None,
+                            "insured_period": None,
+                            "issued_date": issued_date,
+                        }]
+                        coverage_status = _parse_coverage_status_ga(doc_text)
+                        consult_extra = coverage_status
+                        cov_raw = _slice_section(doc_text, ("전체 보장현황", "전체보장현황"), ("상품별 가입담보상세", "가입담보상세", "보유계약리스트"), 3500)
+                    else:
+                        plist = _intake.extract_policies_list(
+                            _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
+                        )
+                        policies = plist["policies"]
+                        warns += plist["warnings"]
+                        coverage_status = _parse_coverage_status(doc_text)
+                        if doc_type == "보장분석" and not coverage_status:
+                            warns.append("보장별 상세표를 찾지 못했습니다. 이 문서는 미지원 양식으로 자동 보장분석 저장을 하지 않습니다. 가입현황/계약별 담보는 검수 후 별도 확인하세요.")
+                        consult_extra = coverage_status  # 구조화 리스트
+                        cov_raw = _slice_section(doc_text, _GAP_START, _GAP_END, 3500)
                 else:
                     # prop_body(7000자) 를 통째로 LLM 에 넣으면 num_ctx(4096) 를 넘어 응답이
                     # 비거나(빈 JSON) 극도로 느려진다(실측 118초). 요약표는 앵커 직후 몇백자

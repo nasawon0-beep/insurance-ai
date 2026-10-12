@@ -26,6 +26,62 @@ NO 구분 회사 담보명 신정원 담보명 가입금액
     assert all(r["product_name"].startswith("무배당 삼성화재 건강보험 New내돈내삼") for r in rows)
 
 
+def test_policy_coverages_short_form_summary_parser_creates_37_rows():
+    page2 = """
+용귀례 님의 전체 보장현황 2026-09-23 15:37:50
+(70세 ,여자)
+※ 기준담보/권장금액 : 기본형(37개)/개인설정
+상해사망 1억 1,000만 - 1억 1,000만 -
+질병사망 - - - - -
+상해80%미만후유장해 1억 1,000만 - 1억 1,000만 -
+질병80%미만후유장해 - - - - -
+장기요양간병비 - - - - -
+경증치매진단 200만 - 200만 - -
+간병인/간호간병상해일당 - - - - -
+간병인/간호간병질병일당 - - - - -
+일반암 3,000만 - - 3,000만 -
+유사암 600만 - - 600만 -
+고액암 - - - - -
+고액(표적)항암치료비 - - - - -
+뇌혈관질환 - - - - -
+뇌졸중 - - - - -
+뇌출혈 1,000만 - - 1,000만 -
+허혈성심장질환 - - - - -
+급성심근경색증 1,000만 - - 1,000만 -
+"""
+    page3 = """
+용귀례 님의 전체 보장현황 2026-09-23 15:37:50
+상해입원의료비 - - - - -
+상해통원의료비 - - - - -
+질병입원의료비 - - - - -
+질병통원의료비 - - - - -
+3대비급여실손 - - - - -
+상해수술비 100만 - - 100만 -
+질병수술비 50만 - - 50만 -
+암수술비 - - - - -
+뇌혈관질환수술비 - - - - -
+허혈성심장질환수술비 - - - - -
+상해입원일당 3만 - 3만 - -
+질병입원일당 6만 - 3만 3만 -
+벌금(대인/스쿨존/대물) - - - - -
+교통사고처리지원금 - - - - -
+변호사선임비용 - - - - -
+자동차사고부상 - - - - -
+골절진단비 580만 - 550만 30만 -
+보철치료비 - - - - -
+가족/일상/자녀배상 - - - - -
+화재벌금 - - - - -
+"""
+    rows = policy_coverages.parse_policy_coverages_from_pages([(2, page2), (3, page3)], "short.pdf", "hash")
+    assert len(rows) == 37
+    by_name = {r["rider_name"]: r for r in rows}
+    assert by_name["일반암"]["standard_name"] == "일반암 진단비"
+    assert by_name["일반암"]["amount"] == 30_000_000
+    assert by_name["질병사망"]["amount"] == 0
+    assert by_name["질병입원일당"]["standard_name"] == "질병일당"
+    assert all(r["insurer"] == "알 수 없음" and r["product_name"] == "보장분석 요약" for r in rows)
+
+
 def test_policy_coverages_bulk_requires_review_and_links_policy(tmp_path, monkeypatch):
     db_path = tmp_path / "customers.sqlite3"
     monkeypatch.setenv("CUSTOMER_DB_PATH", str(db_path))
