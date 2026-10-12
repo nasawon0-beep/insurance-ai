@@ -384,6 +384,13 @@ def _parse_diagnosis_detail_pages(pages: list[tuple[int, str]], source_file_name
     return rows
 
 
+def _with_compat_fields(row: dict) -> dict:
+    """프론트 보장분석 UI가 기대하는 필드명을 기존 원장 필드와 함께 제공한다."""
+    coverage_name = row.get("coverage_name") or row.get("rider_name") or row.get("standard_name")
+    current_amount = row.get("current_amount") or row.get("amount_text")
+    return {**row, "coverage_name": coverage_name, "current_amount": current_amount}
+
+
 def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_name: str | None = None, source_hash: str | None = None) -> list[dict]:
     """PDF 페이지 텍스트에서 계약별 담보 원장 후보를 추출한다. 페이지 번호 하드코딩 없음."""
     rows = _parse_appendix_pages(pages, source_file_name, source_hash)
@@ -401,7 +408,7 @@ def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_
             if key not in seen:
                 rows.append(r)
                 seen.add(key)
-    return rows
+    return [_with_compat_fields(r) for r in rows]
 
 
 def _match_policy_id(conn: sqlite3.Connection, customer_id: str, row: dict) -> tuple[Optional[str], str]:
@@ -451,7 +458,7 @@ def create_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: dic
 
 
 def get_policy_coverage(conn: sqlite3.Connection, cid: str) -> dict:
-    return dict(conn.execute("SELECT * FROM policy_coverages WHERE id = ?", (cid,)).fetchone())
+    return _with_compat_fields(dict(conn.execute("SELECT * FROM policy_coverages WHERE id = ?", (cid,)).fetchone()))
 
 
 def list_policy_coverages(conn: sqlite3.Connection, customer_id: str, policy_id: Optional[str] = None) -> list[dict]:
@@ -465,7 +472,7 @@ def list_policy_coverages(conn: sqlite3.Connection, customer_id: str, policy_id:
             "SELECT * FROM policy_coverages WHERE customer_id = ? ORDER BY product_name, source_page, rider_no, id",
             (customer_id,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_compat_fields(dict(r)) for r in rows]
 
 
 def create_many(conn: sqlite3.Connection, customer_id: str, items: list[dict], require_review: bool = True) -> dict:

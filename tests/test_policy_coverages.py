@@ -23,6 +23,8 @@ NO 구분 회사 담보명 신정원 담보명 가입금액
     assert ("[건강]뇌혈관질환 진단비", "뇌혈관 진단비", "3,000만", 28) in names
     assert ("[건강]허혈성심장질환 진단비", "허혈성심장질환 진단비", "3,000만", 28) in names
     assert ("[건강]질병 1~5종 수술비(5종)", "질병종수술", "1,000만", 28) in names
+    assert all(r["coverage_name"] == r["rider_name"] for r in rows)
+    assert all(r["current_amount"] == r["amount_text"] for r in rows)
     assert all(r["product_name"].startswith("무배당 삼성화재 건강보험 New내돈내삼") for r in rows)
 
 
