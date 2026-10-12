@@ -1,6 +1,6 @@
 [package]
 name = "desktop-scaffold"
-version = "2.2.37"
+version = "2.2.38"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
