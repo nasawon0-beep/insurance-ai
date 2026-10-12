@@ -139,6 +139,49 @@ def test_answer_maps_used_customers(client, monkeypatch):
     assert body["data_scope"] == "filtered"
 
 
+def test_named_customer_rejects_wrong_llm_used_customer(client, monkeypatch):
+    seeded = _seed_customer(client, name="고영임")
+    _seed_customer(client, name="정병용")
+    _mock_llm(monkeypatch, {
+        "answer": "확인했습니다.",
+        "used_customer_names": ["정병용"],
+        "grounded": True,
+        "no_data": False,
+    })
+
+    r = client.post("/assistant/ask", json={"question": "고영임님"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["used_customers"] == [{"id": seeded["id"], "name": "고영임"}]
+
+
+def test_named_coverage_analysis_uses_only_requested_customer(client, monkeypatch):
+    c = _seed_customer(client, name="고영임")
+    _seed_customer(client, name="정병용")
+    client.post(f"/customers/{c['id']}/consultations", json={
+        "title": "보장분석",
+        "coverage_json": json.dumps([
+            {"name": "암진단비", "status": "부족", "current": "1,000만원", "recommended": "5,000만원"},
+        ]),
+    })
+    captured: list[str] = []
+    _mock_llm(monkeypatch, {
+        "answer": "정병용 데이터입니다.",
+        "used_customer_names": ["정병용"],
+        "grounded": True,
+        "no_data": False,
+    }, capture=captured)
+
+    r = client.post("/assistant/ask", json={"question": "고영임님 보장분석"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert captured == []
+    assert body["routing_type"] == "db_direct"
+    assert body["used_customers"] == [{"id": c["id"], "name": "고영임"}]
+    assert "고영임" in body["answer"]
+    assert "정병용" not in body["answer"]
+
+
 def test_answer_no_data_clears_customers(client, monkeypatch):
     _seed_customer(client, name="이영희")
     _mock_llm(monkeypatch, {
@@ -321,15 +364,15 @@ def test_classify_question_routes_flexible_db_keywords():
         "나상원 어떤 보험 가입했어?",
         "나상원 월 보험료 얼마야?",
         "나상원 심장 관련 보장 있나?",
-        "종수술비 얼마 들어있어?",
-        "CI보험 가입했어?",
-        "만기일 언제야?",
     ]
     for question in cases:
         assert _classify_question(question) == "db_direct"
 
     # RAG 키워드는 DB 키워드보다 우선한다.
     assert _classify_question("나상원 암 보장내용 약관 알려줘") == "rag"
+    # 고객 지정 없는 보험 일반 질문은 DB 직접 조회로 보내지 않는다.
+    assert _classify_question("암보험이란?") != "db_direct"
+    assert _classify_question("보험료는 얼마인가요?") == "local_llm"
 
 
 def test_summarize_question_uses_light_model(client, monkeypatch):

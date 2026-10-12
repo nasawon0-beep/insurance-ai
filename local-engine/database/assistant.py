@@ -557,36 +557,33 @@ def _has_any_keyword(question: str, keywords: tuple[str, ...]) -> bool:
 _RAG_QUESTION_KEYWORDS = ("약관", "보장내용", "가입조건", "면책")
 _SUMMARIZE_QUESTION_KEYWORDS = ("요약", "정리", "설명")
 _DB_ROUTE_KEYWORDS = (
-    # 기존
-    "보장", "보험료", "만기", "계약", "보험", "가입", "가입목록",
-    "담보", "보장금액", "암", "뇌", "심장", "수술", "종수술",
-
-    # 보장 관련
-    "진단비", "수술비", "입원비", "치료비", "일당",
-    "얼마", "금액", "어떤", "무슨",
-    "있어", "있나", "들어", "포함", "현재", "지금", "가지고",
-
-    # 질병 확장
+    # 고객명이 함께 있을 때만 DB 조회로 인정할 구체 표현.
+    # "암" 같은 단독 광범위 질병 키워드는 일반 질문 오분류를 유발하므로 제외한다.
+    # "보험"/"가입"은 고객명 패턴과 함께 있을 때만 쓰인다.
+    "보장", "보장분석", "보험료", "만기", "계약", "보험", "가입", "가입목록", "가입 목록",
+    "담보", "보장금액",
+    "암 보장", "암보장", "뇌 보장", "뇌보장", "심장 보장", "심장보장",
+    "수술비", "종수술비", "종수술",
+    "진단비", "입원비", "치료비", "일당",
+    "월 보험료", "월보험료", "월납", "납입", "납입금", "연납",
     "암진단", "뇌진단", "심장진단",
     "뇌혈관", "뇌출혈", "뇌경색",
     "심근경색", "협심증",
     "일반수술", "CI", "CI보험", "중대질병",
-
-    # 보험 상품
     "상품", "계약서", "증권",
-    "납입", "납입금", "월납", "연납",
     "만기일", "만료", "종료",
     "갱신", "갱신형", "비갱신",
-
-    # 조회 표현은 단독 오분류를 줄이기 위해 목록형 표현만 유지
     "리스트", "목록",
+)
 
-    # 고객 관련 단독 표현은 오분류가 커서 라우팅 키워드에서는 제외한다.
+_GLOBAL_DB_ROUTE_PATTERNS = (
+    r"(?:이번\s*달|이번달|이달).*(?:만기|만기일|만료)",
+    r"(?:전체\s*)?고객\s*(?:몇\s*명|수|목록|리스트)",
 )
 
 
 def _looks_like_named_db_question(question: str) -> bool:
-    """고객명처럼 보이는 2~4자 한글 이름 + DB 키워드 조합인지 판별."""
+    """고객명처럼 보이는 2~4자 한글 이름 + 구체 DB 키워드 조합인지 판별."""
     compact = (question or "").replace(" ", "")
     if not _has_any_keyword(compact, _DB_ROUTE_KEYWORDS):
         return False
@@ -594,9 +591,16 @@ def _looks_like_named_db_question(question: str) -> bool:
         k = keyword.replace(" ", "")
         if not k or k not in compact:
             continue
-        if re.search(rf"[가-힣]{{2,4}}(?:의)?{re.escape(k)}", compact):
+        if re.search(rf"[가-힣]{{2,4}}(?:님|고객|의)?{re.escape(k)}", compact):
+            return True
+        if re.search(rf"[가-힣]{{2,4}}(?:님|고객).{{0,12}}{re.escape(k)}", compact):
             return True
     return False
+
+
+def _looks_like_global_db_question(question: str) -> bool:
+    compact = (question or "").replace(" ", "")
+    return any(re.search(pattern, compact) for pattern in _GLOBAL_DB_ROUTE_PATTERNS)
 
 
 def _classify_question(question: str) -> str:
@@ -604,10 +608,10 @@ def _classify_question(question: str) -> str:
     q = question or ""
     if _has_any_keyword(q, _RAG_QUESTION_KEYWORDS):
         return "rag"
-    if _has_any_keyword(q, _DB_ROUTE_KEYWORDS) or _looks_like_named_db_question(q):
-        return "db_direct"
     if _has_any_keyword(q, _SUMMARIZE_QUESTION_KEYWORDS):
         return "summarize"
+    if _looks_like_named_db_question(q) or _looks_like_global_db_question(q):
+        return "db_direct"
     return "local_llm"
 
 
@@ -676,6 +680,9 @@ def _coverage_item_matches(question: str, customer_name: str, item: dict) -> boo
     compact_name = name.replace(" ", "")
     if compact_name and compact_name in compact_q:
         return True
+    for disease in ("암", "뇌", "심장"):
+        if disease in compact_q and disease in compact_name:
+            return True
     for tok in _coverage_question_tokens(question, customer_name):
         if tok in compact_name or compact_name in tok:
             return True
@@ -771,6 +778,20 @@ def _rule_based_coverage_answer(
                 f"  · {_policy_line(p)}" for p in policies
             )
         return f"{customer_name} 고객의 등록 계약이 없습니다."
+
+    # [고객명] 보장분석/보장현황 → 보장 항목 전체 요약
+    if any(k in q for k in ("보장분석", "보장 현황", "보장현황")):
+        if coverage_items:
+            lines = []
+            for item in coverage_items:
+                name = item.get("name") or "?"
+                current = _format_coverage_amount(item.get("current"))
+                status = item.get("status") or "상태 미상"
+                rec = item.get("recommended")
+                rec_txt = f", 권장 {_format_coverage_amount(rec)}" if rec is not None else ""
+                lines.append(f"{name}: 현재 {current} ({status}{rec_txt})")
+            return f"{customer_name} 고객의 보장현황입니다.\n" + "\n".join(f"  · {line}" for line in lines)
+        return f"{customer_name} 고객의 등록된 보장분석 데이터가 없습니다."
 
     # [고객명] [보장명] 얼마 → coverage_json 현재 금액
     if _has_any_keyword(q, _COVERAGE_AMOUNT_KEYWORDS):
@@ -1098,17 +1119,40 @@ def answer(
 
     no_data = bool(data.get("no_data"))
     used_customers: list[dict] = []
-    # customer_id 지정 시 해당 고객을 used_customers에 항상 포함
+    current_question_matches = _exact_customer_matches(conn, question, None)
+    allowed_names = {
+        str(c.get("name") or "").strip()
+        for c in current_question_matches
+        if str(c.get("name") or "").strip()
+    }
+    # customer_id 지정 또는 현재 질문에 명시된 고객은 LLM 추출값보다 우선한다.
     if customer_id and not no_data:
         c = repo.get_customer(conn, customer_id)
         if c:
             used_customers.append({"id": customer_id, "name": c.get("name") or ""})
     if not no_data:
         seen: set[str] = {c["id"] for c in used_customers}
+        for c in current_question_matches:
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                used_customers.append({"id": c["id"], "name": c.get("name") or ""})
         for nm in data.get("used_customer_names") or []:
             if not isinstance(nm, str) or not nm.strip():
                 continue
-            for hit in repo.find_customers_by_name(conn, nm.strip()):
+            requested_name = nm.strip()
+            # 현재 질문에 고객명이 명시됐으면 LLM이 다른 고객명을 반환해도 섞지 않는다.
+            if allowed_names and requested_name not in allowed_names:
+                logger.warning(
+                    "assistant_rejected_used_customer requested=%s allowed=%s",
+                    requested_name,
+                    sorted(allowed_names),
+                )
+                continue
+            hits = repo.find_customers_by_name(conn, requested_name)
+            if not hits:
+                logger.warning("assistant_unknown_used_customer requested=%s", requested_name)
+                continue
+            for hit in hits:
                 if hit["id"] not in seen:
                     seen.add(hit["id"])
                     used_customers.append({"id": hit["id"], "name": hit["name"]})
