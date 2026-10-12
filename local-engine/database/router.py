@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -442,6 +443,19 @@ def _pdf_extract_text(data: bytes, max_pages: int = 16) -> str:
         return "\n\n".join(
             (pg.extract_text() or "").strip() for pg in pdf.pages[:max_pages]
         ).strip()
+
+
+def _pdf_extract_text_pages(data: bytes) -> list[tuple[int, str]]:
+    """PDF 전체 페이지에서 텍스트만 뽑는다. /capture 빠른 분석용(표 추출 금지)."""
+    import io as _io
+
+    import pdfplumber
+
+    with pdfplumber.open(_io.BytesIO(data)) as pdf:
+        return [
+            (i, (pg.extract_text() or "").strip())
+            for i, pg in enumerate(pdf.pages, start=1)
+        ]
 
 
 def _document_to_text(data: bytes, filename: Optional[str], kind: str) -> str:
@@ -1046,6 +1060,73 @@ def _has_short_form_summary_coverages(rows: list[dict]) -> bool:
     return sum(1 for r in rows if r.get("insurer") == "알 수 없음" and r.get("product_name") == "보장분석 요약") >= 30
 
 
+def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optional[str] = None) -> tuple[dict, list[str]]:
+    """보장분석 PDF 1차 화면용 고객정보. Ollama 호출 없이 표지/파일명/나이만 사용한다."""
+    fields = {
+        "name": _short_form_title_name(doc_text) or _name_from_filename(filename),
+        "phone": None,
+        "birth_date": None,
+        "gender": None,
+        "email": None,
+        "address": None,
+        "occupation": None,
+        "rrn": None,
+        "memo": None,
+    }
+    _strip_fabricated(fields, doc_text)
+    if not fields.get("gender"):
+        if re.search(r"(?:^|[\s(·,])여\s*\d{1,3}\s*세", doc_text):
+            fields["gender"] = "F"
+        elif re.search(r"(?:^|[\s(·,])남\s*\d{1,3}\s*세", doc_text):
+            fields["gender"] = "M"
+    for line in doc_text.splitlines():
+        explicit_birth_line = any(k in line for k in ("생년", "주민"))
+        age_m = re.search(r"(?:만\s*)?(\d{2})\s*세", line)
+        if not explicit_birth_line and not age_m:
+            continue
+        m = re.search(r"(19\d{2}|20\d{2})[./-](\d{1,2})[./-](\d{1,2})", line)
+        if not m or int(m.group(1)) > date.today().year - 15:
+            continue
+        if age_m and not explicit_birth_line:
+            doc_age = int(age_m.group(1))
+            date_age = date.today().year - int(m.group(1))
+            if abs(date_age - doc_age) > 5:
+                continue
+        fields["birth_date"] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        break
+    warns: list[str] = []
+    if not fields.get("name"):
+        warns.append("이름을 찾지 못했습니다. 직접 입력하세요.")
+    est_warn = _estimate_birthdate_from_age(fields, doc_text, issued)
+    if est_warn:
+        warns.append(est_warn)
+    warns.append("빠른 분석 결과입니다. 상세 담보 검수는 저장 전 원문과 함께 확인하세요.")
+    return fields, warns
+
+
+def _quick_policies_from_coverage_rows(rows: list[dict], limit: int = 50) -> list[dict]:
+    """계약별 담보 원장 행을 계약 검수용 요약으로 묶는다. LLM 호출 없음."""
+    grouped: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        insurer = (r.get("insurer") or "알 수 없음").strip() or "알 수 없음"
+        product = (r.get("product_name") or "보장분석 요약").strip() or "보장분석 요약"
+        key = (insurer, product)
+        if key not in grouped:
+            grouped[key] = {
+                "insurer": insurer,
+                "product_name": product,
+                "plan_type": None,
+                "premium_won": None,
+                "payment_cycle": None,
+                "payment_period": None,
+                "insured_period": None,
+                "issued_date": None,
+            }
+        if r.get("end_date") and not grouped[key].get("insured_period"):
+            grouped[key]["insured_period"] = r.get("end_date")
+    return list(grouped.values())[:limit]
+
+
 def _doc_consultation(doc_type: str, policies: list, extra_text, filename: Optional[str], issued: Optional[str]) -> dict:
     """보험 문서 → 상담 이력 1건. 채널 = 문서 종류. extra_text 는 담보 원문(str) 또는 보장현황(list)."""
     lines = [f"[{doc_type} 검토]"]
@@ -1188,44 +1269,77 @@ async def capture(
             audio_minutes = stt["audio_minutes"]
         else:
             # PDF / 텍스트 파일 → 글자(또는 OCR)를 뽑아 분석.
-            doc_text = _document_to_text(data, file.filename, kind)
-            raw_doc_text = doc_text
-            if ctx_prefix:
-                doc_text = ctx_prefix + doc_text
+            perf_total_t0 = time.perf_counter()
+            perf: dict[str, float] = {}
             if kind == "pdf":
                 source_hash = hashlib.sha256(data).hexdigest()
                 policy_coverage_rows = []
                 policy_coverage_warning = None
-                # 계약별 담보 원장은 보장분석 진단표와 분리해 검수 화면으로만 전달한다.
-                # 저장은 사용자가 [검수 완료 후 저장]을 누른 뒤 별도 엔드포인트에서 수행한다.
-                # 고객 정보 추출용 doc_text는 앞쪽 페이지만 보지만, 계약별 담보 원장은
-                # 별첨/가입담보 상세가 뒤쪽에 올 수 있어 PDF 전체 페이지를 다시 스캔한다.
-                # 단, 계약별 담보 원장 추출 실패가 기존 고객/계약/보장분석 capture 흐름을 죽이면 안 된다.
+                full_text_pages: list[tuple[int, str]] = []
                 try:
-                    parsed_for_coverages = parse_pdf_bytes(data, file.filename or "document.pdf")
+                    t0 = time.perf_counter()
+                    try:
+                        full_text_pages = _pdf_extract_text_pages(data)
+                        doc_text = "\n\n".join(t for _, t in full_text_pages[:16]).strip()
+                    except Exception:
+                        doc_text = _pdf_extract_text(data)
+                        full_text_pages = [(1, doc_text)] if doc_text else []
+                        policy_coverage_warning = "계약별 담보 원장 추출은 PDF 원본 구조를 읽지 못해 건너뛰었습니다. 기존 고객정보/계약/보장분석 결과는 계속 검수할 수 있습니다."
+                    perf["text"] = time.perf_counter() - t0
+                    if not doc_text:
+                        t0 = time.perf_counter()
+                        doc_text = _ocr_pdf(data, file.filename)
+                        perf["ocr"] = time.perf_counter() - t0
+                        full_text_pages = [(1, doc_text)] if doc_text else full_text_pages
+                    if not doc_text:
+                        hint = "" if _ocr_available() else " (이 PC에서는 PDF OCR 를 쓸 수 없습니다.)"
+                        raise HTTPException(
+                            status_code=422,
+                            detail="PDF 에서 글자를 추출할 수 없습니다. 스캔본이거나 이미지·벡터로만 이루어진 문서입니다." + hint,
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise HTTPException(status_code=422, detail=f"PDF 파싱 실패: {e}")
+                raw_doc_text = doc_text
+                if ctx_prefix:
+                    doc_text = ctx_prefix + doc_text
+                extra = ("\n\n" + text.strip()) if text.strip() else ""
+
+                # 계약별 담보 원장은 표 추출 없이 전체 페이지 텍스트에서만 빠르게 파싱한다.
+                # 기존 parse_pdf_bytes()는 모든 페이지 extract_tables()를 실행해 /capture를 막았다.
+                try:
+                    t0 = time.perf_counter()
                     policy_coverage_rows = policy_coverages.parse_policy_coverages_from_pages(
-                        [(p.page, p.text) for p in parsed_for_coverages.pages], file.filename, source_hash
+                        full_text_pages, file.filename, source_hash
                     )
+                    perf["policy_coverages"] = time.perf_counter() - t0
                 except Exception as e:
                     logger.warning("policy coverage extraction failed during capture: %s", e, exc_info=True)
                     policy_coverage_warning = "계약별 담보 원장 추출에 실패했습니다. 기존 고객정보/계약/보장분석 결과는 계속 검수할 수 있습니다."
+                    perf["policy_coverages"] = time.perf_counter() - t0 if "t0" in locals() else 0.0
                 doc_type = _doc_type(doc_text, file.filename)
                 # 긴 제안서는 앞쪽이 약관 보일러플레이트라, 실제 요약표(계약자/피보험자/보험료)가
                 # 시작되는 지점부터 잘라 추출 파이프라인에 넘긴다.
                 prop_body = _proposal_body(doc_text)
-                # 잡음 많은 OCR 에서 계약자 식별에 쓸 줄만 추리고, '모집자(설계사)' 오인·창작 방지.
-                # 요약표 슬라이스도 덧붙여 앞 12줄이 약관인 긴 문서에서도 계약자/피보험자가 잡히게 한다.
-                focused = (_focus_customer_lines(doc_text) + "\n" + prop_body)[:3000]
-                guide = (
-                    f"[보험 {doc_type} OCR 발췌]\n"
-                    "※ 계약자(피보험자) 본인 정보만 뽑아라. '모집자·보험모집인·설계사·컨설턴트·대리점' 의 "
-                    "이름·전화·주소·소속은 넣지 마라. 발췌에 없는 주민등록번호·생년월일·전화번호는 "
-                    "절대 지어내지 말고 null 로 둬라.\n\n"
-                )
-                extra = ("\n\n" + text.strip()) if text.strip() else ""
-                ex = extract_customer_fields(guide + focused + extra)
-                f = _strip_fabricated(ex["fields"], doc_text + extra)
-                warns = list(ex["warnings"])
+                # 보장분석서는 30초 이내 1차 검수 우선: LLM 고객추출 호출을 생략하고 규칙 기반으로 처리한다.
+                if doc_type == "보장분석" or "보유계약리스트" in doc_text:
+                    t0 = time.perf_counter()
+                    f, warns = _quick_customer_fields(doc_text + extra, file.filename, _short_form_issued_date(doc_text))
+                    perf["customer"] = time.perf_counter() - t0
+                else:
+                    focused = (_focus_customer_lines(doc_text) + "\n" + prop_body)[:3000]
+                    guide = (
+                        f"[보험 {doc_type} OCR 발췌]\n"
+                        "※ 계약자(피보험자) 본인 정보만 뽑아라. '모집자·보험모집인·설계사·컨설턴트·대리점' 의 "
+                        "이름·전화·주소·소속은 넣지 마라. 발췌에 없는 주민등록번호·생년월일·전화번호는 "
+                        "절대 지어내지 말고 null 로 둬라.\n\n"
+                    )
+                    t0 = time.perf_counter()
+                    ex = extract_customer_fields(guide + focused + extra)
+                    perf["customer"] = time.perf_counter() - t0
+                    f = _strip_fabricated(ex["fields"], doc_text + extra)
+                    warns = list(ex["warnings"])
                 if policy_coverage_warning:
                     warns.append(policy_coverage_warning)
 
@@ -1261,16 +1375,24 @@ async def capture(
                             "insured_period": None,
                             "issued_date": issued_date,
                         }]
+                        t0 = time.perf_counter()
                         coverage_status = _parse_coverage_status_ga(doc_text)
+                        perf["coverage_status"] = time.perf_counter() - t0
                         consult_extra = coverage_status
                         cov_raw = _slice_section(doc_text, ("전체 보장현황", "전체보장현황"), ("상품별 가입담보상세", "가입담보상세", "보유계약리스트"), 3500)
                     else:
-                        plist = _intake.extract_policies_list(
-                            _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
-                        )
-                        policies = plist["policies"]
-                        warns += plist["warnings"]
+                        t0 = time.perf_counter()
+                        policies = _quick_policies_from_coverage_rows(policy_coverage_rows)
+                        if not policies:
+                            plist = _intake.extract_policies_list(
+                                _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
+                            )
+                            policies = plist["policies"]
+                            warns += plist["warnings"]
+                        perf["policy_parse"] = time.perf_counter() - t0
+                        t0 = time.perf_counter()
                         coverage_status = _parse_coverage_status(doc_text)
+                        perf["coverage_status"] = time.perf_counter() - t0
                         if doc_type == "보장분석" and not coverage_status:
                             warns.append("보장별 상세표를 찾지 못했습니다. 이 문서는 미지원 양식으로 자동 보장분석 저장을 하지 않습니다. 가입현황/계약별 담보는 검수 후 별도 확인하세요.")
                         consult_extra = coverage_status  # 구조화 리스트
@@ -1280,7 +1402,9 @@ async def capture(
                     # 비거나(빈 JSON) 극도로 느려진다(실측 118초). 요약표는 앵커 직후 몇백자
                     # 안에 다 있으므로, LLM 호출은 앞부분만 잘라 보낸다. 정규식 헬퍼들
                     # (_parties_from_text/_premium_from_text) 은 계속 prop_body 전체를 본다.
+                    t0 = time.perf_counter()
                     pr = _intake.extract_policy_fields(prop_body[:2200])
+                    perf["policy_parse"] = time.perf_counter() - t0
                     p1 = pr["policy"]
                     warns += pr["warnings"]
                     cov_raw = _slice_section(doc_text, _COV_START, _COV_END, 3500)
@@ -1366,6 +1490,19 @@ async def capture(
                 if est_warn:
                     warns.append(est_warn)
 
+                perf["total"] = time.perf_counter() - perf_total_t0
+                logger.info(
+                    "[PERF] PDF analysis: text=%.2fs, tables=%.2fs, policy_coverages=%.2fs, "
+                    "policy_parse=%.2fs, coverage_status=%.2fs, customer=%.2fs, total=%.2fs",
+                    perf.get("text", 0.0),
+                    perf.get("tables", 0.0),
+                    perf.get("policy_coverages", 0.0),
+                    perf.get("policy_parse", 0.0),
+                    perf.get("coverage_status", 0.0),
+                    perf.get("customer", 0.0),
+                    perf.get("total", 0.0),
+                )
+
                 items.append({
                     "fields": f,
                     "warnings": warns,
@@ -1379,9 +1516,17 @@ async def capture(
                     "policy_coverages": policy_coverage_rows,
                     "coverage_review": _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows),
                     "coverages_text": cov_raw,
+                    "analysis_status": "quick_analysis_done",
+                    "quick_contracts": [
+                        {"insurer": p.get("insurer"), "product_name": p.get("product_name")}
+                        for p in policies[:20]
+                    ],
+                    "quick_coverages": coverage_status[:10] if coverage_status else policy_coverage_rows[:10],
+                    "perf": {k: round(v, 3) for k, v in perf.items()},
                 })
             else:
-                combined = doc_text + (("\n\n" + text.strip()) if text.strip() else "")
+                doc_text = _document_to_text(data, file.filename, kind)
+                combined = ctx_prefix + doc_text + (("\n\n" + text.strip()) if text.strip() else "")
                 combined = combined.strip()[:_MAX_DOC_CHARS]
                 if not combined:
                     raise HTTPException(status_code=422, detail="파일에서 분석할 내용을 찾지 못했습니다.")
