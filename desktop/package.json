@@ -1,7 +1,7 @@
 {
   "name": "insurance-ai-desktop",
   "private": true,
-  "version": "2.2.36",
+  "version": "2.2.37",
   "type": "module",
   "scripts": {
     "dev": "vite",
