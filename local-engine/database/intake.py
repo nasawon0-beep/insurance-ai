@@ -124,7 +124,7 @@ def _fallback_extract_multiple(text: str) -> list[dict]:
 
     rows: list[dict] = []
     seen: set[tuple[Optional[str], Optional[str], Optional[str]]] = set()
-    chunks = [c.strip() for c in re.split(r"[\n;]+", source) if c.strip()] or [source]
+    chunks = [c.strip() for c in re.split(r"[\n;]+|\s+그리고\s+", source) if c.strip()] or [source]
     for chunk in chunks:
         phone_match = _PHONE_IN_TEXT.search(chunk)
         rrn_match = _RRN_IN_TEXT.search(chunk)
@@ -171,7 +171,7 @@ def _fallback_extract_multiple(text: str) -> list[dict]:
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # 필드 추출·요약은 단순 작업이라 작은 모델로 (RAG 답변용 14b 와 분리)
-LLM_MODEL = os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:7b")
+LLM_MODEL = os.environ.get("INTAKE_LLM_MODEL", "qwen2.5:3b")
 KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")  # 모델을 메모리에 유지
 
 _FIELDS = [
@@ -207,7 +207,7 @@ _PROMPT = """다음은 보험 상담자가 적어 보낸 고객 메모다. 아�
 def _rule_based_extract(text: str) -> dict:
     """Ollama 실패 시 규칙기반 fallback: 이름·전화·주민번호·생년월일 패턴 추출."""
     import re
-    result = {k: None for k in _FIELDS}
+    result: dict[str, Any] = {k: None for k in _FIELDS}
 
     # 전화번호
     phone_m = re.search(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}", text)
@@ -225,10 +225,63 @@ def _rule_based_extract(text: str) -> dict:
         result["birth_date"] = f"{century}{front[:2]}-{front[2:4]}-{front[4:]}"
         result["gender"] = "M" if back1 in ("1", "3") else "F"
 
-    # 이름 (2~4글자 한글, 전화/주민번호 숫자 제외)
-    name_m = re.search(r"(?<!\d)([가-힣]{2,4})(?!\d)", text)
-    if name_m:
-        result["name"] = name_m.group(1)
+    # 생년월일(주민번호가 없을 때도 처리)
+    if not result.get("birth_date"):
+        birth_m = re.search(r"(?<!\d)((?:19|20)\d{2})[.\-/\s]?(\d{1,2})[.\-/\s]?(\d{1,2})(?!\d)", text)
+        if birth_m:
+            y, m, d = int(birth_m.group(1)), int(birth_m.group(2)), int(birth_m.group(3))
+            if 1 <= m <= 12 and 1 <= d <= 31:
+                result["birth_date"] = f"{y:04d}-{m:02d}-{d:02d}"
+
+    # 성별
+    if not result.get("gender"):
+        if re.search(r"(?:^|[\s,·/()])(?:여|여자|F)(?:$|[\s,·/()])", text, re.IGNORECASE):
+            result["gender"] = "F"
+        elif re.search(r"(?:^|[\s,·/()])(?:남|남자|M)(?:$|[\s,·/()])", text, re.IGNORECASE):
+            result["gender"] = "M"
+
+    # 이메일
+    email_m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    if email_m:
+        result["email"] = email_m.group(0)
+
+    # 주소/직업/메모(명확한 라인만 규칙 추출)
+    job_words = ("주부", "회사원", "자영업", "사업", "공무원", "교사", "간호사", "의사", "학생", "무직", "은퇴")
+    for raw_line in text.splitlines():
+        line = raw_line.strip(" ,·\t")
+        if not line:
+            continue
+        if result.get("address") is None and any(tok in line for tok in ("시", "군", "구", "동", "읍", "면", "로", "길", "아파트")) and not _PHONE_IN_TEXT.search(line) and not _RRN_IN_TEXT.search(line):
+            result["address"] = line
+            continue
+        if result.get("occupation") is None and any(w == line or w in line for w in job_words) and len(line) <= 20:
+            result["occupation"] = line
+            continue
+    memo = _PHONE_IN_TEXT.sub(" ", text)
+    memo = _RRN_IN_TEXT.sub(" ", memo)
+    memo = re.sub(r"(?:19|20)\d{2}[.\-/\s]?\d{1,2}[.\-/\s]?\d{1,2}", " ", memo)
+    for v in (result.get("name"), result.get("address"), result.get("occupation"), result.get("email")):
+        if v:
+            memo = memo.replace(str(v), " ")
+    memo = " ".join(tok for tok in re.split(r"\s+", memo.strip()) if tok not in {"고객", "전화", "연락처", "휴대폰", "핸드폰", "번호", "성함", "이름", "생년월일", "성별", "주소", "직업", "메모"})
+    if memo:
+        result["memo"] = memo
+
+    # 이름 (2~5글자 한글, 라벨 제외)
+    cleaned = _PHONE_IN_TEXT.sub(" ", text)
+    cleaned = _RRN_IN_TEXT.sub(" ", cleaned)
+    cleaned = re.sub(r"(?:19|20)\d{2}[.\-/\s]?\d{1,2}[.\-/\s]?\d{1,2}", " ", cleaned)
+    skip = {"고객", "전화", "연락처", "휴대폰", "핸드폰", "번호", "성함", "이름", "생년월일", "성별", "주소", "직업", "메모"}
+    for token in re.split(r"[\s,;:|/()\[\]{}]+", cleaned):
+        token = token.strip()
+        if token in skip:
+            continue
+        if re.fullmatch(r"[가-힣]{2,5}", token):
+            result["name"] = token
+            break
+    if result.get("memo") and result.get("name"):
+        memo = str(result["memo"]).replace(str(result["name"]), " ")
+        result["memo"] = " ".join(memo.split()) or None
 
     return result
 
@@ -322,6 +375,9 @@ def _normalize(raw: dict, source_text: Optional[str] = None) -> dict[str, Any]:
 def extract_multiple(text: str, model: Optional[str] = None) -> list[dict]:
     """여러 명치 텍스트 → [{fields, warnings}, ...]. LLM 1회 호출."""
     model = model or LLM_MODEL
+    rule_first = _fallback_extract_multiple(text)
+    if rule_first and all(r.get("fields", {}).get("name") and (r.get("fields", {}).get("phone") or r.get("fields", {}).get("rrn")) for r in rule_first):
+        return rule_first
     try:
         raw = _call_llm(_BULK_PROMPT + text.strip(), model)
     except Exception:
@@ -338,6 +394,11 @@ def extract_multiple(text: str, model: Optional[str] = None) -> list[dict]:
 
 def extract_customer_fields(text: str, model: Optional[str] = None) -> dict[str, Any]:
     model = model or LLM_MODEL
+    rule_first = _rule_based_extract(text)
+    if rule_first.get("name") and (rule_first.get("phone") or rule_first.get("rrn") or rule_first.get("birth_date")):
+        normalized = _normalize(rule_first, text)
+        normalized["model"] = "rule"
+        return normalized
     try:
         raw = _call_llm(_PROMPT + text.strip(), model)
     except Exception:

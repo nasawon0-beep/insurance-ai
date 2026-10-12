@@ -1461,7 +1461,10 @@ async def capture(
                         cov_raw = _slice_section(doc_text, ("전체 보장현황", "전체보장현황"), ("상품별 가입담보상세", "가입담보상세", "보유계약리스트"), 3500)
                     else:
                         t0 = time.perf_counter()
-                        policies = _quick_policies_from_coverage_rows(policy_coverage_rows)
+                        policy_rows_are_only_analysis_detail = bool(policy_coverage_rows) and all(
+                            (r.get("product_name") or "") == "보장분석 상세" for r in policy_coverage_rows
+                        )
+                        policies = [] if policy_rows_are_only_analysis_detail else _quick_policies_from_coverage_rows(policy_coverage_rows)
                         if not policies:
                             plist = _intake.extract_policies_list(
                                 _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
