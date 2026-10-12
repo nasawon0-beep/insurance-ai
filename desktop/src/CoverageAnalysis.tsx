@@ -3,6 +3,7 @@ import CoverageBadge from "./components/CoverageBadge";
 import { COVERAGE_CATALOG, findCoverageCatalogItem, normalizeCoverageCatalogName } from "./coverageCatalog";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
+import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { parseCoverageJson, type CoverageRow } from "./coverageRows";
 import "./styles/coverage.css";
 
@@ -126,17 +127,21 @@ function statusIcon(status: string): string {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-
   let res: Response;
   try {
     console.log(`${DEBUG_PREFIX} api:request`, { method: init?.method ?? "GET", path });
-    res = await engineFetch(path, { ...init, headers });
+    // Customers.tsx와 동일하게 engineFetch를 통해 호출한다.
+    // engineFetch가 X-Insurance-AI-Secret / X-Actor-Id 인증 헤더를 주입한다.
+    res = await engineFetch(path, {
+      headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
+      ...init,
+    });
     console.log(`${DEBUG_PREFIX} api:response`, { method: init?.method ?? "GET", path, status: res.status, ok: res.ok });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    throw new Error(`로컬 엔진 연결 실패 (${path}): ${message}. local-engine 실행 상태, CORS origin, 네트워크를 확인하세요.`);
+    if (isFetchNetworkError(e)) {
+      throw new Error(formatLocalEngineNetworkError(e));
+    }
+    throw e;
   }
   if (!res.ok) {
     const bodyText = await res.text().catch(() => "");
