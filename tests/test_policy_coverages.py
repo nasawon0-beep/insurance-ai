@@ -26,6 +26,28 @@ NO 구분 회사 담보명 신정원 담보명 가입금액
     assert all(r["product_name"].startswith("무배당 삼성화재 건강보험 New내돈내삼") for r in rows)
 
 
+def test_policy_coverages_diagnosis_detail_parser_handles_pdf_oxide_layout():
+    page = """
+04
+진단상세보장별 상세
+(단위: 원)
+보장별 상세 내역
+보장군 보장상세 권장금액 가입금액 부족금액 과부족
+질병사망 1억 3억9,000만 -2억9,000만 충분
+상해사망 2억 5억9,000만 -3억9,000만 충분
+질병 3%이상후유장해 5,000만 3,000만 2,000만 부족
+일반암진단비 1억5,000만 1억6,000만 -1,000만 충분
+교통사고처리 지원금
+운전자
+"""
+    rows = policy_coverages.parse_policy_coverages_from_pages([(5, page)], "oxide.pdf", "hash")
+    assert len(rows) == 4
+    by_name = {r["rider_name"]: r for r in rows}
+    assert by_name["일반암진단비"]["amount"] == 160_000_000
+    assert by_name["질병 3%이상후유장해"]["amount_text"] == "3,000만"
+    assert all(r["product_name"] == "보장분석 상세" for r in rows)
+
+
 def test_policy_coverages_short_form_summary_parser_creates_37_rows():
     page2 = """
 용귀례 님의 전체 보장현황 2026-09-23 15:37:50

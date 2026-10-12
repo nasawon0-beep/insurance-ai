@@ -78,6 +78,7 @@ _SHORT_FORM_STANDARD_NAMES = {
     "화재벌금": "화재벌금",
 }
 _SHORT_FORM_ROW_RE = re.compile(r"^(?P<name>[가-힣A-Za-z0-9·%()/]+)\s+(?P<rest>.+)$")
+_DIAGNOSIS_DETAIL_STATUSES = {"충분", "부족", "미가입"}
 
 _STD_ALIASES: list[tuple[str, str]] = [
     ("질병1~5종수술비", "질병종수술"), ("질병1-5종수술비", "질병종수술"), ("질병N종수술비", "질병종수술"), ("질병종수술", "질병종수술"),
@@ -318,12 +319,72 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
     return rows
 
 
+def _parse_diagnosis_detail_pages(pages: list[tuple[int, str]], source_file_name: str | None, source_hash: str | None) -> list[dict]:
+    """PDF Oxide가 한 줄로 읽는 '보장군 보장상세 권장금액 가입금액' 표를 담보 원장으로 변환한다."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    amount_value_re = re.compile(r"-?(?:\d[\d,]*(?:\.\d+)?(?:억\d[\d,]*만|억|천만|백만|십만|만|원)?|0)")
+    for page_no, text in pages:
+        if "보장군보장상세권장금액가입금액" not in compact(text):
+            continue
+        in_table = False
+        for raw in (text or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if "보장군" in line and "보장상세" in line and "권장금액" in line and "가입금액" in line:
+                in_table = True
+                continue
+            if not in_table:
+                continue
+            if line.startswith("*") or "GA2-" in line or "담보별" in line:
+                break
+            tokens = line.split()
+            if len(tokens) < 5 or tokens[-1] not in _DIAGNOSIS_DETAIL_STATUSES:
+                continue
+            shortage = tokens[-2]
+            amount_text = tokens[-3]
+            recommended_text = tokens[-4]
+            rider = " ".join(tokens[:-4]).strip()
+            if not rider or rider in {"보장군", "보장상세"}:
+                continue
+            # 표의 숫자 컬럼 3개(권장/가입/부족)가 모두 금액 형태일 때만 채택해 하단 범례 텍스트를 제외한다.
+            if not all(amount_value_re.fullmatch(v) for v in (recommended_text, amount_text, shortage)):
+                continue
+            key = f"{page_no}:{compact(rider)}:{amount_text}"
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "source_file_name": source_file_name,
+                "source_hash": source_hash,
+                "source_page": page_no,
+                "insurer": "알 수 없음",
+                "product_name": "보장분석 상세",
+                "coverage_type": None,
+                "rider_name": rider,
+                "standard_name": normalize_standard_name(rider, rider),
+                "amount": parse_amount(amount_text) or 0,
+                "amount_text": amount_text,
+                "confidence": 0.88,
+                "raw_text": line,
+            })
+    return rows
+
+
 def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_name: str | None = None, source_hash: str | None = None) -> list[dict]:
     """PDF 페이지 텍스트에서 계약별 담보 원장 후보를 추출한다. 페이지 번호 하드코딩 없음."""
     rows = _parse_appendix_pages(pages, source_file_name, source_hash)
     seen = {(r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text")) for r in rows}
     for parser in (_parse_detail_list_pages, _parse_short_form_summary_pages):
         for r in parser(pages, source_file_name, source_hash):
+            key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
+            if key not in seen:
+                rows.append(r)
+                seen.add(key)
+    # 상품별/계약별 담보 원장이 전혀 없는 PDF Oxide 신형 요약 문서만 보장별 상세 표를 fallback으로 사용한다.
+    if not rows:
+        for r in _parse_diagnosis_detail_pages(pages, source_file_name, source_hash):
             key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
             if key not in seen:
                 rows.append(r)
