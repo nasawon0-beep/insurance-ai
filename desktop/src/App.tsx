@@ -2158,6 +2158,72 @@ function AssistantBackgroundBanner() {
   );
 }
 
+type StartupState = {
+  status: "starting" | "ready" | "error";
+  message: string;
+  steps: { label: string; done: boolean }[];
+  error?: string;
+  logPath?: string;
+};
+
+type StartupNativeResponse = {
+  status: number;
+  body: number[];
+};
+
+const STARTUP_HEALTH_ATTEMPTS = 10;
+const STARTUP_HEALTH_INTERVAL_MS = 2000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function probeLocalEngineHealthOnce(): Promise<void> {
+  const response = await invoke<StartupNativeResponse>("local_engine_request", {
+    request: {
+      method: "GET",
+      path: "/health",
+      headers: [],
+      body: null,
+    },
+  });
+  const text = new TextDecoder().decode(new Uint8Array(response.body));
+  const body = text ? JSON.parse(text) : null;
+  if (response.status < 200 || response.status >= 300 || body?.local_engine !== "ok") {
+    throw new Error(`local-engine health 실패: HTTP ${response.status}, 상태=${body?.local_engine ?? "unknown"}`);
+  }
+}
+
+function StartupScreen({ state, onRetry, onRelaunch }: { state: StartupState; onRetry: () => void; onRelaunch: () => void }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--color-bg-page)", color: "var(--color-text-primary)" }}>
+      <div style={{ width: "min(560px, calc(100vw - 32px))", padding: 28, border: "1px solid var(--color-border-default)", borderRadius: 16, background: "var(--color-bg-surface)", boxShadow: "0 18px 48px rgba(0,0,0,0.12)" }}>
+        <h1 style={{ margin: "0 0 8px", fontSize: 24 }}>Insurance AI 시작 중...</h1>
+        <p style={{ margin: "0 0 20px", color: state.status === "error" ? "#b91c1c" : "var(--color-text-secondary)" }}>{state.message}</p>
+        <div style={{ display: "grid", gap: 10, marginBottom: 18 }}>
+          {state.steps.map((step) => (
+            <div key={step.label} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 15 }}>
+              <span aria-hidden="true">{step.done ? "✅" : "⏳"}</span>
+              <span>{step.label}</span>
+            </div>
+          ))}
+        </div>
+        {state.status === "error" && (
+          <div role="dialog" aria-modal="true" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 12, padding: 14 }}>
+            <h2 style={{ margin: "0 0 8px", fontSize: 18 }}>local-engine 서버를 시작할 수 없습니다</h2>
+            <p style={{ margin: "0 0 8px" }}>{state.error}</p>
+            {state.logPath && <p style={{ margin: "0 0 12px", wordBreak: "break-all" }}>로그 위치: {state.logPath}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={onRetry}>다시 시도</button>
+              <button onClick={onRelaunch}>재시작</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
   const [needsOnboarding, setNeedsOnboarding] = useState(
@@ -2177,6 +2243,15 @@ function App() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [engineReconnect, setEngineReconnect] = useState<{ status: "idle" | "connecting" | "error"; error?: string }>({ status: "idle" });
   const [engineNotice, setEngineNotice] = useState<{ status: "idle" | "recovering" | "recovered" | "error"; message?: string }>({ status: "idle" });
+  const [startup, setStartup] = useState<StartupState>({
+    status: "starting",
+    message: "백엔드 서버 시작 중...",
+    steps: [
+      { label: "백엔드 서버 시작 중...", done: false },
+      { label: "데이터 로딩 중...", done: false },
+      { label: "시작 완료", done: false },
+    ],
+  });
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJobEvent[]>([]);
   const [toast, setToast] = useState<BackgroundJobEvent | null>(null);
   // CustomersScreen 은 탭 전환("새 고객"↔"고객 목록"↔"AI 문의" 등) 때마다 통째로
@@ -2248,23 +2323,120 @@ function App() {
     }
   }, [updateAvailable]);
 
-  const boot = useCallback(async () => {
-    void loadEngineSettings();
-    track("app_open");
-    if (!getToken()) {
-      setAuth("out");
-      return;
+  const startBackendWithLoading = useCallback(async () => {
+    let logPath = await invoke<string>("local_engine_log_path").catch(() => undefined);
+    const baseSteps = [
+      { label: "백엔드 서버 시작 중...", done: false },
+      { label: "데이터 로딩 중...", done: false },
+      { label: "시작 완료", done: false },
+    ];
+    setStartup({ status: "starting", message: "백엔드 서버 시작 중...", steps: baseSteps, logPath });
+    logPath = await invoke<string>("start_local_engine").catch((error) => {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    });
+
+    let lastError = "local-engine 연결 확인 실패";
+    for (let attempt = 1; attempt <= STARTUP_HEALTH_ATTEMPTS; attempt += 1) {
+      setStartup({
+        status: "starting",
+        message: `백엔드 서버 시작 중... (재시도 ${attempt}/${STARTUP_HEALTH_ATTEMPTS})`,
+        steps: [{ label: `백엔드 서버 시작 중... (재시도 ${attempt}/${STARTUP_HEALTH_ATTEMPTS})`, done: false }, baseSteps[1], baseSteps[2]],
+        logPath,
+      });
+      try {
+        await probeLocalEngineHealthOnce();
+        setStartup({
+          status: "starting",
+          message: "백엔드 연결 완료",
+          steps: [{ label: "백엔드 연결 완료", done: true }, baseSteps[1], baseSteps[2]],
+          logPath,
+        });
+        return logPath;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (attempt < STARTUP_HEALTH_ATTEMPTS) await delay(STARTUP_HEALTH_INTERVAL_MS);
+      }
     }
-    const lic = await resolveLicense();
-    if (!lic) {
-      // 토큰은 있으나 서버도 못 붙고 유예도 끝남 → 재로그인
-      setAuth("out");
-      return;
-    }
-    setOffline(lic.offline);
-    setLicenseErr(lic.state.status === "expired" ? "라이선스가 만료되었습니다. 관리자에게 문의하세요." : null);
-    setAuth("in");
+    throw new Error(`local-engine 서버를 시작할 수 없습니다. ${lastError}`);
   }, []);
+
+  const boot = useCallback(async () => {
+    let logPath: string | undefined;
+    try {
+      setAuth("checking");
+      logPath = await startBackendWithLoading();
+      setStartup((current) => ({
+        ...current,
+        status: "starting",
+        message: "데이터 로딩 중...",
+        steps: [
+          { label: "백엔드 연결 완료", done: true },
+          { label: "데이터 로딩 중...", done: false },
+          { label: "시작 완료", done: false },
+        ],
+        logPath,
+      }));
+      void loadEngineSettings();
+      track("app_open");
+      if (!getToken()) {
+        setAuth("out");
+        setStartup({
+          status: "ready",
+          message: "시작 완료",
+          steps: [
+            { label: "백엔드 연결 완료", done: true },
+            { label: "데이터 로딩 완료", done: true },
+            { label: "시작 완료", done: true },
+          ],
+          logPath,
+        });
+        return;
+      }
+      const lic = await resolveLicense();
+      if (!lic) {
+        // 토큰은 있으나 서버도 못 붙고 유예도 끝남 → 재로그인
+        setAuth("out");
+        setStartup({
+          status: "ready",
+          message: "시작 완료",
+          steps: [
+            { label: "백엔드 연결 완료", done: true },
+            { label: "데이터 로딩 완료", done: true },
+            { label: "시작 완료", done: true },
+          ],
+          logPath,
+        });
+        return;
+      }
+      setOffline(lic.offline);
+      setLicenseErr(lic.state.status === "expired" ? "라이선스가 만료되었습니다. 관리자에게 문의하세요." : null);
+      setAuth("in");
+      setStartup({
+        status: "ready",
+        message: "시작 완료",
+        steps: [
+          { label: "백엔드 연결 완료", done: true },
+          { label: "데이터 로딩 완료", done: true },
+          { label: "시작 완료", done: true },
+        ],
+        logPath,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const resolvedLogPath = logPath ?? (await invoke<string>("local_engine_log_path").catch(() => undefined));
+      setStartup({
+        status: "error",
+        message: "local-engine 서버를 시작할 수 없습니다",
+        error: `${message} 8420 포트 충돌 또는 Python/sidecar 실행 실패 여부를 확인해 주세요.`,
+        logPath: resolvedLogPath,
+        steps: [
+          { label: "백엔드 서버 시작 실패", done: false },
+          { label: "데이터 로딩 중...", done: false },
+          { label: "시작 완료", done: false },
+        ],
+      });
+    }
+  }, [startBackendWithLoading]);
 
   const waitForEngineHealth = useCallback(async () => {
     let lastError = "local-engine 연결 확인 실패";
@@ -2386,6 +2558,9 @@ function App() {
     })();
   }, [auth]);
 
+  if (startup.status !== "ready") {
+    return <StartupScreen state={startup} onRetry={() => void boot()} onRelaunch={() => void relaunchApp()} />;
+  }
   if (auth === "checking") {
     return <p style={{ textAlign: "center", marginTop: 80, color: "#888" }}>확인 중…</p>;
   }

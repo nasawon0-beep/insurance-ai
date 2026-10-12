@@ -4,7 +4,7 @@ use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
@@ -178,7 +178,41 @@ const LOCAL_ENGINE_HOST: &str = "127.0.0.1";
 const LOCAL_ENGINE_PORT: u16 = 8420;
 const LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LOCAL_ENGINE_PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
-const LOCAL_ENGINE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const LOCAL_ENGINE_STARTUP_MAX_ATTEMPTS: usize = 10;
+const LOCAL_ENGINE_STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+fn local_engine_log_path_for(data_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("Insurance AI")
+                .join("logs")
+                .join("local-engine.log");
+        }
+    }
+    data_dir.join("logs").join("local-engine.log")
+}
+
+fn append_local_engine_log(log_path: &Path, line: &str) {
+    if let Some(parent) = log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+#[tauri::command]
+fn local_engine_log_path(app: tauri::AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("데이터 폴더 확인 실패: {e}"))?;
+    Ok(local_engine_log_path_for(&data_dir)
+        .to_string_lossy()
+        .into_owned())
+}
 
 fn local_engine_is_healthy(timeout: Duration) -> bool {
     local_engine_is_healthy_at(LOCAL_ENGINE_HOST, LOCAL_ENGINE_PORT, timeout)
@@ -263,13 +297,14 @@ fn wait_for_tcp_port_released(host: &str, port: u16, total_timeout: Duration) ->
     !is_tcp_port_open(host, port, Duration::from_millis(200))
 }
 
-fn wait_for_local_engine_health(total_timeout: Duration) -> bool {
-    let started = Instant::now();
-    while started.elapsed() < total_timeout {
+fn wait_for_local_engine_health() -> bool {
+    for attempt in 1..=LOCAL_ENGINE_STARTUP_MAX_ATTEMPTS {
         if local_engine_is_healthy(LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(500));
+        if attempt < LOCAL_ENGINE_STARTUP_MAX_ATTEMPTS {
+            std::thread::sleep(LOCAL_ENGINE_STARTUP_RETRY_INTERVAL);
+        }
     }
     false
 }
@@ -333,7 +368,10 @@ fn spawn_local_engine(
     repair_unhealthy: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = app.state::<SidecarChildren>();
+    let log_path = local_engine_log_path_for(data_dir);
+    append_local_engine_log(&log_path, "=== local-engine startup requested ===");
     if local_engine_is_healthy(LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT) {
+        append_local_engine_log(&log_path, "local-engine already healthy on 127.0.0.1:8420");
         return Ok(());
     }
 
@@ -349,10 +387,11 @@ fn spawn_local_engine(
     if repair_unhealthy {
         kill_unhealthy_local_engine_processes()?;
         if !wait_for_local_engine_port_released(LOCAL_ENGINE_PORT_RELEASE_TIMEOUT) {
-            return Err(
-                "stale local-engine.exe 종료 후에도 127.0.0.1:8420 포트가 해제되지 않았습니다"
-                    .into(),
-            );
+            return Err(format!(
+                "local-engine 서버를 시작할 수 없습니다: 127.0.0.1:8420 포트가 이미 사용 중입니다. 로그: {}",
+                log_path.to_string_lossy()
+            )
+            .into());
         }
     }
 
@@ -372,25 +411,44 @@ fn spawn_local_engine(
         .env("WHISPER_PREWARM", "0")
         // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
         .env("APP_LOCK_FILE", lock_path_str)
-        .spawn()?;
+        .spawn()
+        .map_err(|e| {
+            append_local_engine_log(
+                &log_path,
+                &format!("local-engine 실행 실패: {e}. packaged sidecar 또는 Python 런타임을 확인하세요."),
+            );
+            format!(
+                "local-engine 서버를 시작할 수 없습니다: 실행 실패({e}). 로그: {}",
+                log_path.to_string_lossy()
+            )
+        })?;
     #[cfg(windows)]
     if let Some(sidecar_job) = app.try_state::<SidecarJob>() {
         sidecar_job.assign(engine_child.pid())?;
     }
+    let engine_pid = engine_child.pid();
     *state.local_engine.lock().expect("local-engine child lock") = Some(engine_child);
 
+    append_local_engine_log(
+        &log_path,
+        &format!("local-engine process spawned pid={engine_pid}"),
+    );
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = engine_events.recv().await {
             match event {
                 CommandEvent::Stdout(l) | CommandEvent::Stderr(l) => {
-                    eprintln!("[local-engine] {}", String::from_utf8_lossy(&l).trim_end())
+                    let line = String::from_utf8_lossy(&l).trim_end().to_owned();
+                    eprintln!("[local-engine] {}", line);
+                    append_local_engine_log(&log_path, &line);
                 }
                 CommandEvent::Terminated(p) => {
-                    eprintln!(
-                        "[local-engine] 종료됨 code={:?} signal={:?}",
+                    let line = format!(
+                        "local-engine 종료됨 code={:?} signal={:?}",
                         p.code, p.signal
                     );
+                    eprintln!("[local-engine] {line}");
+                    append_local_engine_log(&log_path, &line);
                     if let Some(state) = app_handle.try_state::<SidecarChildren>() {
                         let _ = state
                             .local_engine
@@ -399,12 +457,34 @@ fn spawn_local_engine(
                             .take();
                     }
                 }
-                CommandEvent::Error(e) => eprintln!("[local-engine] 오류: {e}"),
+                CommandEvent::Error(e) => {
+                    eprintln!("[local-engine] 오류: {e}");
+                    append_local_engine_log(&log_path, &format!("local-engine 이벤트 오류: {e}"));
+                }
                 _ => {}
             }
         }
     });
     Ok(())
+}
+
+#[tauri::command]
+fn start_local_engine(app: tauri::AppHandle) -> Result<String, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("설정 폴더 확인 실패: {e}"))?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("데이터 폴더 확인 실패: {e}"))?;
+    fs::create_dir_all(&data_dir).map_err(|e| format!("데이터 폴더 생성 실패: {e}"))?;
+    let lock_path_str = data_dir.join("app.lock").to_string_lossy().into_owned();
+    spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str, true)
+        .map_err(|e| format!("local-engine 서버를 시작할 수 없습니다. {e}"))?;
+    Ok(local_engine_log_path_for(&data_dir)
+        .to_string_lossy()
+        .into_owned())
 }
 
 #[tauri::command]
@@ -421,13 +501,14 @@ fn ensure_local_engine(app: tauri::AppHandle) -> Result<(), String> {
     let lock_path_str = data_dir.join("app.lock").to_string_lossy().into_owned();
     spawn_local_engine(&app, &config_dir, &data_dir, &lock_path_str, true)
         .map_err(|e| format!("local-engine 복구 실패: {e}"))?;
-    if wait_for_local_engine_health(LOCAL_ENGINE_STARTUP_TIMEOUT) {
+    if wait_for_local_engine_health() {
         Ok(())
     } else {
-        Err(
-            "local-engine 재시작 후 60초 동안 /health 응답이 없습니다. 실행 중인 local-engine.exe를 종료한 뒤 앱을 다시 시작해 주세요."
-                .to_owned(),
-        )
+        let log_path = local_engine_log_path_for(&data_dir);
+        Err(format!(
+            "local-engine 서버를 시작할 수 없습니다. /health 확인을 10회 재시도했지만 실패했습니다. 로그: {}",
+            log_path.to_string_lossy()
+        ))
     }
 }
 
@@ -629,7 +710,9 @@ pub fn run() {
             ollama::install_ollama,
             ollama::check_models_installed,
             ollama::download_model,
+            start_local_engine,
             ensure_local_engine,
+            local_engine_log_path,
             local_engine_api_secret,
             local_engine_request,
         ])
@@ -691,7 +774,13 @@ pub fn run() {
                 control_server: Mutex::new(Some(child)),
                 local_engine: Mutex::new(None),
             });
-            spawn_local_engine(app.handle(), &config_dir, &data_dir, &lock_path_str, true)?;
+            if let Err(error) =
+                spawn_local_engine(app.handle(), &config_dir, &data_dir, &lock_path_str, true)
+            {
+                let log_path = local_engine_log_path_for(&data_dir);
+                append_local_engine_log(&log_path, &format!("startup spawn failed: {error}"));
+                eprintln!("[local-engine] startup spawn failed: {error}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
