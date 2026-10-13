@@ -47,7 +47,7 @@ def test_policy_coverages_diagnosis_detail_parser_handles_pdf_oxide_layout():
     by_name = {r["rider_name"]: r for r in rows}
     assert by_name["일반암진단비"]["amount"] == 160_000_000
     assert by_name["질병 3%이상후유장해"]["amount_text"] == "3,000만"
-    assert all(r["insurer"] == "통합 보장분석" and r["product_name"] == "M·보장분석 (통합)" for r in rows)
+    assert all(r["insurer"] == "통합보장분석" and r["product_name"] == "M·보장분석" for r in rows)
 
 
 def test_policy_coverages_short_form_summary_parser_creates_37_rows():
@@ -103,7 +103,7 @@ def test_policy_coverages_short_form_summary_parser_creates_37_rows():
     assert by_name["일반암"]["amount"] == 30_000_000
     assert by_name["질병사망"]["amount"] == 0
     assert by_name["질병입원일당"]["standard_name"] == "질병일당"
-    assert all(r["insurer"] == "통합 보장분석" and r["product_name"] == "보장분석 요약" for r in rows)
+    assert all(r["insurer"] == "알 수 없음" and r["product_name"] == "보장분석 요약" for r in rows)
 
 
 def test_policy_coverages_bulk_requires_review_and_links_policy(tmp_path, monkeypatch):

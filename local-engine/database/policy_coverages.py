@@ -79,8 +79,8 @@ _SHORT_FORM_STANDARD_NAMES = {
 }
 _SHORT_FORM_ROW_RE = re.compile(r"^(?P<name>[가-힣A-Za-z0-9·%()/]+)\s+(?P<rest>.+)$")
 _DIAGNOSIS_DETAIL_STATUSES = {"충분", "부족", "미가입"}
-_INTEGRATED_INSURER = "통합 보장분석"
-_INTEGRATED_PRODUCT = "M·보장분석 (통합)"
+_INTEGRATED_INSURER = "통합보장분석"
+_INTEGRATED_PRODUCT = "M·보장분석"
 
 _STD_ALIASES: list[tuple[str, str]] = [
     ("질병1~5종수술비", "질병종수술"), ("질병1-5종수술비", "질병종수술"), ("질병N종수술비", "질병종수술"), ("질병종수술", "질병종수술"),
@@ -320,7 +320,7 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
                 "source_file_name": source_file_name,
                 "source_hash": source_hash,
                 "source_page": page_no,
-                "insurer": _INTEGRATED_INSURER,
+                "insurer": "알 수 없음",
                 "product_name": "보장분석 요약",
                 "coverage_type": None,
                 "rider_name": rider,

@@ -1462,9 +1462,13 @@ async def capture(
                     else:
                         t0 = time.perf_counter()
                         policy_rows_are_only_analysis_detail = bool(policy_coverage_rows) and all(
-                            (r.get("product_name") or "") == "보장분석 상세" for r in policy_coverage_rows
+                            (r.get("insurer") or "") == "통합보장분석"
+                            and (r.get("product_name") or "") == "M·보장분석"
+                            for r in policy_coverage_rows
                         )
-                        policies = [] if policy_rows_are_only_analysis_detail else _quick_policies_from_coverage_rows(policy_coverage_rows)
+                        # 보유계약리스트가 따로 있는 보장분석서는 실제 계약 목록을 우선한다.
+                        # 계약 목록이 없는 M·보장분석 상세 단독 문서만 통합 분석 계약으로 표시한다.
+                        policies = [] if (policy_rows_are_only_analysis_detail and "보유계약리스트" in doc_text) else _quick_policies_from_coverage_rows(policy_coverage_rows)
                         if not policies:
                             plist = _intake.extract_policies_list(
                                 _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
