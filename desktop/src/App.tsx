@@ -482,6 +482,13 @@ function CapturePanel({
   };
 
   const recalculateCoverageIfNeeded = async (cid: string, row: any, savedCoverageCount = 0) => {
+    console.log("[보장분석 재계산] 시작", {
+      cid,
+      doc_type: row.doc_type,
+      savedCoverageCount,
+      extractedCoverageCount: row.policy_coverages?.length,
+    });
+
     const docType = String(row.doc_type ?? "");
     const extractedCoverageCount = Array.isArray(row.policy_coverages)
       ? row.policy_coverages.length
@@ -489,7 +496,21 @@ function CapturePanel({
           (sum: number, p: any) => sum + (Array.isArray(p.policy_coverages) ? p.policy_coverages.length : 0),
           0,
         );
-    if (!docType.includes("보장분석") && savedCoverageCount <= 0 && extractedCoverageCount <= 0) return false;
+    const willSkip = !docType.includes("보장분석") && savedCoverageCount <= 0 && extractedCoverageCount <= 0;
+    console.log("[보장분석 재계산] 조건 검사", {
+      docType,
+      includes_보장분석: docType.includes("보장분석"),
+      savedCoverageCount,
+      extractedCoverageCount,
+      will_skip: willSkip,
+    });
+
+    if (willSkip) {
+      console.log("[보장분석 재계산] SKIP - 조건 불만족");
+      return false;
+    }
+
+    console.log("[보장분석 재계산] 실행 시작");
     setPhase("보장분석 준비 중…");
     onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message: "보장분석 준비 중…" });
     let done = false;
@@ -513,12 +534,38 @@ function CapturePanel({
     const polling = pollProgress();
     try {
       console.log("[DEBUG] 재계산 호출 ID:", cid);
-      await api(`/customers/${cid}/coverage-analysis/recalculate`, {
+      const result = await api(`/customers/${cid}/coverage-analysis/recalculate`, {
         method: "POST",
         body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
       });
+      console.log("[보장분석 재계산] 성공", result);
+      console.log("[저장 로그]", JSON.stringify({
+        timestamp: new Date().toISOString(),
+        customer_id: cid,
+        doc_type: row.doc_type,
+        saved_coverages: savedCoverageCount,
+        recalculated: true,
+        error: null,
+      }, null, 2));
       onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "done", message: "보장분석 완료" });
       return true;
+    } catch (error) {
+      console.error("[보장분석 재계산] 실패", error);
+      console.log("[저장 로그]", JSON.stringify({
+        timestamp: new Date().toISOString(),
+        customer_id: cid,
+        doc_type: row.doc_type,
+        saved_coverages: savedCoverageCount,
+        recalculated: false,
+        error: error instanceof Error ? error.message : String(error),
+      }, null, 2));
+      onBackgroundJob?.({
+        id: "coverage-analysis",
+        label: "보장분석",
+        status: "error",
+        message: `보장분석 재계산 실패: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return false;
     } finally {
       done = true;
       await polling.catch(() => undefined);
@@ -630,7 +677,16 @@ function CapturePanel({
           res.policyCoverages += r.coverageSaved;
           policyFails.push(...r.failures.map(({ label, error }) => ({ label, error })));
         }
-        if (cid && (await recalculateCoverageIfNeeded(cid, row, savedCoverageCount))) res.coverageAnalyses++;
+        if (cid) {
+          const recalculated = await recalculateCoverageIfNeeded(cid, row, savedCoverageCount);
+          if (recalculated) {
+            res.coverageAnalyses++;
+          } else if (savedCoverageCount > 0) {
+            const warning = "고객 저장은 완료됐지만 보장분석 재계산에 실패했습니다. 고객 탭에서 수동으로 재계산하세요.";
+            console.warn("[경고] 보장분석 재계산 실패 또는 스킵됨", { cid, savedCoverageCount, doc_type: row.doc_type });
+            window.alert(warning);
+          }
+        }
       } catch (e) {
         res.failed++;
         saveErr = saveErr || (e instanceof Error ? e.message : String(e));
