@@ -214,6 +214,7 @@ export default function CoverageAnalysisScreen() {
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedCustomer = useMemo(
@@ -232,7 +233,7 @@ export default function CoverageAnalysisScreen() {
     });
   }, []);
 
-  const loadCustomers = useCallback(async () => {
+  const loadCustomers = useCallback(async (options?: { rethrow?: boolean }) => {
     setCustomersBusy(true);
     setError(null);
     try {
@@ -242,6 +243,7 @@ export default function CoverageAnalysisScreen() {
       setCustomerId((current) => (current && list.some((customer) => customer.id === current) ? current : ""));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      if (options?.rethrow) throw e;
     } finally {
       setCustomersBusy(false);
     }
@@ -276,6 +278,26 @@ export default function CoverageAnalysisScreen() {
       setAnalysisBusy(false);
     }
   }, [customerId]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      await loadCustomers({ rethrow: true });
+
+      if (customerId) {
+        await api(`/customers/${customerId}/coverage-analysis/recalculate`, {
+          method: "POST",
+        });
+        await loadAnalysis();
+      }
+    } catch (e) {
+      console.error("새로고침 실패:", e);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  }, [customerId, loadAnalysis, loadCustomers]);
 
   useEffect(() => {
     void loadCustomers();
@@ -376,15 +398,15 @@ export default function CoverageAnalysisScreen() {
           <h2 className="coverage-title">보장분석</h2>
           <p className="coverage-subtitle">고객을 검색하고 필요한 보장 카테고리를 탭으로 확인합니다.</p>
         </div>
+        <button type="button" className="coverage-button" onClick={() => void handleRefresh()} disabled={refreshing}>
+          {refreshing ? "새로고침 중…" : "🔄 새로고침"}
+        </button>
       </header>
 
       <section className="coverage-toolbar" aria-label="보장분석 조건">
         <div className="coverage-field">
           <div className="coverage-field-header">
             <label htmlFor="coverage-customer">고객 선택</label>
-            <button type="button" className="coverage-button compact" onClick={() => void loadCustomers()} disabled={customersBusy}>
-              {customersBusy ? "새로고침 중…" : "🔄 새로고침"}
-            </button>
           </div>
           <div className="coverage-customer-search">
             <input
@@ -442,9 +464,6 @@ export default function CoverageAnalysisScreen() {
         </div>
 
         <div className="coverage-actions">
-          <button type="button" className="coverage-button" onClick={() => void loadAnalysis()} disabled={!customerId || analysisBusy}>
-            {analysisBusy ? "불러오는 중…" : "새로고침"}
-          </button>
           <span className="coverage-edit-guide">각 행의 수정 버튼으로 현재 보장, 권장 금액, 상태를 직접 수정할 수 있습니다.</span>
         </div>
       </section>
