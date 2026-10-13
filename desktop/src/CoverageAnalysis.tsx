@@ -325,6 +325,18 @@ export default function CoverageAnalysisScreen() {
     setAnalysisBusy(true);
     setError(null);
     try {
+      try {
+        const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=${audience}`);
+        if (Array.isArray(analysis?.categories) && analysis.categories.length > 0) {
+          setData(analysis);
+          setLatestConsultation(null);
+          setCoverageRows([]);
+          setEditingRowId(null);
+          return;
+        }
+      } catch {
+        // 저장형 보장분석 결과가 아직 없는 기존 고객은 상담 coverage_json 방식으로 폴백한다.
+      }
       const body = await api<{ consultations?: Consultation[] } | Consultation[] | null>(`/customers/${customerId}/consultations`);
       const consultations = Array.isArray(body) ? body : Array.isArray(body?.consultations) ? body.consultations : [];
       const latest = consultations.find((consultation) => typeof consultation?.coverage_json === "string" && consultation.coverage_json.trim());

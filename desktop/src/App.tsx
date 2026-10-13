@@ -471,8 +471,15 @@ function CapturePanel({
   const patchRow = (i: number, p: Record<string, unknown>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
-  const recalculateCoverageIfNeeded = async (cid: string, row: any) => {
-    if (row.doc_type !== "보장분석") return false;
+  const recalculateCoverageIfNeeded = async (cid: string, row: any, savedCoverageCount = 0) => {
+    const docType = String(row.doc_type ?? "");
+    const extractedCoverageCount = Array.isArray(row.policy_coverages)
+      ? row.policy_coverages.length
+      : (row.policies || []).reduce(
+          (sum: number, p: any) => sum + (Array.isArray(p.policy_coverages) ? p.policy_coverages.length : 0),
+          0,
+        );
+    if (!docType.includes("보장분석") && savedCoverageCount <= 0 && extractedCoverageCount <= 0) return false;
     setPhase("보장분석 준비 중…");
     onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message: "보장분석 준비 중…" });
     let done = false;
@@ -514,7 +521,7 @@ function CapturePanel({
     setBusy(true);
     setPhase("저장 중…");
     onBackgroundJob?.({ id: "capture-save", label: `${jobLabel} 저장`, status: "running", message: `${jobLabel} 저장 중…` });
-    const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, consultations: 0, coverageAnalyses: 0 };
+    const res = { created: 0, merged: 0, skipped: 0, failed: 0, policies: 0, policyCoverages: 0, consultations: 0, coverageAnalyses: 0 };
     let lastNewId: string | null = null;
     let mergedId: string | null = null;
     const policyFails: { label: string; error: string }[] = [];
@@ -596,12 +603,15 @@ function CapturePanel({
           res.created++;
         }
         // 보험 문서에서 뽑은 계약(들)을 고객 가입목록에 추가
+        let savedCoverageCount = 0;
         if (cid && row.policies?.length) {
           const r = await savePolicies(api, cid, row.policies, row.policyChecked || []);
           res.policies += r.saved;
+          savedCoverageCount = r.coverageSaved;
+          res.policyCoverages += r.coverageSaved;
           policyFails.push(...r.failures.map(({ label, error }) => ({ label, error })));
         }
-        if (cid && (await recalculateCoverageIfNeeded(cid, row))) res.coverageAnalyses++;
+        if (cid && (await recalculateCoverageIfNeeded(cid, row, savedCoverageCount))) res.coverageAnalyses++;
       } catch (e) {
         res.failed++;
         saveErr = saveErr || (e instanceof Error ? e.message : String(e));
@@ -656,6 +666,7 @@ function CapturePanel({
     setMsg(
       `완료 — 신규 ${res.created} · 갱신 ${res.merged} · 건너뜀 ${res.skipped}` +
         (res.policies ? ` · 보험계약 ${res.policies}` : "") +
+        (res.policyCoverages ? ` · 담보 ${res.policyCoverages}` : "") +
         (res.coverageAnalyses ? ` · 보장분석 ${res.coverageAnalyses}건 자동 실행` : "") +
         (res.failed ? ` · 실패 ${res.failed}` : ""),
     );

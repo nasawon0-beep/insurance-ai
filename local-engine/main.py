@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -319,6 +319,15 @@ async def recalculate_coverage_analysis(
             "result": f"/customers/{customer_id}/coverage-analysis?run_id={run_id}"
         },
     }
+
+
+@app.post("/coverage-analysis/recalculate")
+async def recalculate_coverage_analysis_query(
+    customer_id: str = Query(...),
+    body: dict = Body(default_factory=dict),
+    conn=Depends(get_db),
+):
+    return await recalculate_coverage_analysis(customer_id=customer_id, body=body, conn=conn)
 
 
 @app.get("/customers/{customer_id}/coverage-analysis/progress")
