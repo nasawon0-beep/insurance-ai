@@ -23,6 +23,10 @@ logs/
 # 로컬 헬퍼 스크립트
 push-to-github.sh
 
+# 개인정보 포함 실제 PDF fixture (로컬 전용)
+tests/fixtures/real_pdfs/*.pdf
+tests/fixtures/real_pdfs/**/*.pdf
+
 # sidecar 빌드 산출물 (build-sidecars.sh / CI 가 생성)
 control-server/build/
 control-server/dist/
