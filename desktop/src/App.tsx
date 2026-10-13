@@ -511,8 +511,8 @@ function CapturePanel({
     }
 
     console.log("[보장분석 재계산] 실행 시작");
-    setPhase("보장분석 준비 중…");
-    onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message: "보장분석 준비 중…" });
+    setPhase("보장분석 재계산 중…");
+    onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "running", message: "보장분석 재계산 중…" });
     let done = false;
     const pollProgress = async () => {
       while (!done) {
@@ -547,9 +547,10 @@ function CapturePanel({
         recalculated: true,
         error: null,
       }, null, 2));
+      setMsg("✅ 저장 완료 - 보장분석 자동 생성 완료!");
       onBackgroundJob?.({ id: "coverage-analysis", label: "보장분석", status: "done", message: "보장분석 완료" });
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error("[보장분석 재계산] 실패", error);
       console.log("[저장 로그]", JSON.stringify({
         timestamp: new Date().toISOString(),
@@ -559,11 +560,14 @@ function CapturePanel({
         recalculated: false,
         error: error instanceof Error ? error.message : String(error),
       }, null, 2));
+      const errorMsg = error?.message || String(error);
+      alert(`⚠️ 보장분석 재계산 실패\n\n오류: ${errorMsg}\n\n고객 ID: ${cid}\n\n고객 탭에서 수동으로 재계산하세요.`);
+      setMsg(`⚠️ 저장 완료 (보장분석 재계산 실패: ${errorMsg})`);
       onBackgroundJob?.({
         id: "coverage-analysis",
         label: "보장분석",
         status: "error",
-        message: `보장분석 재계산 실패: ${error instanceof Error ? error.message : String(error)}`,
+        message: `보장분석 재계산 실패: ${errorMsg}`,
       });
       return false;
     } finally {
@@ -682,9 +686,7 @@ function CapturePanel({
           if (recalculated) {
             res.coverageAnalyses++;
           } else if (savedCoverageCount > 0) {
-            const warning = "고객 저장은 완료됐지만 보장분석 재계산에 실패했습니다. 고객 탭에서 수동으로 재계산하세요.";
             console.warn("[경고] 보장분석 재계산 실패 또는 스킵됨", { cid, savedCoverageCount, doc_type: row.doc_type });
-            window.alert(warning);
           }
         }
       } catch (e) {
