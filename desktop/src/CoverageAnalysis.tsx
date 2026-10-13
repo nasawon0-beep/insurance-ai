@@ -380,7 +380,12 @@ export default function CoverageAnalysisScreen() {
 
       <section className="coverage-toolbar" aria-label="보장분석 조건">
         <div className="coverage-field">
-          <label htmlFor="coverage-customer">고객 선택</label>
+          <div className="coverage-field-header">
+            <label htmlFor="coverage-customer">고객 선택</label>
+            <button type="button" className="coverage-button compact" onClick={() => void loadCustomers()} disabled={customersBusy}>
+              {customersBusy ? "새로고침 중…" : "🔄 새로고침"}
+            </button>
+          </div>
           <div className="coverage-customer-search">
             <input
               id="coverage-customer"
