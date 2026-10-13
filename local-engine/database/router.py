@@ -58,7 +58,8 @@ from rag import index_parsed_doc
 
 from . import backup as _backup
 from . import coverage, policy_coverages, policy_qa, repo
-from .policy_coverages import DocumentType, classify_document_type
+from .policy_coverages import DocumentType, classify_document_type, detect_candidate_pages
+from .proposal_parser import parse_proposal
 from . import export_data as _export
 from . import import_data as _import
 from .import_data import ai_classifier as _ai_classifier
@@ -1398,6 +1399,73 @@ async def capture(
                 doc_type = doc_type_enum.value
                 if doc_type_enum == DocumentType.UNKNOWN_INSURANCE_PDF:
                     doc_type = _doc_type(doc_text, file.filename)
+                if doc_type_enum == DocumentType.PROPOSAL:
+                    t0 = time.perf_counter()
+                    tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                    try:
+                        tmp_pdf.write(data)
+                        tmp_pdf.close()
+                        candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
+                        proposal_info = parse_proposal(tmp_pdf.name, candidate_pages)
+                    finally:
+                        try:
+                            os.unlink(tmp_pdf.name)
+                        except OSError:
+                            pass
+                    perf["proposal_parse"] = time.perf_counter() - t0
+                    f, warns = _quick_customer_fields(doc_text + extra, file.filename if file else None, None)
+                    review = {
+                        "doc_type": "proposal",
+                        "insurer": proposal_info.insurer,
+                        "product_name": proposal_info.product_name,
+                        "plan_name": proposal_info.plan_name,
+                        "contract_period": proposal_info.contract_period,
+                        "payment_method": proposal_info.payment_method,
+                        "first_premium": proposal_info.first_premium,
+                        "first_premium_text": proposal_info.first_premium_text,
+                        "riders": [
+                            {
+                                "rider_type": r.rider_type,
+                                "rider_name": r.rider_name,
+                                "coverage_period": r.coverage_period,
+                                "payment_period": r.payment_period,
+                                "coverage_amount": r.coverage_amount,
+                                "coverage_amount_text": r.coverage_amount_text,
+                                "premium": r.premium,
+                                "premium_text": r.premium_text,
+                            }
+                            for r in proposal_info.riders
+                        ],
+                        "page_count": locals().get("_doc_type_metadata", {}).get("page_count"),
+                    }
+                    warns.append("가입제안서 검수 화면은 다음 PR에서 분리됩니다. 기존 보유담보로는 저장하지 않습니다.")
+                    item = {
+                        "fields": f,
+                        "warnings": warns,
+                        "doc_type": "proposal",
+                        "proposal_review": review,
+                        "consultation": None,
+                        "policies": [],
+                        "coverage_status": [],
+                        "policy_coverages": [],
+                        "coverage_review": review,
+                        "coverages_text": "",
+                        "analysis_status": "proposal_review_ready",
+                        "quick_contracts": [],
+                        "quick_coverages": review["riders"][:10],
+                        "perf": {k: round(v, 3) for k, v in perf.items()},
+                    }
+                    mr = repo.match_customer(conn, f.get("phone"), f.get("name"), f.get("birth_date"))
+                    item["match"] = mr["match"]
+                    item["match_reason"] = mr["match_reason"]
+                    if mr["match_reason"] == "name":
+                        item["warnings"].append("이름만 일치합니다. 동명이인일 수 있으니 확인하세요.")
+                    _scrub_intake(item, _rrn_on(conn))
+                    try:
+                        _usage.record(conn, "capture_run", {"source": "pdf", "items": 1})
+                    except Exception:
+                        pass
+                    return {"items": [item], "audio_minutes": audio_minutes}
                 # 긴 제안서는 앞쪽이 약관 보일러플레이트라, 실제 요약표(계약자/피보험자/보험료)가
                 # 시작되는 지점부터 잘라 추출 파이프라인에 넘긴다.
                 prop_body = _proposal_body(doc_text)
