@@ -58,6 +58,7 @@ from rag import index_parsed_doc
 
 from . import backup as _backup
 from . import coverage, policy_coverages, policy_qa, repo
+from .policy_coverages import DocumentType, classify_document_type
 from . import export_data as _export
 from . import import_data as _import
 from .import_data import ai_classifier as _ai_classifier
@@ -1380,12 +1381,34 @@ async def capture(
                     logger.warning("policy coverage extraction failed during capture: %s", e, exc_info=True)
                     policy_coverage_warning = "계약별 담보 원장 추출에 실패했습니다. 기존 고객정보/계약/보장분석 결과는 계속 검수할 수 있습니다."
                     perf["policy_coverages"] = time.perf_counter() - t0 if "t0" in locals() else 0.0
-                doc_type = _doc_type(doc_text, file.filename)
+                doc_type_enum = DocumentType.UNKNOWN_INSURANCE_PDF
+                try:
+                    tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                    try:
+                        tmp_pdf.write(data)
+                        tmp_pdf.close()
+                        doc_type_enum, _doc_type_metadata = classify_document_type(tmp_pdf.name)
+                    finally:
+                        try:
+                            os.unlink(tmp_pdf.name)
+                        except OSError:
+                            pass
+                except Exception as e:
+                    logger.warning("document type classification failed during capture: %s", e, exc_info=True)
+                doc_type = doc_type_enum.value
+                if doc_type_enum == DocumentType.UNKNOWN_INSURANCE_PDF:
+                    doc_type = _doc_type(doc_text, file.filename)
                 # 긴 제안서는 앞쪽이 약관 보일러플레이트라, 실제 요약표(계약자/피보험자/보험료)가
                 # 시작되는 지점부터 잘라 추출 파이프라인에 넘긴다.
                 prop_body = _proposal_body(doc_text)
                 # 보장분석서는 30초 이내 1차 검수 우선: LLM 고객추출 호출을 생략하고 규칙 기반으로 처리한다.
-                if doc_type == "보장분석" or "보유계약리스트" in doc_text:
+                coverage_doc_types = {
+                    DocumentType.COVERAGE_ANALYSIS_FULL,
+                    DocumentType.COVERAGE_ANALYSIS_DETAIL_ONLY,
+                    DocumentType.COVERAGE_ANALYSIS_SHORT,
+                }
+                is_coverage_doc = doc_type_enum in coverage_doc_types or doc_type == "보장분석" or "보유계약리스트" in doc_text
+                if is_coverage_doc:
                     t0 = time.perf_counter()
                     f, warns = _quick_customer_fields(doc_text + extra, file.filename, _short_form_issued_date(doc_text))
                     perf["customer"] = time.perf_counter() - t0
@@ -1423,7 +1446,7 @@ async def capture(
 
                 # 계약: 보장분석/보유계약리스트면 여러 건, 아니면 증권 헤더 1건
                 coverage_status: list = []
-                if doc_type == "보장분석" or "보유계약리스트" in doc_text:
+                if is_coverage_doc:
                     is_short_summary = _has_short_form_summary_coverages(policy_coverage_rows)
                     if is_short_summary:
                         issued_date = _short_form_issued_date(doc_text)

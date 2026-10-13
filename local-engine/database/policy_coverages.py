@@ -9,7 +9,145 @@ import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional
+
+
+class DocumentType(Enum):
+    PROPOSAL = "proposal"  # 가입제안서
+    COVERAGE_ANALYSIS_FULL = "coverage_analysis_full"  # M보장분석 전체
+    COVERAGE_ANALYSIS_DETAIL_ONLY = "coverage_analysis_detail_only"  # 보장별 상세표만
+    COVERAGE_ANALYSIS_SHORT = "coverage_analysis_short"  # 간편보장분석
+    UNKNOWN_INSURANCE_PDF = "unknown_insurance_pdf"
+
+
+class PageMarker(Enum):
+    # 보장분석서 markers
+    COVERAGE_SUMMARY = "보장현황"
+    COVERAGE_DETAIL_LIST = "가입담보상세List"
+    COVERAGE_BY_PRODUCT = "상품별가입담보상세"
+    COVERAGE_BY_CATEGORY = "보장별상세표"
+    CONTRACT_LEDGER = "보유계약리스트"
+
+    # 가입제안서 markers
+    PROPOSAL_INFO = "가입사항"
+    PROPOSAL_PREMIUM = "보험료"
+    PROPOSAL_RIDERS = "특약명"
+    PROPOSAL_COVERAGE = "가입금액"
+
+
+def classify_document_type(pdf_path: str) -> tuple[DocumentType, dict]:
+    """
+    PDF 문서 유형 분류 및 메타데이터 추출
+
+    Returns:
+        (DocumentType, metadata dict)
+    """
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page_count = len(pdf.pages)
+
+        # 첫 3페이지 텍스트 추출 (빠른 분류)
+        head_text = ""
+        for i in range(min(3, page_count)):
+            page_text = pdf.pages[i].extract_text() or ""
+            head_text += page_text
+
+        metadata = {
+            "page_count": page_count,
+            "head_text_length": len(head_text),
+        }
+
+        # 가입제안서 키워드
+        proposal_keywords = [
+            "가입제안서", "가입설계서", "가입안내서", "보험료납입설계서",
+            "계약전 알릴의무", "청약", "납입방법"
+        ]
+        if any(kw in head_text for kw in proposal_keywords):
+            # 가입사항 표가 있는지 확인
+            if "가입사항" in head_text and "특약명" in head_text:
+                metadata["has_proposal_table"] = True
+                return DocumentType.PROPOSAL, metadata
+
+        # 보장분석서 키워드
+        coverage_analysis_keywords = [
+            "보장분석", "보장현황", "간편보장분석",
+            "보유계약", "가입담보상세"
+        ]
+        if any(kw in head_text for kw in coverage_analysis_keywords):
+            # 긴 양식 vs 짧은 양식 구분
+            if "간편보장분석" in head_text or page_count <= 10:
+                metadata["is_short_form"] = True
+                return DocumentType.COVERAGE_ANALYSIS_SHORT, metadata
+            elif "가입담보상세List" in head_text or "상품별가입담보상세" in head_text:
+                metadata["is_full_form"] = True
+                return DocumentType.COVERAGE_ANALYSIS_FULL, metadata
+            elif "보장별상세표" in head_text:
+                metadata["is_detail_only"] = True
+                return DocumentType.COVERAGE_ANALYSIS_DETAIL_ONLY, metadata
+            else:
+                # 기본값: 전체 양식
+                return DocumentType.COVERAGE_ANALYSIS_FULL, metadata
+
+        return DocumentType.UNKNOWN_INSURANCE_PDF, metadata
+
+
+def detect_candidate_pages(pdf_path: str, doc_type: DocumentType) -> dict:
+    """
+    문서 유형별 후보 페이지 탐지
+
+    Returns:
+        {
+            "coverage_summary_pages": [1, 2],
+            "detail_list_pages": [5, 6, 7],
+            "product_detail_pages": [10, 11],
+            "category_detail_pages": [15, 16],
+            "contract_ledger_pages": [3, 4],
+            "proposal_table_pages": [2, 3],
+        }
+    """
+    import pdfplumber
+
+    result = {
+        "coverage_summary_pages": [],
+        "detail_list_pages": [],
+        "product_detail_pages": [],
+        "category_detail_pages": [],
+        "contract_ledger_pages": [],
+        "proposal_table_pages": [],
+    }
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            page_num = i + 1
+            text = page.extract_text() or ""
+
+            # 보장현황 (간편보장분석 2페이지)
+            if "보장현황" in text and ("미가입" in text or "부족" in text or "충분" in text):
+                result["coverage_summary_pages"].append(page_num)
+
+            # 가입담보상세List
+            if "가입담보상세List" in text or "가입담보 상세 List" in text or "NO 보험사" in text or "NO 구분 회사" in text:
+                result["detail_list_pages"].append(page_num)
+
+            # 상품별가입담보상세
+            if "상품별가입담보상세" in text:
+                result["product_detail_pages"].append(page_num)
+
+            # 보장별상세표
+            if "보장별상세표" in text or ("보장군" in text and "권장금액" in text):
+                result["category_detail_pages"].append(page_num)
+
+            # 보유계약리스트
+            if "보유계약" in text and "월보험료" in text:
+                result["contract_ledger_pages"].append(page_num)
+
+            # 가입사항 (가입제안서)
+            if "가입사항" in text and "특약명" in text and "가입금액" in text:
+                result["proposal_table_pages"].append(page_num)
+
+    return result
 
 
 def _now() -> str:
