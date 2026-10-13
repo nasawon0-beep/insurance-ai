@@ -79,6 +79,8 @@ _SHORT_FORM_STANDARD_NAMES = {
 }
 _SHORT_FORM_ROW_RE = re.compile(r"^(?P<name>[가-힣A-Za-z0-9·%()/]+)\s+(?P<rest>.+)$")
 _DIAGNOSIS_DETAIL_STATUSES = {"충분", "부족", "미가입"}
+_INTEGRATED_INSURER = "통합 보장분석"
+_INTEGRATED_PRODUCT = "M·보장분석 (통합)"
 
 _STD_ALIASES: list[tuple[str, str]] = [
     ("질병1~5종수술비", "질병종수술"), ("질병1-5종수술비", "질병종수술"), ("질병N종수술비", "질병종수술"), ("질병종수술", "질병종수술"),
@@ -318,7 +320,7 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
                 "source_file_name": source_file_name,
                 "source_hash": source_hash,
                 "source_page": page_no,
-                "insurer": "알 수 없음",
+                "insurer": _INTEGRATED_INSURER,
                 "product_name": "보장분석 요약",
                 "coverage_type": None,
                 "rider_name": rider,
@@ -371,8 +373,11 @@ def _parse_diagnosis_detail_pages(pages: list[tuple[int, str]], source_file_name
                 "source_file_name": source_file_name,
                 "source_hash": source_hash,
                 "source_page": page_no,
-                "insurer": "알 수 없음",
-                "product_name": "보장분석 상세",
+                # M·보장분석 PDF의 보장별 상세 내역은 개별 보험사/상품이 없는
+                # 통합 담보 현황이다. UI 검수 화면에서 "알 수 없음 / 보장분석 상세"로
+                # 보이지 않도록 통합 분석 문서임을 명확히 표시한다.
+                "insurer": _INTEGRATED_INSURER,
+                "product_name": _INTEGRATED_PRODUCT,
                 "coverage_type": None,
                 "rider_name": rider,
                 "standard_name": normalize_standard_name(rider, rider),

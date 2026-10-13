@@ -702,6 +702,13 @@ function CapturePanel({
   const reasonLabel = (r: string | null) =>
     r === "phone" ? "전화 일치" : r === "name+birthdate" ? "동일인" : r === "name" ? "동명" : "";
 
+  const hasCoverageReview = rows.some((row: any) => row.action !== "skip" && row.coverage_review);
+  const saveButtonLabel = busy
+    ? "처리 중…"
+    : hasCoverageReview
+      ? (rows.length > 1 ? `${rows.length}명 검수 완료 후 저장` : "검수 완료 후 저장")
+      : (rows.length > 1 ? `${rows.length}명 저장` : "분석 후 저장");
+
   return (
     <div
       onDragOver={(e) => {
@@ -787,7 +794,7 @@ function CapturePanel({
         </div>
         {rows.length > 0 && (
           <button
-            aria-label="상단 분석 후 저장"
+            aria-label={hasCoverageReview ? "상단 검수 완료 후 저장" : "상단 분석 후 저장"}
             onClick={run}
             disabled={busy}
             style={{
@@ -802,7 +809,7 @@ function CapturePanel({
               whiteSpace: "nowrap"
             }}
           >
-            {busy ? "처리 중…" : rows.length > 1 ? `${rows.length}명 저장` : "분석 후 저장"}
+            {saveButtonLabel}
           </button>
         )}
       </div>
@@ -1119,7 +1126,7 @@ function CapturePanel({
                       </div>
                     </details>
                   )}
-                  <div style={{ color: "#9a3412", marginTop: 4 }}>[검수 완료 후 저장] 버튼을 누를 때만 저장됩니다. 자동 저장은 하지 않습니다.</div>
+                  <div style={{ color: "#9a3412", marginTop: 4 }}>[검수 완료 후 저장] 버튼(화면 상단/하단)을 누를 때만 저장됩니다. 자동 저장은 하지 않습니다.</div>
                 </div>
               )}
               {row.action !== "skip" && row.policies?.length > 0 && (
@@ -1145,7 +1152,7 @@ function CapturePanel({
             </div>
           ))}
           <button onClick={run} disabled={busy} style={{ marginTop: 6, fontWeight: 600 }}>
-            {busy ? "처리 중…" : rows.length > 1 ? `${rows.length}명 저장` : "저장"}
+            {saveButtonLabel}
           </button>
         </div>
       )}
