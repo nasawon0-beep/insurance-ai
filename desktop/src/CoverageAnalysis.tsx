@@ -7,6 +7,7 @@ import "./styles/coverage.css";
 
 type CustomerOption = {
   id: string;
+  customer_id?: string;
   name: string;
   phone?: string | null;
   birth_date?: string | null;
@@ -167,7 +168,6 @@ function normalizeRunCustomers(body: unknown): CustomerOption[] {
   } | CoverageRunOption[] | null;
 
   if (!source) return [];
-  if (!Array.isArray(source) && Array.isArray(source.customers)) return source.customers;
 
   const runs = Array.isArray(source)
     ? source
@@ -177,16 +177,22 @@ function normalizeRunCustomers(body: unknown): CustomerOption[] {
         ? source.items
         : Array.isArray(source.data)
           ? source.data
-          : [];
+          : Array.isArray(source.customers)
+            ? source.customers
+            : [];
 
   const byCustomerId = new Map<string, CustomerOption>();
-  for (const run of runs) {
+  for (const raw of runs) {
+    const run = raw as CoverageRunOption & CustomerOption;
     const customer = run.customer ?? null;
-    const id = String(customer?.id ?? run.customer_id ?? "").trim();
+    // /coverage-analysis-runs 의 id/run_id 는 분석 run ID다.
+    // 고객 상세 API에는 반드시 runs.customer_id 를 우선 사용해야 한다.
+    const id = String(run.customer_id ?? customer?.customer_id ?? customer?.id ?? run.id ?? "").trim();
     const name = String(customer?.name ?? run.customer_name ?? run.name ?? "").trim();
     if (!id || !name || byCustomerId.has(id)) continue;
     byCustomerId.set(id, {
       id,
+      customer_id: id,
       name,
       phone: customer?.phone ?? run.customer_phone ?? run.phone ?? null,
       birth_date: customer?.birth_date ?? run.customer_birth_date ?? run.birth_date ?? null,
