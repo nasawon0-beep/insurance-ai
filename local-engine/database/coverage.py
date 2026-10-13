@@ -989,44 +989,49 @@ def get_analysis_response(
 
 def list_runs(conn: sqlite3.Connection, *, limit: int = 1000, status: str = "completed") -> dict[str, Any]:
     """보장분석 탭 고객 목록용: 저장된 분석 run과 고객 요약을 최신순으로 반환."""
-    ensure_schema(conn)
-    rows = conn.execute(
-        """
-        SELECT r.*,
-               (SELECT COUNT(*) FROM coverage_analysis a WHERE a.run_id = r.id) AS items_count
-        FROM coverage_analysis_runs r
-        WHERE (? = '' OR r.status = ?)
-        ORDER BY r.completed_at DESC, r.created_at DESC
-        LIMIT ?
-        """,
-        (status or "", status or "", limit),
-    ).fetchall()
+    previous_row_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT r.*,
+                   (SELECT COUNT(*) FROM coverage_analysis a WHERE a.run_id = r.id) AS items_count
+            FROM coverage_analysis_runs r
+            WHERE (? = '' OR r.status = ?)
+            ORDER BY r.completed_at DESC, r.created_at DESC
+            LIMIT ?
+            """,
+            (status or "", status or "", limit),
+        ).fetchall()
 
-    runs: list[dict[str, Any]] = []
-    for row in rows:
-        customer = repo.get_customer(conn, row["customer_id"]) or {}
-        runs.append({
-            "id": row["id"],
-            "run_id": row["id"],
-            "customer_id": row["customer_id"],
-            "customer_name": customer.get("name") or "",
-            "customer_phone": customer.get("phone"),
-            "customer_birth_date": customer.get("birth_date"),
-            "customer": {
-                "id": row["customer_id"],
-                "name": customer.get("name") or "",
-                "phone": customer.get("phone"),
-                "birth_date": customer.get("birth_date"),
-            },
-            "status": row["status"],
-            "mode": row["mode"],
-            "items_count": row["items_count"],
-            "summary": row["summary_customer"],
-            "started_at": row["started_at"],
-            "completed_at": row["completed_at"],
-            "created_at": row["created_at"],
-        })
-    return {"runs": runs}
+        runs: list[dict[str, Any]] = []
+        for row in rows:
+            customer = repo.get_customer(conn, row["customer_id"]) or {}
+            runs.append({
+                "id": row["id"],
+                "run_id": row["id"],
+                "customer_id": row["customer_id"],
+                "customer_name": customer.get("name") or "",
+                "customer_phone": customer.get("phone"),
+                "customer_birth_date": customer.get("birth_date"),
+                "customer": {
+                    "id": row["customer_id"],
+                    "name": customer.get("name") or "",
+                    "phone": customer.get("phone"),
+                    "birth_date": customer.get("birth_date"),
+                },
+                "status": row["status"],
+                "mode": row["mode"],
+                "items_count": row["items_count"],
+                "summary": row["summary_customer"],
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "created_at": row["created_at"],
+            })
+        return {"runs": runs}
+    finally:
+        conn.row_factory = previous_row_factory
 
 
 def _response_summary(run: sqlite3.Row, all_rows: list[dict[str, Any]], items: list[dict[str, Any]], audience: str) -> dict[str, Any]:
