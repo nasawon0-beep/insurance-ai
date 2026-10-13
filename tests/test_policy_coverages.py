@@ -28,7 +28,7 @@ NO 구분 회사 담보명 신정원 담보명 가입금액
     assert all(r["product_name"].startswith("무배당 삼성화재 건강보험 New내돈내삼") for r in rows)
 
 
-def test_policy_coverages_diagnosis_detail_parser_handles_pdf_oxide_layout():
+def test_policy_coverages_diagnosis_detail_parser_handles_single_line_layout():
     page = """
 04
 진단상세보장별 상세
@@ -42,7 +42,7 @@ def test_policy_coverages_diagnosis_detail_parser_handles_pdf_oxide_layout():
 교통사고처리 지원금
 운전자
 """
-    rows = policy_coverages.parse_policy_coverages_from_pages([(5, page)], "oxide.pdf", "hash")
+    rows = policy_coverages.parse_policy_coverages_from_pages([(5, page)], "summary.pdf", "hash")
     assert len(rows) == 4
     by_name = {r["rider_name"]: r for r in rows}
     assert by_name["일반암진단비"]["amount"] == 160_000_000

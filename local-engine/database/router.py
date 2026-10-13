@@ -435,44 +435,27 @@ def _ocr_pdf(data: bytes, filename: Optional[str] = None) -> str:
 
 def _pdf_extract_text(data: bytes, max_pages: int = 16) -> str:
     """PDF 앞쪽 페이지에서 텍스트만 뽑는다 (표 추출 생략 — 무거운 벡터 PDF 대응)."""
-    import pdf_oxide
+    import io as _io
 
-    pdf_doc = pdf_oxide.PdfDocument.from_bytes(data)
-    page_limit = min(pdf_doc.page_count, max_pages)
-    return "\n\n".join(
-        (pdf_doc.extract_text(page_num) or "").strip()
-        for page_num in range(page_limit)
-    ).strip()
+    import pdfplumber
+
+    with pdfplumber.open(_io.BytesIO(data)) as pdf:
+        return "\n\n".join(
+            (pg.extract_text() or "").strip() for pg in pdf.pages[:max_pages]
+        ).strip()
 
 
 def _pdf_extract_text_pages(data: bytes) -> list[tuple[int, str]]:
     """PDF 전체 페이지에서 텍스트만 뽑는다. /capture 빠른 분석용(표 추출 금지)."""
     import io as _io
 
-    import pdf_oxide
     import pdfplumber
 
-    pdf_doc = pdf_oxide.PdfDocument.from_bytes(data)
-    pages = [
-        (page_num + 1, (pdf_doc.extract_text(page_num) or "").strip())
-        for page_num in range(pdf_doc.page_count)
-    ]
-
-    # 일부 가입담보 상세 List는 PDF Oxide 읽기 순서가 표 컬럼별로 섞인다.
-    # 해당 후보 페이지만 pdfplumber로 보정해 담보 수 정확도를 유지한다.
-    fallback_indexes = [
-        page_no - 1
-        for page_no, text in pages
-        if "가입담보상세List" in re.sub(r"\s+", "", text or "")
-    ]
-    if fallback_indexes:
-        with pdfplumber.open(_io.BytesIO(data)) as pdf:
-            fixed = dict(pages)
-            for idx in fallback_indexes:
-                if 0 <= idx < len(pdf.pages):
-                    fixed[idx + 1] = (pdf.pages[idx].extract_text() or "").strip()
-            pages = [(page_no, fixed.get(page_no, text)) for page_no, text in pages]
-    return pages
+    with pdfplumber.open(_io.BytesIO(data)) as pdf:
+        return [
+            (i, (pg.extract_text() or "").strip())
+            for i, pg in enumerate(pdf.pages, start=1)
+        ]
 
 
 def _document_to_text(data: bytes, filename: Optional[str], kind: str) -> str:

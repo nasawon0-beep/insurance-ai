@@ -179,7 +179,7 @@ def _policy_from_appendix_page(lines: list[str]) -> dict:
     for i, line in enumerate(lines):
         if "님의 상품별 가입담보상세" in line or "상품별 가입담보상세" in line or re.fullmatch(r"20\d{2}[-.]\d{2}[-.]\d{2}.*", line):
             continue
-        # pdfplumber는 보험사/상품명을 별도 줄로 주지만, PDF Oxide는 같은 줄로 붙여 줄 수 있다.
+        # 추출기/문서 레이아웃에 따라 보험사/상품명이 같은 줄로 붙어 나올 수 있다.
         if not insurer and line in _KNOWN_INSURERS:
             insurer = line
             if i + 1 < len(lines) and "계약자" not in lines[i + 1] and "가입담보" not in lines[i + 1]:
@@ -334,7 +334,7 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
 
 
 def _parse_diagnosis_detail_pages(pages: list[tuple[int, str]], source_file_name: str | None, source_hash: str | None) -> list[dict]:
-    """PDF Oxide가 한 줄로 읽는 '보장군 보장상세 권장금액 가입금액' 표를 담보 원장으로 변환한다."""
+    """한 줄로 추출된 '보장군 보장상세 권장금액 가입금액' 표를 담보 원장으로 변환한다."""
     rows: list[dict] = []
     seen: set[str] = set()
     amount_value_re = re.compile(r"-?(?:\d[\d,]*(?:\.\d+)?(?:억\d[\d,]*만|억|천만|백만|십만|만|원)?|0)")
@@ -406,7 +406,7 @@ def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_
             if key not in seen:
                 rows.append(r)
                 seen.add(key)
-    # 상품별/계약별 담보 원장이 전혀 없는 PDF Oxide 신형 요약 문서만 보장별 상세 표를 fallback으로 사용한다.
+    # 상품별/계약별 담보 원장이 전혀 없는 신형 요약 문서만 보장별 상세 표를 fallback으로 사용한다.
     if not rows:
         for r in _parse_diagnosis_detail_pages(pages, source_file_name, source_hash):
             key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
