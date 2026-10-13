@@ -5,13 +5,24 @@ import { formatErrorDetail } from "./errorDetail";
 import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import "./styles/coverage.css";
 
-type Audience = "customer" | "internal";
-
 type CustomerOption = {
   id: string;
   name: string;
   phone?: string | null;
   birth_date?: string | null;
+};
+
+type CoverageRunOption = {
+  id?: string;
+  run_id?: string;
+  customer_id?: string;
+  customer_name?: string;
+  name?: string;
+  phone?: string | null;
+  customer_phone?: string | null;
+  birth_date?: string | null;
+  customer_birth_date?: string | null;
+  customer?: Partial<CustomerOption> | null;
 };
 
 
@@ -46,7 +57,7 @@ type CoverageResponse = {
   customer_id: string;
   run_id: string;
   status: string;
-  audience: Audience;
+  audience: "customer";
   summary?: {
     overall?: string;
     total_items?: number;
@@ -147,13 +158,49 @@ function filterMatches(item: CoverageItem, filter: CoverageFilter): boolean {
   return !knownGroups.includes(item.category_group);
 }
 
+function normalizeRunCustomers(body: unknown): CustomerOption[] {
+  const source = body as {
+    runs?: CoverageRunOption[];
+    items?: CoverageRunOption[];
+    data?: CoverageRunOption[];
+    customers?: CustomerOption[];
+  } | CoverageRunOption[] | null;
+
+  if (!source) return [];
+  if (!Array.isArray(source) && Array.isArray(source.customers)) return source.customers;
+
+  const runs = Array.isArray(source)
+    ? source
+    : Array.isArray(source.runs)
+      ? source.runs
+      : Array.isArray(source.items)
+        ? source.items
+        : Array.isArray(source.data)
+          ? source.data
+          : [];
+
+  const byCustomerId = new Map<string, CustomerOption>();
+  for (const run of runs) {
+    const customer = run.customer ?? null;
+    const id = String(customer?.id ?? run.customer_id ?? "").trim();
+    const name = String(customer?.name ?? run.customer_name ?? run.name ?? "").trim();
+    if (!id || !name || byCustomerId.has(id)) continue;
+    byCustomerId.set(id, {
+      id,
+      name,
+      phone: customer?.phone ?? run.customer_phone ?? run.phone ?? null,
+      birth_date: customer?.birth_date ?? run.customer_birth_date ?? run.birth_date ?? null,
+    });
+  }
+  return [...byCustomerId.values()];
+}
+
 export default function CoverageAnalysisScreen() {
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [customerId, setCustomerId] = useState("");
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
-  const [audience, setAudience] = useState<Audience>("internal");
   const [data, setData] = useState<CoverageResponse | null>(null);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
@@ -183,8 +230,8 @@ export default function CoverageAnalysisScreen() {
     setCustomersBusy(true);
     setError(null);
     try {
-      const body = await api<{ customers?: CustomerOption[] } | null>("/customers");
-      const list = Array.isArray(body?.customers) ? body.customers : [];
+      const body = await api<unknown>("/coverage-analysis-runs");
+      const list = normalizeRunCustomers(body);
       setCustomers(list);
       setCustomerId((current) => (current && list.some((customer) => customer.id === current) ? current : ""));
     } catch (e) {
@@ -212,7 +259,7 @@ export default function CoverageAnalysisScreen() {
     setAnalysisBusy(true);
     setError(null);
     try {
-      const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=${audience}`);
+      const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`);
       setData(analysis);
       setEditingRowId(null);
     } catch (e) {
@@ -222,7 +269,7 @@ export default function CoverageAnalysisScreen() {
     } finally {
       setAnalysisBusy(false);
     }
-  }, [audience, customerId]);
+  }, [customerId]);
 
   useEffect(() => {
     void loadCustomers();
@@ -384,25 +431,6 @@ export default function CoverageAnalysisScreen() {
         </div>
 
         <div className="coverage-actions">
-          <div>
-            <div className="coverage-toggle-label">표시 대상</div>
-            <div className="coverage-toggle" role="group" aria-label="고객용 내부용 전환">
-              <button
-                type="button"
-                className={audience === "customer" ? "is-active" : ""}
-                onClick={() => setAudience("customer")}
-              >
-                고객용
-              </button>
-              <button
-                type="button"
-                className={audience === "internal" ? "is-active" : ""}
-                onClick={() => setAudience("internal")}
-              >
-                내부용
-              </button>
-            </div>
-          </div>
           <button type="button" className="coverage-button" onClick={() => void loadAnalysis()} disabled={!customerId || analysisBusy}>
             {analysisBusy ? "불러오는 중…" : "새로고침"}
           </button>
@@ -482,15 +510,6 @@ export default function CoverageAnalysisScreen() {
                           <td>
                             <div className="coverage-table-title">{item.coverage_name}</div>
                             {item.customer_summary && <p>{item.customer_summary}</p>}
-                            {audience === "internal" && (
-                              <div className="coverage-internal compact">
-                                {item.internal_memo && <div className="coverage-internal-row">내부 메모: {item.internal_memo}</div>}
-                                <div className="coverage-internal-row">
-                                  우선순위: {item.priority ?? "-"} · 점수: {item.priority_score ?? "-"}
-                                  {item.evidence_pages?.length ? ` · 근거 p.${item.evidence_pages.join(", ")}` : ""}
-                                </div>
-                              </div>
-                            )}
                           </td>
                           <td>
                             {editing ? (

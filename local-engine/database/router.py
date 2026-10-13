@@ -2629,6 +2629,16 @@ def ask_customer_documents(
     return result
 
 
+@router.get("/coverage-analysis-runs")
+def coverage_analysis_runs(
+    limit: int = Query(1000, ge=1, le=5000),
+    status: str = Query("completed", pattern="^(|queued|running|completed|failed)$"),
+    conn=Depends(get_conn),
+):
+    """보장분석 결과가 저장된 고객 목록을 최신 run 기준으로 조회."""
+    return coverage.list_runs(conn, limit=limit, status=status)
+
+
 @router.get("/customers/{cid}/coverage-analysis")
 def coverage_analysis(
     cid: str,

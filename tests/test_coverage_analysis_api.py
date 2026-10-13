@@ -54,6 +54,12 @@ def test_recalculate_persists_50_items_and_filters_customer_response(client, mon
     assert body["status"] == "completed"
     assert body["items_count"] == 50
 
+    runs = client.get("/coverage-analysis-runs")
+    assert runs.status_code == 200, runs.text
+    run_customers = [run["customer"] for run in runs.json()["runs"]]
+    assert any(c["id"] == customer["id"] and c["name"] == customer["name"] for c in run_customers)
+    assert any(run["run_id"] == body["run_id"] and run["items_count"] == 50 for run in runs.json()["runs"])
+
     internal = client.get(
         f"/customers/{customer['id']}/coverage-analysis",
         params={"audience": "internal", "run_id": body["run_id"]},
