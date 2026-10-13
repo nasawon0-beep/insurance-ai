@@ -732,12 +732,17 @@ function CapturePanel({
   const reasonLabel = (r: string | null) =>
     r === "phone" ? "전화 일치" : r === "name+birthdate" ? "동일인" : r === "name" ? "동명" : "";
 
-  const hasCoverageReview = rows.some((row: any) => row.action !== "skip" && row.coverage_review);
-  const saveButtonLabel = busy
-    ? "처리 중…"
-    : hasCoverageReview
-      ? (rows.length > 1 ? `${rows.length}명 검수 완료 후 저장` : "검수 완료 후 저장")
-      : (rows.length > 1 ? `${rows.length}명 저장` : "분석 후 저장");
+  const activeRows = rows.filter((row: any) => row.action !== "skip");
+  const contractCount = activeRows.reduce((sum: number, row: any) => sum + (Array.isArray(row.policies) ? row.policies.length : 0), 0);
+  const coverageCount = activeRows.reduce((sum: number, row: any) => {
+    const direct = Array.isArray(row.policy_coverages) ? row.policy_coverages.length : 0;
+    const nested = Array.isArray(row.policies)
+      ? row.policies.reduce((policySum: number, policy: any) => policySum + (Array.isArray(policy.policy_coverages) ? policy.policy_coverages.length : 0), 0)
+      : 0;
+    const reviewCount = Number(row.coverage_review?.policy_coverage_item_count ?? 0);
+    return sum + Math.max(direct, nested, reviewCount, 0);
+  }, 0);
+  const saveButtonLabel = busy ? "⏳ 저장 중…" : "💾 고객 등록 및 저장";
 
   return (
     <div
@@ -822,26 +827,7 @@ function CapturePanel({
             </p>
           </div>
         </div>
-        {rows.length > 0 && (
-          <button
-            aria-label={hasCoverageReview ? "상단 검수 완료 후 저장" : "상단 분석 후 저장"}
-            onClick={run}
-            disabled={busy}
-            style={{
-              padding: "8px 14px",
-              background: busy ? "var(--color-bg-base)" : "var(--primary-500)",
-              color: busy ? "#a3a3a3" : "#fff",
-              border: "1px solid var(--color-border-default)",
-              borderRadius: 8,
-              cursor: busy ? "not-allowed" : "pointer",
-              fontSize: 13,
-              fontWeight: 600,
-              whiteSpace: "nowrap"
-            }}
-          >
-            {saveButtonLabel}
-          </button>
-        )}
+
       </div>
       {staged ? (
         <div
@@ -1106,9 +1092,46 @@ function CapturePanel({
       {err && <p style={{ color: "#b00", fontSize: 13, whiteSpace: "pre-line" }}>오류: {err}</p>}
 
       {rows.length > 0 && (
-        <div style={{ marginTop: 8 }}>
+        <div style={{ marginTop: 12 }}>
+          <div
+            style={{
+              textAlign: "center",
+              margin: "16px 0",
+              padding: "20px",
+              background: "var(--color-bg-base)",
+              border: "2px solid var(--primary-500)",
+              borderRadius: 12,
+              boxShadow: "0 4px 12px rgba(0, 102, 204, 0.12)",
+            }}
+          >
+            <div style={{ marginBottom: 10, fontSize: 14, color: "var(--color-text-primary)", fontWeight: 700 }}>
+              ✅ 검수 완료 — 고객 {activeRows.length}명 · 계약 {contractCount}건 · 담보 {coverageCount}건
+            </div>
+            <button
+              aria-label="고객 등록 및 저장"
+              onClick={run}
+              disabled={busy}
+              style={{
+                padding: "14px 36px",
+                fontSize: 16,
+                fontWeight: 800,
+                background: busy ? "var(--color-bg-surface)" : "var(--primary-500)",
+                color: busy ? "#737373" : "#fff",
+                border: "none",
+                borderRadius: 8,
+                cursor: busy ? "not-allowed" : "pointer",
+                minWidth: 220,
+                boxShadow: busy ? "none" : "0 2px 6px rgba(0, 102, 204, 0.25)",
+              }}
+            >
+              {saveButtonLabel}
+            </button>
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--color-text-secondary)" }}>
+              💡 클릭하면 고객 정보, 계약, 담보, 보장분석이 자동으로 저장됩니다
+            </div>
+          </div>
           <div style={{ fontSize: 12, color: "#555", marginBottom: 4 }}>
-            {rows.length}명 — 각 행의 동작을 확인하고 [저장]
+            {rows.length}명 — 각 행의 동작을 확인한 뒤 위 버튼으로 저장하세요
           </div>
           {rows.map((row, i) => (
             <div key={i} style={{ padding: "4px 0", borderBottom: "1px solid #dde3ee", fontSize: 13 }}>
@@ -1156,7 +1179,7 @@ function CapturePanel({
                       </div>
                     </details>
                   )}
-                  <div style={{ color: "#9a3412", marginTop: 4 }}>[검수 완료 후 저장] 버튼(화면 상단/하단)을 누를 때만 저장됩니다. 자동 저장은 하지 않습니다.</div>
+                  <div style={{ color: "#9a3412", marginTop: 4 }}>검수 내용을 확인한 뒤 위의 [고객 등록 및 저장] 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다.</div>
                 </div>
               )}
               {row.action !== "skip" && row.policies?.length > 0 && (
@@ -1181,9 +1204,7 @@ function CapturePanel({
               )}
             </div>
           ))}
-          <button onClick={run} disabled={busy} style={{ marginTop: 6, fontWeight: 600 }}>
-            {saveButtonLabel}
-          </button>
+
         </div>
       )}
     </div>

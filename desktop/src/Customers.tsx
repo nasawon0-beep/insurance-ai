@@ -1729,7 +1729,7 @@ export default function CustomersScreen({
                 <div>암/뇌혈관/심장/수술비: {pendingCoverageReview.cancer_item_count ?? 0} / {pendingCoverageReview.brain_item_count ?? 0} / {pendingCoverageReview.heart_item_count ?? 0} / {pendingCoverageReview.surgery_item_count ?? 0}</div>
                 <div>미분류/확인필요 항목 수: {pendingCoverageReview.needs_review_item_count ?? 0}</div>
                 <div style={{ marginTop: 6, fontWeight: 600 }}>
-                  {pendingCoverageReview.supported === false ? "미지원 양식입니다. 보장분석은 자동 저장하지 않습니다." : "검수 완료 후 저장 버튼을 눌러 저장하세요."}
+                  {pendingCoverageReview.supported === false ? "미지원 양식입니다. 보장분석은 자동 저장하지 않습니다." : "아래 저장 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다."}
                 </div>
               </div>
             )}
