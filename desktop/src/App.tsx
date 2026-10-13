@@ -471,6 +471,16 @@ function CapturePanel({
   const patchRow = (i: number, p: Record<string, unknown>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
+  const resolveSavedCustomerId = (customerResponse: any, fallbackId?: string | null): string | null => {
+    const candidates = customerResponse?.merged
+      ? [customerResponse?.merged_id, customerResponse?.customer_id, customerResponse?.id, customerResponse?.customer?.id, fallbackId]
+      : customerResponse?.created
+      ? [customerResponse?.customer_id, customerResponse?.id, customerResponse?.merged_id, customerResponse?.customer?.id, fallbackId]
+      : [customerResponse?.customer_id, customerResponse?.merged_id, customerResponse?.id, customerResponse?.customer?.id, fallbackId];
+    const found = candidates.find((v) => typeof v === "string" && v.trim());
+    return found ? String(found) : null;
+  };
+
   const recalculateCoverageIfNeeded = async (cid: string, row: any, savedCoverageCount = 0) => {
     const docType = String(row.doc_type ?? "");
     const extractedCoverageCount = Array.isArray(row.policy_coverages)
@@ -502,6 +512,7 @@ function CapturePanel({
     };
     const polling = pollProgress();
     try {
+      console.log("[DEBUG] 재계산 호출 ID:", cid);
       await api(`/customers/${cid}/coverage-analysis/recalculate`, {
         method: "POST",
         body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
@@ -536,6 +547,7 @@ function CapturePanel({
         const f = row.fields ?? {};
         const rd = String(row.rrn ?? f.rrn ?? "").replace(/\D/g, "");
         let cid: string | null = null;
+        console.log("[DEBUG] 고객 저장 전 ID:", row.customer_id ?? row.match?.id ?? null);
         if (row.action === "merge" && row.match) {
           const ex = row.match;
           const patch: Record<string, string> = {};
@@ -570,8 +582,12 @@ function CapturePanel({
             await api(`/customers/${ex.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
             res.consultations++;
           }
-          mergedId = ex.id;
-          cid = ex.id;
+          const mergedResponse = { merged: true, merged_id: ex.id };
+          cid = resolveSavedCustomerId(mergedResponse, ex.id);
+          if (!cid) throw new Error("고객 저장 응답에서 customer_id를 확인할 수 없습니다.");
+          console.log("[DEBUG] 고객 저장 응답:", mergedResponse);
+          console.log("[DEBUG] 실제 사용 ID:", cid);
+          mergedId = cid;
           res.merged++;
         } else {
           const payload: Record<string, unknown> = {
@@ -585,10 +601,14 @@ function CapturePanel({
             memo: f.memo || null,
           };
           const created = await api("/customers", { method: "POST", body: JSON.stringify(payload) });
-          lastNewId = created.id;
+          cid = resolveSavedCustomerId(created);
+          if (!cid) throw new Error("고객 저장 응답에서 customer_id를 확인할 수 없습니다.");
+          console.log("[DEBUG] 고객 저장 응답:", created);
+          console.log("[DEBUG] 실제 사용 ID:", cid);
+          lastNewId = cid;
           if (rd.length === 13) {
             try {
-              await api(`/customers/${created.id}`, { method: "PATCH", body: JSON.stringify({ rrn: rd }) });
+              await api(`/customers/${cid}`, { method: "PATCH", body: JSON.stringify({ rrn: rd }) });
             } catch (e) {
               rrnErr = e instanceof Error ? e.message : String(e);
             }
@@ -596,10 +616,9 @@ function CapturePanel({
             rrnErr = `주민번호가 13자리가 아니어서 저장하지 않았습니다: ${row.rrn}`;
           }
           if (row.consultation) {
-            await api(`/customers/${created.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
+            await api(`/customers/${cid}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
             res.consultations++;
           }
-          cid = created.id;
           res.created++;
         }
         // 보험 문서에서 뽑은 계약(들)을 고객 가입목록에 추가
