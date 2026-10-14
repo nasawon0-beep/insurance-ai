@@ -165,3 +165,56 @@ def test_recalculate_uses_policy_coverages_for_hospitalization_daily_amount(clie
     assert daily["current_amount"] == 30000
     assert daily["status"] != "미가입"
     assert daily["matched_policy_ids"] == [pid]
+
+
+def test_save_coverage_analysis_skips_proposal_riders(client):
+    customer = _make_customer(client)
+
+    saved = client.post(
+        "/coverage-analysis",
+        json={
+            "customer_id": customer["id"],
+            "doc_type": "proposal",
+            "review_confirmed": True,
+            "riders": [{"rider_name": "일반암진단비", "amount_text": "3,000만원"}],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["status"] == "proposal_reviewed"
+    assert saved.json()["saved"] is False
+
+    coverages = client.get(f"/customers/{customer['id']}/policy-coverages")
+    assert coverages.status_code == 200, coverages.text
+    assert coverages.json()["policy_coverages"] == []
+
+
+def test_save_coverage_analysis_persists_only_coverage_analysis(client):
+    customer = _make_customer(client)
+
+    saved = client.post(
+        "/coverage-analysis",
+        json={
+            "customer_id": customer["id"],
+            "doc_type": "coverage_analysis",
+            "review_confirmed": True,
+            "coverages": [
+                {
+                    "insurer": "테스트보험",
+                    "product_name": "보장분석 요약",
+                    "coverage_name": "질병 입원일당",
+                    "amount": 30000,
+                    "amount_text": "3만원",
+                    "source_page": 2,
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["status"] == "saved"
+    assert saved.json()["count"] == 1
+
+    coverages = client.get(f"/customers/{customer['id']}/policy-coverages")
+    assert coverages.status_code == 200, coverages.text
+    rows = coverages.json()["policy_coverages"]
+    assert len(rows) == 1
+    assert rows[0]["rider_name"] == "질병 입원일당"

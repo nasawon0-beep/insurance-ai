@@ -2817,6 +2817,106 @@ def coverage_analysis_runs(
     return coverage.list_runs(conn, limit=limit, status=status)
 
 
+def _normalized_review_doc_type(value: object) -> str:
+    doc_type = str(value or "").strip().lower()
+    coverage_doc_types = {
+        "coverage_analysis",
+        "coverage_analysis_full",
+        "coverage_analysis_detail_only",
+        "coverage_analysis_short",
+        "보장분석",
+    }
+    proposal_doc_types = {"proposal", "가입제안서", "가입설계서", "상품제안서"}
+    if doc_type in proposal_doc_types:
+        return "proposal"
+    if doc_type in coverage_doc_types:
+        return "coverage_analysis"
+    return doc_type
+
+
+@router.get("/coverage-analysis")
+def get_coverage_analysis(
+    customer_id: str = Query(...),
+    audience: str = Query("customer", pattern="^(customer|internal)$"),
+    include_sufficient: bool = Query(True),
+    priority: Optional[str] = Query(None),
+    run_id: Optional[str] = Query(None),
+    conn=Depends(get_conn),
+):
+    """기존 저장된 보장분석 조회. 가입제안서(proposal)는 policy_coverages 저장 대상이 아니다."""
+    result = coverage.get_analysis_response(
+        conn,
+        customer_id,
+        audience=audience,
+        include_sufficient=include_sufficient,
+        priority=priority,
+        run_id=run_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="고객 또는 보장분석 결과를 찾을 수 없습니다.")
+    result["doc_type"] = "coverage_analysis"
+    return result
+
+
+@router.post("/coverage-analysis")
+def save_coverage_analysis(data: dict = Body(...), conn=Depends(get_conn)):
+    """PDF 검수 결과 저장 분기.
+
+    - proposal(가입제안서): 검토용 riders 이므로 policy_coverages에 저장하지 않는다.
+    - coverage_analysis(보장분석서): 검수된 coverages/policy_coverages만 policy_coverages에 저장한다.
+    """
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="JSON 객체가 필요합니다.")
+    doc_type = _normalized_review_doc_type(data.get("doc_type"))
+    if doc_type == "proposal":
+        return {
+            "status": "proposal_reviewed",
+            "doc_type": "proposal",
+            "saved": False,
+            "count": 0,
+            "message": "가입제안서 riders는 보유담보(policy_coverages)에 저장하지 않습니다.",
+        }
+
+    if doc_type != "coverage_analysis":
+        raise HTTPException(status_code=422, detail="doc_type은 proposal 또는 coverage_analysis 여야 합니다.")
+
+    customer_id = str(data.get("customer_id") or "").strip()
+    if not customer_id:
+        raise HTTPException(status_code=422, detail="customer_id가 필요합니다.")
+    if repo.get_customer(conn, customer_id) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    if data.get("review_confirmed") is not True:
+        raise HTTPException(status_code=409, detail="보장분석서는 검수 완료 후 저장해야 합니다.")
+
+    raw_items = data.get("coverages")
+    if raw_items is None:
+        raw_items = data.get("policy_coverages")
+    if not isinstance(raw_items, list):
+        raise HTTPException(status_code=422, detail="coverages 배열이 필요합니다.")
+
+    items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        coverage_name = item.get("coverage_name") or item.get("rider_name") or item.get("standard_name")
+        items.append({
+            **item,
+            "rider_name": item.get("rider_name") or coverage_name,
+            "standard_name": item.get("standard_name") or policy_coverages.normalize_standard_name(coverage_name, coverage_name),
+            "amount": item.get("amount") if item.get("amount") is not None else item.get("current_amount"),
+            "amount_text": item.get("amount_text") or item.get("current_amount") or item.get("current"),
+        })
+    result = policy_coverages.create_many(conn, customer_id, items, require_review=True)
+    return {
+        "status": "saved",
+        "doc_type": "coverage_analysis",
+        "saved": True,
+        "count": result["created"],
+        "policy_link_failed": result["policy_link_failed"],
+        "items": result["items"],
+    }
+
+
 @router.get("/customers/{cid}/coverage-analysis")
 def coverage_analysis(
     cid: str,

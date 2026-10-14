@@ -490,6 +490,11 @@ function CapturePanel({
     });
 
     const docType = String(row.doc_type ?? "");
+    if (docType === "proposal" || docType.includes("가입제안서")) {
+      console.log("[보장분석 재계산] SKIP - 가입제안서는 검토용이며 보유담보로 저장하지 않음");
+      setMsg("✅ 가입제안서 검토 완료 - 보유담보 저장 없이 고객 정보만 저장했습니다.");
+      return false;
+    }
     const extractedCoverageCount = Array.isArray(row.policy_coverages)
       ? row.policy_coverages.length
       : (row.policies || []).reduce(
@@ -673,13 +678,21 @@ function CapturePanel({
           res.created++;
         }
         // 보험 문서에서 뽑은 계약(들)을 고객 가입목록에 추가
+        // 가입제안서(proposal)의 riders는 신규 제안 검토용이다.
+        // 보유담보(policy_coverages)에 저장하면 기존 가입 보장으로 오인되므로 저장/재계산 대상에서 제외한다.
         let savedCoverageCount = 0;
-        if (cid && row.policies?.length) {
+        const isProposalReview = row.doc_type === "proposal" || String(row.doc_type ?? "").includes("가입제안서");
+        if (cid && row.policies?.length && !isProposalReview) {
           const r = await savePolicies(api, cid, row.policies, row.policyChecked || []);
           res.policies += r.saved;
           savedCoverageCount = r.coverageSaved;
           res.policyCoverages += r.coverageSaved;
           policyFails.push(...r.failures.map(({ label, error }) => ({ label, error })));
+        } else if (isProposalReview) {
+          console.log("[저장 분기] 가입제안서 riders는 policy_coverages에 저장하지 않음", {
+            cid,
+            rider_count: row.proposal_review?.riders?.length ?? row.quick_coverages?.length ?? 0,
+          });
         }
         if (cid) {
           const recalculated = await recalculateCoverageIfNeeded(cid, row, savedCoverageCount);
@@ -1218,13 +1231,23 @@ function CapturePanel({
               </div>
               {row.action !== "skip" && row.coverage_review && (
                 <div style={{ margin: "8px 0", padding: "8px 10px", background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 6, maxWidth: 640, fontSize: 12 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>검수 화면 — 보장분석/계약별 담보 분리 저장</div>
-                  <div>
-                    계약별 담보: 계약 {row.coverage_review.policy_coverage_contract_count ?? 0}개 · 담보 {row.coverage_review.policy_coverage_item_count ?? 0}건 · 미분류 {row.coverage_review.policy_coverage_unclassified_count ?? 0}건 · policy_id 연결 실패는 저장 시 재검사
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                    {row.doc_type === "proposal" ? "검수 화면 — 가입제안서 riders 검토 전용" : "검수 화면 — 보장분석/계약별 담보 분리 저장"}
                   </div>
-                  <div>
-                    보장분석 진단표: {row.coverage_review.coverage_item_count ?? 0}개 항목 · 확인필요 {row.coverage_review.needs_review_item_count ?? 0}건 · 상세 페이지 {(row.coverage_review.detected_detail_pages ?? []).join(", ") || "-"}
-                  </div>
+                  {row.doc_type === "proposal" ? (
+                    <div>
+                      가입제안서 특약(riders) {row.proposal_review?.riders?.length ?? row.quick_coverages?.length ?? 0}건 · 보유담보(policy_coverages)에는 저장하지 않습니다.
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        계약별 담보: 계약 {row.coverage_review.policy_coverage_contract_count ?? 0}개 · 담보 {row.coverage_review.policy_coverage_item_count ?? 0}건 · 미분류 {row.coverage_review.policy_coverage_unclassified_count ?? 0}건 · policy_id 연결 실패는 저장 시 재검사
+                      </div>
+                      <div>
+                        보장분석 진단표: {row.coverage_review.coverage_item_count ?? 0}개 항목 · 확인필요 {row.coverage_review.needs_review_item_count ?? 0}건 · 상세 페이지 {(row.coverage_review.detected_detail_pages ?? []).join(", ") || "-"}
+                      </div>
+                    </>
+                  )}
                   {row.policy_coverages?.length > 0 && (
                     <details style={{ marginTop: 4 }}>
                       <summary>계약별 담보 후보 보기 ({row.policy_coverages.length}건)</summary>
@@ -1237,7 +1260,11 @@ function CapturePanel({
                       </div>
                     </details>
                   )}
-                  <div style={{ color: "#9a3412", marginTop: 4 }}>검수 내용을 확인한 뒤 위의 [고객 등록 및 저장] 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다.</div>
+                  <div style={{ color: "#9a3412", marginTop: 4 }}>
+                    {row.doc_type === "proposal"
+                      ? "[고객 등록 및 저장] 버튼을 눌러도 가입제안서 riders는 저장하지 않고 검토 결과만 유지합니다."
+                      : "검수 내용을 확인한 뒤 위의 [고객 등록 및 저장] 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다."}
+                  </div>
                 </div>
               )}
               {row.action !== "skip" && row.policies?.length > 0 && (

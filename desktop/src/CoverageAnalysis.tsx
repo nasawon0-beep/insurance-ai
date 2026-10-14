@@ -58,6 +58,7 @@ type CoverageResponse = {
   customer_id: string;
   run_id: string;
   status: string;
+  doc_type?: "coverage_analysis";
   audience: "customer";
   summary?: {
     overall?: string;
@@ -69,6 +70,13 @@ type CoverageResponse = {
   categories: CoverageCategory[];
 };
 
+
+type CoverageRefreshResponse = {
+  status?: string;
+  doc_type?: string;
+  items_count?: number;
+  links?: { result?: string };
+};
 
 type EditDraft = {
   status: string;
@@ -215,6 +223,7 @@ export default function CoverageAnalysisScreen() {
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const selectedCustomer = useMemo(
@@ -266,6 +275,7 @@ export default function CoverageAnalysisScreen() {
     }
     setAnalysisBusy(true);
     setError(null);
+    setRefreshMessage(null);
     try {
       const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`);
       setData(analysis);
@@ -282,14 +292,25 @@ export default function CoverageAnalysisScreen() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     setError(null);
+    setRefreshMessage(null);
     try {
       await loadCustomers({ rethrow: true });
 
       if (customerId) {
-        await api(`/customers/${customerId}/coverage-analysis/recalculate`, {
+        const result = await api<CoverageRefreshResponse>(`/customers/${customerId}/coverage-analysis/recalculate`, {
           method: "POST",
+          body: JSON.stringify({ audience: "customer", force: true, source: "coverage_analysis_refresh" }),
         });
+        const docType = result.doc_type ?? "coverage_analysis";
+        if (docType === "proposal") {
+          setRefreshMessage("가입제안서는 신규 제안 검토용이라 보유담보에 저장하지 않았습니다.");
+          setData(null);
+          return;
+        }
         await loadAnalysis();
+        setRefreshMessage(`보장분석서 재계산 완료${result.items_count != null ? ` (${result.items_count}개 항목)` : ""}`);
+      } else {
+        setRefreshMessage("고객 목록을 새로 조회했습니다. 재계산할 고객을 선택하세요.");
       }
     } catch (e) {
       console.error("새로고침 실패:", e);
@@ -396,7 +417,7 @@ export default function CoverageAnalysisScreen() {
       <header className="coverage-header">
         <div>
           <h2 className="coverage-title">보장분석</h2>
-          <p className="coverage-subtitle">고객을 검색하고 필요한 보장 카테고리를 탭으로 확인합니다.</p>
+          <p className="coverage-subtitle">보장분석서(coverage_analysis) 기준으로 재계산합니다. 가입제안서(proposal) riders는 검토만 하고 보유담보로 저장하지 않습니다.</p>
         </div>
         <button type="button" className="coverage-button" onClick={() => void handleRefresh()} disabled={refreshing}>
           {refreshing ? "새로고침 중…" : "🔄 새로고침"}
@@ -488,6 +509,7 @@ export default function CoverageAnalysisScreen() {
       )}
 
       {error && <div className="coverage-error">오류: {error}</div>}
+      {!error && refreshMessage && <div className="coverage-empty">{refreshMessage}</div>}
       {!error && !data && customerId && (
         <div className="coverage-empty">
           {analysisBusy ? "보장분석 결과를 불러오는 중…" : "저장된 보장분석 데이터가 없습니다. 고객 목록에서 수정하세요."}
