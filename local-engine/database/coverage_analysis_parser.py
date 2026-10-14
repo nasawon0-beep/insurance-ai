@@ -42,56 +42,14 @@ def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[Parsed
     """
     M보장분석 파싱
 
-    가입담보상세List를 최우선 원장으로 사용하고, 해당 원장이 없는 짧은 문서는
-    보장별상세표 50개를 fallback으로 사용한다. 원장이 있는 문서는 표준 보장별
-    상세표에서 원장에 없는 가입금액 보유 항목만 보충해 중복/기타 폭증을 막는다.
+    보장별상세표(합산 금액)를 우선 사용. 50개 담보 정확도 최우선.
     """
     coverages: List[ParsedCoverage] = []
 
-    detail_list_pages = candidate_pages.get("detail_list_pages", [])
-    if detail_list_pages:
-        coverages.extend(_parse_detail_list_pages(pdf_path, detail_list_pages))
-
-    product_detail_pages = candidate_pages.get("product_detail_pages", [])
-    if product_detail_pages:
-        coverages.extend(_parse_product_detail_pages(pdf_path, product_detail_pages))
-
-    coverages = _deduplicate_coverages(coverages)
-
+    # 보장별상세표를 최우선으로 사용 (합산 금액)
     category_detail_pages = candidate_pages.get("category_detail_pages", [])
     if category_detail_pages:
-        category_rows = _parse_category_detail_pages(pdf_path, category_detail_pages)
-        if not coverages:
-            coverages.extend(category_rows)
-        else:
-            # 상세 원장에 없는 표준담보 중 실제 가입금액이 있는 항목만 보충한다.
-            existing_std = {
-                _standard_key(c.coverage_name)
-                for c in coverages
-            }
-            additions = [
-                c for c in category_rows
-                if c.amount > 0 and _standard_key(c.coverage_name) not in existing_std
-            ]
-            # 보장별상세표의 상해 3%이상 후유장해는 여러 원장 행을 합산한 대표 보장으로
-            # 사용자 검수 기준에서 별도 1건으로 센다. 전체 중복 폭증을 막기 위해 이 항목만 보강한다.
-            aggregate_disability = next(
-                (
-                    c for c in category_rows
-                    if c.amount > 0
-                    and "상해" in c.coverage_name
-                    and "후유장해" in c.coverage_name
-                    and _standard_key(c.coverage_name) in existing_std
-                ),
-                None,
-            )
-            if aggregate_disability is not None:
-                additions.append(aggregate_disability)
-            # 원장 자체가 짧은 문서(예: 30여개)에서 보장별상세표가 다시 50개 붙어
-            # 과다 집계되는 것을 방지한다.
-            if len(coverages) < 45:
-                additions = additions[: max(0, 45 - len(coverages))]
-            coverages.extend(additions)
+        coverages.extend(_parse_category_detail_pages(pdf_path, category_detail_pages))
 
     result = _deduplicate_coverages(coverages)
     for cov in result:
