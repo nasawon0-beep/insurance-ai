@@ -15,6 +15,11 @@ except Exception:  # pragma: no cover
     def normalize_standard_name(company_name: str | None, standard_name: str | None = None) -> str:
         return (standard_name or company_name or "기타").strip() or "기타"
 
+try:
+    from .coverage_mapping import STANDARD_COVERAGE_CATEGORIES, normalize_coverage_name
+except Exception:  # pragma: no cover
+    from coverage_mapping import STANDARD_COVERAGE_CATEGORIES, normalize_coverage_name
+
 
 @dataclass
 class ParsedCoverage:
@@ -30,6 +35,7 @@ class ParsedCoverage:
     source_page: int
     source_type: str  # "detail_list", "product_detail", "category_detail"
     confidence: float
+    category: str = "기타"
 
 
 def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[ParsedCoverage]:
@@ -73,7 +79,44 @@ def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[Parsed
                 additions = additions[: max(0, 45 - len(coverages))]
             coverages.extend(additions)
 
-    return _deduplicate_coverages(coverages)
+    result = _deduplicate_coverages(coverages)
+    for cov in result:
+        cov.coverage_name = normalize_coverage_name(cov.coverage_name)
+        cov.category = _categorize_coverage(cov.coverage_name)
+    return result
+
+
+def _categorize_coverage(coverage_name: str) -> str:
+    """
+    담보명 → 카테고리 분류
+
+    Returns:
+        "사망", "암", "뇌혈관", "심장", "수술비", "입원비", "운전자", "기타"
+    """
+    normalized = normalize_coverage_name(coverage_name)
+
+    for category, coverage_list in STANDARD_COVERAGE_CATEGORIES.items():
+        if normalized in coverage_list:
+            return category
+
+    if "사망" in coverage_name:
+        return "사망"
+    elif "암" in coverage_name or "항암" in coverage_name:
+        return "암"
+    elif "뇌" in coverage_name:
+        return "뇌혈관"
+    elif "심장" in coverage_name or "심근경색" in coverage_name:
+        return "심장"
+    elif "수술" in coverage_name:
+        return "수술비"
+    elif "입원" in coverage_name:
+        return "입원비"
+    elif "운전" in coverage_name or "교통" in coverage_name:
+        return "운전자"
+    elif "골절" in coverage_name or "화상" in coverage_name:
+        return "기타"
+
+    return "기타"
 
 
 def _parse_detail_list_pages(pdf_path: str, pages: List[int]) -> List[ParsedCoverage]:
