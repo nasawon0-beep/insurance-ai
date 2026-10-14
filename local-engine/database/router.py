@@ -1345,7 +1345,7 @@ async def capture(
                     t0 = time.perf_counter()
                     try:
                         full_text_pages = _pdf_extract_text_pages(data)
-                        doc_text = "\n\n".join(t for _, t in full_text_pages[:16]).strip()
+                        doc_text = "\n\n".join(t for _, t in full_text_pages).strip()
                     except Exception:
                         doc_text = _pdf_extract_text(data)
                         full_text_pages = [(1, doc_text)] if doc_text else []
@@ -1366,9 +1366,6 @@ async def capture(
                     raise
                 except Exception as e:
                     raise HTTPException(status_code=422, detail=f"PDF 파싱 실패: {e}")
-                raw_doc_text = doc_text
-                if ctx_prefix:
-                    doc_text = ctx_prefix + doc_text
                 extra = ("\n\n" + text.strip()) if text.strip() else ""
 
                 # 계약별 담보 원장은 표 추출 없이 전체 페이지 텍스트에서만 빠르게 파싱한다.
@@ -1384,12 +1381,15 @@ async def capture(
                     policy_coverage_warning = "계약별 담보 원장 추출에 실패했습니다. 기존 고객정보/계약/보장분석 결과는 계속 검수할 수 있습니다."
                     perf["policy_coverages"] = time.perf_counter() - t0 if "t0" in locals() else 0.0
                 doc_type_enum = DocumentType.UNKNOWN_INSURANCE_PDF
+                _doc_type_metadata: dict = {}
+                candidate_pages: dict = {}
                 try:
                     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
                     try:
                         tmp_pdf.write(data)
                         tmp_pdf.close()
                         doc_type_enum, _doc_type_metadata = classify_document_type(tmp_pdf.name)
+                        candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
                     finally:
                         try:
                             os.unlink(tmp_pdf.name)
@@ -1400,6 +1400,32 @@ async def capture(
                 doc_type = doc_type_enum.value
                 if doc_type_enum == DocumentType.UNKNOWN_INSURANCE_PDF:
                     doc_type = _doc_type(doc_text, file.filename)
+
+                page_texts = [t for _, t in full_text_pages] or ([doc_text] if doc_text else [])
+                if doc_type_enum == DocumentType.PROPOSAL:
+                    doc_text = "\n".join(page_texts).strip()
+                elif doc_type_enum == DocumentType.COVERAGE_ANALYSIS_SHORT:
+                    doc_text = "\n".join(page_texts).strip()
+                elif doc_type_enum in [
+                    DocumentType.COVERAGE_ANALYSIS_FULL,
+                    DocumentType.COVERAGE_ANALYSIS_DETAIL_ONLY,
+                ]:
+                    head_pages = page_texts[:5]
+                    candidate_pages_set = set()
+                    for pages in candidate_pages.values():
+                        candidate_pages_set.update(pages)
+                    candidate_texts = [
+                        page_texts[p - 1]
+                        for p in sorted(candidate_pages_set)
+                        if 0 < p <= len(page_texts)
+                    ]
+                    tail_pages = page_texts[-3:] if len(page_texts) > 5 else []
+                    doc_text = "\n".join(head_pages + candidate_texts + tail_pages).strip()
+                else:
+                    doc_text = "\n".join(page_texts).strip()
+                raw_doc_text = doc_text
+                if ctx_prefix:
+                    doc_text = ctx_prefix + doc_text
                 if doc_type_enum == DocumentType.PROPOSAL:
                     t0 = time.perf_counter()
                     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
@@ -1416,7 +1442,12 @@ async def capture(
                     perf["proposal_parse"] = time.perf_counter() - t0
                     f, warns = _quick_customer_fields(doc_text + extra, file.filename if file else None, None)
                     review = {
-                        "doc_type": "proposal",
+                        "doc_type": doc_type_enum.value,
+                        "metadata": {
+                            "page_count": _doc_type_metadata.get("page_count"),
+                            "has_proposal_table": _doc_type_metadata.get("has_proposal_table", False),
+                            "candidate_pages": candidate_pages,
+                        },
                         "insurer": proposal_info.insurer,
                         "product_name": proposal_info.product_name,
                         "plan_name": proposal_info.plan_name,
@@ -1437,7 +1468,7 @@ async def capture(
                             }
                             for r in proposal_info.riders
                         ],
-                        "page_count": locals().get("_doc_type_metadata", {}).get("page_count"),
+                        "page_count": _doc_type_metadata.get("page_count"),
                     }
                     warns.append("가입제안서 검수 화면은 다음 PR에서 분리됩니다. 기존 보유담보로는 저장하지 않습니다.")
                     item = {
@@ -1512,19 +1543,29 @@ async def capture(
                     ]
                     coverage_analysis_review = {
                         "doc_type": "coverage_analysis",
+                        "metadata": {
+                            "page_count": _doc_type_metadata.get("page_count"),
+                            "is_short_form": _doc_type_metadata.get("is_short_form", False),
+                            "is_full_form": _doc_type_metadata.get("is_full_form", False),
+                            "candidate_pages": candidate_pages,
+                        },
                         "coverages": [
                             {
                                 "insurer": c.insurer,
                                 "product_name": c.product_name,
                                 "coverage_name": c.coverage_name,
+                                "category": c.category,
+                                "coverage_period": c.coverage_period,
+                                "payment_period": c.payment_period,
                                 "amount": c.amount,
                                 "amount_text": c.amount_text,
                                 "source_page": c.source_page,
+                                "source_type": c.source_type,
                                 "confidence": c.confidence,
                             }
                             for c in parsed_coverages
                         ],
-                        "page_count": locals().get("_doc_type_metadata", {}).get("page_count"),
+                        "page_count": _doc_type_metadata.get("page_count"),
                     }
                 else:
                     focused = (_focus_customer_lines(doc_text) + "\n" + prop_body)[:3000]
