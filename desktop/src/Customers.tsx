@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  CoverageTable,
   CoverageTableEditable,
   CoverageTableEditableSafe,
   type CoverageRow,
@@ -1874,6 +1875,7 @@ export default function CustomersScreen({
             <div role="tabpanel" id="panel-coverage" aria-labelledby="tab-coverage" style={{ display: activeTab === "coverage" ? undefined : "none" }}>
               <CoveragePanel
                 key={detail.id}
+                customerId={detail.id}
                 consultations={detail.consultations}
                 wrap={wrap}
               />
@@ -2637,16 +2639,66 @@ function AuditPanel({ customerId, active }: { customerId: string; active: boolea
 }
 
 function CoveragePanel({
+  customerId,
   consultations,
   wrap,
 }: {
+  customerId: string;
   consultations: Consultation[];
   wrap: Wrap;
 }) {
+  const [analysisRows, setAnalysisRows] = useState<CoverageRow[] | null>(null);
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const latest = consultations.find((c) => c.coverage_json);
   const latestCoverage = latest ? parseCoverageJson(latest.coverage_json) : null;
   const rows = latestCoverage?.rows ?? [];
   const latestCoverageJson = latestCoverage && !latestCoverage.corrupt ? JSON.stringify(expandCoverageRowsWithCatalog(rows)) : latest?.coverage_json ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setAnalysisBusy(true);
+    setAnalysisError(null);
+    api(`/customers/${customerId}/coverage-analysis?audience=customer`)
+      .then((res) => {
+        if (cancelled) return;
+        const categories = Array.isArray(res?.categories) ? res.categories : [];
+        const nextRows: CoverageRow[] = [];
+        for (const category of categories) {
+          const items = Array.isArray(category?.items) ? category.items : [];
+          for (const item of items) {
+            const recommendedAmount = Number(item?.recommended_amount ?? 0);
+            const currentAmount = Number(item?.current_amount ?? 0);
+            const pct = recommendedAmount > 0 ? Math.round((currentAmount / recommendedAmount) * 100) : 0;
+            nextRows.push({
+              name: String(item?.coverage_name ?? "").trim(),
+              status: String(item?.status ?? "미가입").trim() || "미가입",
+              pct: Math.min(100, Math.max(0, Number.isFinite(pct) ? pct : 0)),
+              current: item?.current_text ?? formatCoverageWon(currentAmount),
+              recommended: item?.recommended_text ?? formatCoverageWon(recommendedAmount),
+              coverage_group: item?.category_group ?? category?.category_group ?? null,
+              coverage_name: item?.coverage_name ?? null,
+              recommended_amount: Number.isFinite(recommendedAmount) ? recommendedAmount : null,
+              current_amount: Number.isFinite(currentAmount) ? currentAmount : null,
+              shortage_amount: Number.isFinite(Number(item?.gap_amount)) ? Number(item?.gap_amount) : null,
+            });
+          }
+        }
+        setAnalysisRows(nextRows.filter((row) => row.name));
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setAnalysisRows(null);
+          setAnalysisError(e instanceof Error ? e.message : String(e));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAnalysisBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [customerId]);
 
   return (
     <div
@@ -2658,7 +2710,12 @@ function CoveragePanel({
         background: "var(--color-bg-surface)",
       }}
     >
-      {latest ? (
+      {analysisRows?.length ? (
+        <>
+          <h4 style={{ marginTop: 0 }}>저장된 보장분석 — coverage_analysis · {analysisRows.length}개 항목</h4>
+          <CoverageTable rows={analysisRows} />
+        </>
+      ) : latest ? (
         <>
           <h4 style={{ marginTop: 0 }}>
             저장된 보장분석 — {latest.title || "(제목 없음)"} · {(latest.consulted_at || "").slice(0, 10)}
@@ -2672,14 +2729,22 @@ function CoveragePanel({
               });
             }, true)}
           />
+          {analysisBusy && <p style={{ color: "#888", fontSize: 12 }}>최신 보장분석 데이터를 확인 중…</p>}
+          {analysisError && <p style={{ color: "#888", fontSize: 12 }}>coverage_analysis 조회 실패: 기존 저장 데이터를 표시합니다.</p>}
         </>
       ) : (
         <p style={{ color: "#888", fontSize: 13 }}>
-          보장분석 데이터가 없습니다. 던져넣기나 고객 등록 시 보장분석 PDF를 업로드하세요.
+          {analysisBusy ? "보장분석 데이터를 불러오는 중…" : "보장분석 데이터가 없습니다. 던져넣기나 고객 등록 시 보장분석 PDF를 업로드하세요."}
         </p>
       )}
     </div>
   );
+}
+
+function formatCoverageWon(value: number | null | undefined): string | null {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return `${Math.round(amount / 10000).toLocaleString("ko-KR")}만원`;
 }
 
 function AskPanel({ customerId, hasDocs }: { customerId: string; hasDocs: boolean }) {

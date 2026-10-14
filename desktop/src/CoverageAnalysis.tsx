@@ -561,7 +561,6 @@ export default function CoverageAnalysisScreen() {
                           <td>{item.category_group}</td>
                           <td>
                             <div className="coverage-table-title">{item.coverage_name}</div>
-                            {item.customer_summary && <p>{item.customer_summary}</p>}
                           </td>
                           <td>
                             {editing ? (
