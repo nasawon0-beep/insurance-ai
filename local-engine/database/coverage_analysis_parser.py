@@ -73,6 +73,20 @@ def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[Parsed
                 c for c in category_rows
                 if c.amount > 0 and _standard_key(c.coverage_name) not in existing_std
             ]
+            # 보장별상세표의 상해 3%이상 후유장해는 여러 원장 행을 합산한 대표 보장으로
+            # 사용자 검수 기준에서 별도 1건으로 센다. 전체 중복 폭증을 막기 위해 이 항목만 보강한다.
+            aggregate_disability = next(
+                (
+                    c for c in category_rows
+                    if c.amount > 0
+                    and "상해" in c.coverage_name
+                    and "후유장해" in c.coverage_name
+                    and _standard_key(c.coverage_name) in existing_std
+                ),
+                None,
+            )
+            if aggregate_disability is not None:
+                additions.append(aggregate_disability)
             # 원장 자체가 짧은 문서(예: 30여개)에서 보장별상세표가 다시 50개 붙어
             # 과다 집계되는 것을 방지한다.
             if len(coverages) < 45:
