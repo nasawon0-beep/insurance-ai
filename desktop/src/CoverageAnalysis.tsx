@@ -46,6 +46,23 @@ type CoverageItem = {
   evidence_pages?: number[];
 };
 
+type PolicyCoverageItem = {
+  id: string;
+  insurer?: string | null;
+  product_name?: string | null;
+  rider_no?: string | null;
+  rider_name?: string | null;
+  standard_name?: string | null;
+  amount?: number | null;
+  amount_text?: string | null;
+  source_page?: number | null;
+  confidence?: number | null;
+};
+
+type PolicyCoveragesResponse = {
+  policy_coverages: PolicyCoverageItem[];
+};
+
 type CoverageCategory = {
   category_id: string;
   category_group: string;
@@ -167,6 +184,40 @@ function filterMatches(item: CoverageItem, filter: CoverageFilter): boolean {
   return !knownGroups.includes(item.category_group);
 }
 
+function inferCoverageGroup(row: PolicyCoverageItem): string {
+  const text = `${row.standard_name ?? ""} ${row.rider_name ?? ""}`;
+  if (text.includes("암")) return "암";
+  if (text.includes("뇌")) return "뇌혈관질환";
+  if (text.includes("심장") || text.includes("허혈") || text.includes("심근")) return "심장질환";
+  if (text.includes("수술")) return "수술비";
+  if (text.includes("입원") || text.includes("일당")) return "입원비 / 일당";
+  if (text.includes("운전자") || text.includes("교통") || text.includes("변호사") || text.includes("벌금")) return "운전자";
+  if (text.includes("사망")) return "사망";
+  if (text.includes("후유장해") || text.includes("장해")) return "후유장해";
+  if (text.includes("실손") || text.includes("통원")) return "실손의료비";
+  return "기타";
+}
+
+function policyCoverageMatches(row: PolicyCoverageItem, filter: CoverageFilter): boolean {
+  if (filter === "전체") return true;
+  if (["부족", "미가입", "충분"].includes(filter)) return filter === "충분";
+  return filterMatches(
+    {
+      id: row.id,
+      source_index: 0,
+      category_group: inferCoverageGroup(row),
+      coverage_name: row.standard_name ?? row.rider_name ?? "",
+      status: "충분",
+      current_text: row.amount_text ?? null,
+      recommended_text: null,
+      recommended_amount: 0,
+      current_amount: Number(row.amount ?? 0),
+      gap_amount: 0,
+    },
+    filter,
+  );
+}
+
 function normalizeRunCustomers(body: unknown): CustomerOption[] {
   const source = body as {
     runs?: CoverageRunOption[];
@@ -216,6 +267,7 @@ export default function CoverageAnalysisScreen() {
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
   const [data, setData] = useState<CoverageResponse | null>(null);
+  const [policyCoverageRows, setPolicyCoverageRows] = useState<PolicyCoverageItem[]>([]);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
@@ -270,6 +322,7 @@ export default function CoverageAnalysisScreen() {
   const loadAnalysis = useCallback(async () => {
     if (!customerId) {
       setData(null);
+      setPolicyCoverageRows([]);
       setEditingRowId(null);
       return;
     }
@@ -277,11 +330,16 @@ export default function CoverageAnalysisScreen() {
     setError(null);
     setRefreshMessage(null);
     try {
-      const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`);
+      const [analysis, policyCoverages] = await Promise.all([
+        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`).catch(() => null),
+        api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
+      ]);
       setData(analysis);
+      setPolicyCoverageRows(Array.isArray(policyCoverages.policy_coverages) ? policyCoverages.policy_coverages : []);
       setEditingRowId(null);
     } catch (e) {
       setData(null);
+      setPolicyCoverageRows([]);
       setEditingRowId(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -342,6 +400,11 @@ export default function CoverageAnalysisScreen() {
   }, [customerId, data]);
 
   const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
+  const showingPolicyCoverages = policyCoverageRows.length > 0;
+  const filteredPolicyCoverageRows = useMemo(
+    () => policyCoverageRows.filter((row) => policyCoverageMatches(row, coverageFilter)),
+    [policyCoverageRows, coverageFilter],
+  );
   const filteredItems = useMemo(
     () => allItems.filter((item) => filterMatches(item, coverageFilter)),
     [allItems, coverageFilter],
@@ -485,11 +548,13 @@ export default function CoverageAnalysisScreen() {
         </div>
 
         <div className="coverage-actions">
-          <span className="coverage-edit-guide">각 행의 수정 버튼으로 현재 보장, 권장 금액, 상태를 직접 수정할 수 있습니다.</span>
+          <span className="coverage-edit-guide">
+            {showingPolicyCoverages ? "고객 가입목록에 저장된 policy_coverages 전체 담보를 표시합니다." : "각 행의 수정 버튼으로 현재 보장, 권장 금액, 상태를 직접 수정할 수 있습니다."}
+          </span>
         </div>
       </section>
 
-      {data && (
+      {(data || showingPolicyCoverages) && (
         <section className="coverage-summary" aria-label="전체현황">
           <div className="coverage-summary-card">
             <p className="coverage-summary-label">선택 고객</p>
@@ -497,12 +562,14 @@ export default function CoverageAnalysisScreen() {
           </div>
           <div className="coverage-summary-card">
             <p className="coverage-summary-label">부족/미가입</p>
-            <p className="coverage-summary-value">{shortageTotal}개</p>
+            <p className="coverage-summary-value">{showingPolicyCoverages ? "-" : `${shortageTotal}개`}</p>
           </div>
           <div className="coverage-summary-card">
-            <p className="coverage-summary-label">전체/미가입/부족/충분</p>
+            <p className="coverage-summary-label">전체 담보</p>
             <p className="coverage-summary-value">
-              {allItems.length} / {countByStatus(allItems, "미가입")} / {countByStatus(allItems, "부족")} / {countByStatus(allItems, "충분")}
+              {showingPolicyCoverages
+                ? `${policyCoverageRows.length}개`
+                : `${allItems.length} / 미가입 ${countByStatus(allItems, "미가입")} / 부족 ${countByStatus(allItems, "부족")} / 충분 ${countByStatus(allItems, "충분")}`}
             </p>
           </div>
         </section>
@@ -510,13 +577,13 @@ export default function CoverageAnalysisScreen() {
 
       {error && <div className="coverage-error">오류: {error}</div>}
       {!error && refreshMessage && <div className="coverage-empty">{refreshMessage}</div>}
-      {!error && !data && customerId && (
+      {!error && !data && !showingPolicyCoverages && customerId && (
         <div className="coverage-empty">
           {analysisBusy ? "보장분석 결과를 불러오는 중…" : "저장된 보장분석 데이터가 없습니다. 고객 목록에서 수정하세요."}
         </div>
       )}
 
-      {data && (
+      {(data || showingPolicyCoverages) && (
         <section className="coverage-analysis-panel" aria-label="보장분석 상세표">
           <div className="coverage-filter-row" role="group" aria-label="보장분석 필터">
             {COVERAGE_FILTERS.map((filter) => (
@@ -532,11 +599,44 @@ export default function CoverageAnalysisScreen() {
           </div>
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
-              <h3>보장별 상세표 전체</h3>
-              <span>{coverageFilter} {filteredItems.length}개</span>
+              <h3>{showingPolicyCoverages ? "보유 담보 전체" : "보장별 상세표 전체"}</h3>
+              <span>{coverageFilter} {showingPolicyCoverages ? filteredPolicyCoverageRows.length : filteredItems.length}개</span>
             </div>
 
-            {filteredItems.length === 0 ? (
+            {showingPolicyCoverages ? (
+              filteredPolicyCoverageRows.length === 0 ? (
+                <div className="coverage-empty in-panel">표시할 담보가 없습니다.</div>
+              ) : (
+                <div className="coverage-table-wrap">
+                  <table className="coverage-table">
+                    <thead>
+                      <tr>
+                        <th>보장군</th>
+                        <th>보험사</th>
+                        <th>상품명</th>
+                        <th>담보명</th>
+                        <th>표준명</th>
+                        <th>가입금액</th>
+                        <th>페이지</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredPolicyCoverageRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{inferCoverageGroup(row)}</td>
+                          <td>{row.insurer || "-"}</td>
+                          <td>{row.product_name || "-"}</td>
+                          <td><div className="coverage-table-title">{row.rider_name || "-"}</div></td>
+                          <td>{row.standard_name || "-"}</td>
+                          <td>{row.amount_text || formatAmount(row.amount)}</td>
+                          <td>{row.source_page ? `p.${row.source_page}` : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : filteredItems.length === 0 ? (
               <div className="coverage-empty in-panel">표시할 세부 담보가 없습니다.</div>
             ) : (
               <div className="coverage-table-wrap">
