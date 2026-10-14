@@ -58,6 +58,7 @@ from rag import index_parsed_doc
 
 from . import backup as _backup
 from . import coverage, policy_coverages, policy_qa, repo
+from .coverage_analysis_parser import parse_coverage_analysis
 from .policy_coverages import DocumentType, classify_document_type, detect_candidate_pages
 from .proposal_parser import parse_proposal
 from . import export_data as _export
@@ -1476,10 +1477,55 @@ async def capture(
                     DocumentType.COVERAGE_ANALYSIS_SHORT,
                 }
                 is_coverage_doc = doc_type_enum in coverage_doc_types or doc_type == "보장분석" or "보유계약리스트" in doc_text
+                coverage_analysis_review = None
                 if is_coverage_doc:
                     t0 = time.perf_counter()
                     f, warns = _quick_customer_fields(doc_text + extra, file.filename, _short_form_issued_date(doc_text))
                     perf["customer"] = time.perf_counter() - t0
+                    t0 = time.perf_counter()
+                    tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                    try:
+                        tmp_pdf.write(data)
+                        tmp_pdf.close()
+                        candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
+                        parsed_coverages = parse_coverage_analysis(tmp_pdf.name, candidate_pages)
+                    finally:
+                        try:
+                            os.unlink(tmp_pdf.name)
+                        except OSError:
+                            pass
+                    perf["coverage_analysis_parse"] = time.perf_counter() - t0
+                    policy_coverage_rows = [
+                        {
+                            "insurer": c.insurer,
+                            "product_name": c.product_name,
+                            "rider_name": c.coverage_name,
+                            "coverage_name": c.coverage_name,
+                            "standard_name": policy_coverages.normalize_standard_name(c.coverage_name, c.coverage_name),
+                            "amount": c.amount,
+                            "amount_text": c.amount_text,
+                            "current_amount": c.amount_text,
+                            "source_page": c.source_page,
+                            "confidence": c.confidence,
+                        }
+                        for c in parsed_coverages
+                    ]
+                    coverage_analysis_review = {
+                        "doc_type": "coverage_analysis",
+                        "coverages": [
+                            {
+                                "insurer": c.insurer,
+                                "product_name": c.product_name,
+                                "coverage_name": c.coverage_name,
+                                "amount": c.amount,
+                                "amount_text": c.amount_text,
+                                "source_page": c.source_page,
+                                "confidence": c.confidence,
+                            }
+                            for c in parsed_coverages
+                        ],
+                        "page_count": locals().get("_doc_type_metadata", {}).get("page_count"),
+                    }
                 else:
                     focused = (_focus_customer_lines(doc_text) + "\n" + prop_body)[:3000]
                     guide = (
@@ -1674,7 +1720,7 @@ async def capture(
                     "policies": policies,
                     "coverage_status": coverage_status,
                     "policy_coverages": policy_coverage_rows,
-                    "coverage_review": _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows),
+                    "coverage_review": coverage_analysis_review or _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows),
                     "coverages_text": cov_raw,
                     "analysis_status": "quick_analysis_done",
                     "quick_contracts": [
