@@ -30,6 +30,7 @@ type CoverageRunOption = {
 type CoverageItem = {
   id: string;
   source_index: number;
+  source_kind?: "analysis" | "policy";
   category_id?: string;
   category_group: string;
   coverage_name: string;
@@ -44,6 +45,20 @@ type CoverageItem = {
   customer_summary?: string;
   internal_memo?: string;
   evidence_pages?: number[];
+};
+
+type PolicyCoverage = {
+  id: string;
+  source_page?: number | null;
+  insurer?: string | null;
+  product_name?: string | null;
+  coverage_type?: string | null;
+  rider_name?: string | null;
+  standard_name?: string | null;
+  amount?: number | null;
+  amount_text?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
 };
 
 type CoverageCategory = {
@@ -78,6 +93,10 @@ type CoverageRefreshResponse = {
   links?: { result?: string };
 };
 
+type PolicyCoveragesResponse = {
+  policy_coverages?: PolicyCoverage[];
+};
+
 type EditDraft = {
   status: string;
   current: string;
@@ -105,9 +124,40 @@ function parseWonAmount(value: string | null | undefined): number {
 
 function statusIcon(status: string): string {
   if (status === "충분") return "✓";
-  if (status === "부족") return "!";
   if (status === "미가입") return "—";
-  return "?";
+  return "";
+}
+
+function policyCoverageGroup(coverage: PolicyCoverage): string {
+  const text = `${coverage.standard_name ?? ""} ${coverage.rider_name ?? ""} ${coverage.coverage_type ?? ""}`;
+  if (/암/.test(text)) return "암";
+  if (/뇌|뇌혈관|뇌졸중|뇌출혈/.test(text)) return "뇌혈관질환";
+  if (/심장|허혈|급성심근|협심/.test(text)) return "심장질환";
+  if (/수술/.test(text)) return "수술비";
+  if (/입원|일당/.test(text)) return "입원비/일당";
+  if (/운전자|교통|벌금|변호사|방어비용/.test(text)) return "운전자";
+  return coverage.coverage_type || "기타";
+}
+
+function policyCoverageToItem(coverage: PolicyCoverage, index: number): CoverageItem {
+  const coverageName = coverage.rider_name || coverage.standard_name || "담보명 미확인";
+  const currentAmount = Number(coverage.amount ?? 0);
+  return {
+    id: `policy-${coverage.id || index}`,
+    source_index: index,
+    source_kind: "policy",
+    category_group: policyCoverageGroup(coverage),
+    coverage_name: coverageName,
+    status: "보유",
+    current_text: coverage.amount_text ?? null,
+    recommended_text: null,
+    recommended_amount: 0,
+    current_amount: Number.isFinite(currentAmount) ? currentAmount : 0,
+    gap_amount: 0,
+    customer_summary: [coverage.insurer, coverage.product_name].filter(Boolean).join(" · ") || undefined,
+    internal_memo: [coverage.start_date, coverage.end_date].filter(Boolean).join(" ~ ") || undefined,
+    evidence_pages: coverage.source_page ? [coverage.source_page] : undefined,
+  };
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -216,10 +266,12 @@ export default function CoverageAnalysisScreen() {
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [recentCustomerIds, setRecentCustomerIds] = useState<string[]>([]);
   const [data, setData] = useState<CoverageResponse | null>(null);
+  const [policyCoverages, setPolicyCoverages] = useState<PolicyCoverage[]>([]);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>({ status: "미가입", current: "", recommended: "" });
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
+  const [showAll, setShowAll] = useState(false);
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,6 +322,7 @@ export default function CoverageAnalysisScreen() {
   const loadAnalysis = useCallback(async () => {
     if (!customerId) {
       setData(null);
+      setPolicyCoverages([]);
       setEditingRowId(null);
       return;
     }
@@ -277,11 +330,16 @@ export default function CoverageAnalysisScreen() {
     setError(null);
     setRefreshMessage(null);
     try {
-      const analysis = await api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`);
+      const [analysis, coverages] = await Promise.all([
+        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
+        api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
+      ]);
       setData(analysis);
+      setPolicyCoverages(Array.isArray(coverages.policy_coverages) ? coverages.policy_coverages : []);
       setEditingRowId(null);
     } catch (e) {
       setData(null);
+      setPolicyCoverages([]);
       setEditingRowId(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -341,7 +399,12 @@ export default function CoverageAnalysisScreen() {
     });
   }, [customerId, data]);
 
-  const allItems = useMemo(() => (data?.categories ?? []).flatMap((category) => category.items), [data]);
+  const analysisItems = useMemo(
+    () => (data?.categories ?? []).flatMap((category) => category.items.map((item) => ({ ...item, source_kind: "analysis" as const }))),
+    [data],
+  );
+  const policyItems = useMemo(() => policyCoverages.map(policyCoverageToItem), [policyCoverages]);
+  const allItems = showAll ? policyItems : analysisItems;
   const filteredItems = useMemo(
     () => allItems.filter((item) => filterMatches(item, coverageFilter)),
     [allItems, coverageFilter],
@@ -368,7 +431,7 @@ export default function CoverageAnalysisScreen() {
     return ordered.slice(0, 10);
   }, [customerQuery, customers, recentCustomerIds]);
 
-  const shortageTotal = countByStatus(allItems, "부족") + countByStatus(allItems, "미가입");
+  const shortageTotal = countByStatus(analysisItems, "부족") + countByStatus(analysisItems, "미가입");
 
   const startEditingRow = (item: CoverageItem) => {
     setEditingRowId(item.id);
@@ -500,7 +563,7 @@ export default function CoverageAnalysisScreen() {
             <p className="coverage-summary-value">{shortageTotal}개</p>
           </div>
           <div className="coverage-summary-card">
-            <p className="coverage-summary-label">전체/미가입/부족/충분</p>
+            <p className="coverage-summary-label">표시/미가입/부족/충분</p>
             <p className="coverage-summary-value">
               {allItems.length} / {countByStatus(allItems, "미가입")} / {countByStatus(allItems, "부족")} / {countByStatus(allItems, "충분")}
             </p>
@@ -519,6 +582,17 @@ export default function CoverageAnalysisScreen() {
       {data && (
         <section className="coverage-analysis-panel" aria-label="보장분석 상세표">
           <div className="coverage-filter-row" role="group" aria-label="보장분석 필터">
+            <label className="coverage-show-all-toggle">
+              <input
+                type="checkbox"
+                checked={showAll}
+                onChange={(e) => {
+                  setShowAll(e.target.checked);
+                  setCoverageFilter("전체");
+                }}
+              />
+              전체 보기 (중복 포함 {policyCoverages.length}개)
+            </label>
             {COVERAGE_FILTERS.map((filter) => (
               <button
                 key={filter}
@@ -532,7 +606,7 @@ export default function CoverageAnalysisScreen() {
           </div>
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
-              <h3>보장별 상세표 전체</h3>
+              <h3>{showAll ? "계약별 담보 원장 전체" : "보장별 상세표"}</h3>
               <span>{coverageFilter} {filteredItems.length}개</span>
             </div>
 
@@ -556,11 +630,15 @@ export default function CoverageAnalysisScreen() {
                     {filteredItems.map((item) => {
                       const editing = editingRowId === item.id;
                       const saving = savingRowId === item.id;
+                      const isPolicyCoverage = item.source_kind === "policy";
+                      const icon = statusIcon(item.status);
                       return (
                         <tr key={item.id}>
                           <td>{item.category_group}</td>
                           <td>
                             <div className="coverage-table-title">{item.coverage_name}</div>
+                            {item.customer_summary ? <p>{item.customer_summary}</p> : null}
+                            {item.internal_memo ? <p>{item.internal_memo}</p> : null}
                           </td>
                           <td>
                             {editing ? (
@@ -571,6 +649,8 @@ export default function CoverageAnalysisScreen() {
                                 disabled={saving}
                                 onChange={(e) => setEditDraft((current) => ({ ...current, recommended: e.target.value }))}
                               />
+                            ) : isPolicyCoverage ? (
+                              "-"
                             ) : (
                               item.recommended_text || formatAmount(item.recommended_amount)
                             )}
@@ -588,7 +668,7 @@ export default function CoverageAnalysisScreen() {
                               item.current_text || formatAmount(item.current_amount)
                             )}
                           </td>
-                          <td className="is-gap">{formatAmount(item.gap_amount)}</td>
+                          <td className="is-gap">{isPolicyCoverage ? "-" : formatAmount(item.gap_amount)}</td>
                           <td>
                             {editing ? (
                               <select
@@ -603,13 +683,15 @@ export default function CoverageAnalysisScreen() {
                               </select>
                             ) : (
                               <>
-                                <span className="coverage-status-icon" aria-hidden="true">{statusIcon(item.status)}</span>
-                                <CoverageBadge status={item.status} />
+                                {icon ? <span className="coverage-status-icon" aria-hidden="true">{icon}</span> : null}
+                                {isPolicyCoverage ? <span className="coverage-badge coverage-badge--unknown">보유</span> : <CoverageBadge status={item.status} />}
                               </>
                             )}
                           </td>
                           <td>
-                            {editing ? (
+                            {isPolicyCoverage ? (
+                              <span className="coverage-edit-guide">원장</span>
+                            ) : editing ? (
                               <div className="coverage-row-actions">
                                 <button type="button" className="coverage-button compact" onClick={() => void saveEditingRow(item)} disabled={saving}>
                                   {saving ? "저장 중…" : "저장"}
