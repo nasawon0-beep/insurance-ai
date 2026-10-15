@@ -758,3 +758,109 @@
     transform: none;
   }
 }
+
+/* 메리츠 스타일 3단 계층 트리 뷰 */
+.coverage-tree-table {
+  min-width: 1100px;
+}
+
+.coverage-tree-row {
+  transition: background-color var(--transition-fast);
+}
+
+.coverage-tree-row--level1 {
+  background-color: #f9fafb;
+  font-weight: var(--font-semibold);
+}
+
+.coverage-tree-row--level1:hover {
+  background-color: #f3f4f6;
+}
+
+.coverage-tree-row--level2 {
+  background-color: #ffffff;
+  font-weight: var(--font-medium);
+}
+
+.coverage-tree-row--level2:hover {
+  background-color: #fafafa;
+}
+
+.coverage-tree-row--level3 {
+  background-color: #ffffff;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-normal);
+}
+
+.coverage-tree-row--level3:hover {
+  background-color: #f9fafb;
+}
+
+.coverage-tree-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 36px;
+}
+
+.coverage-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: color var(--transition-fast), transform var(--transition-fast);
+}
+
+.coverage-tree-toggle:hover {
+  color: var(--primary-500);
+  transform: scale(1.15);
+}
+
+.coverage-tree-toggle[aria-expanded="true"] {
+  color: var(--primary-600);
+}
+
+.coverage-tree-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.coverage-progress-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 180px;
+  height: 8px;
+  background-color: #e5e7eb;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.coverage-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  transition: width var(--transition-base), background-color var(--transition-base);
+  border-radius: var(--radius-full);
+}
+
+.coverage-progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.6875rem;
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.8);
+  z-index: 1;
+  white-space: nowrap;
+}

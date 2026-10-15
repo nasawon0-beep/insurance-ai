@@ -105,6 +105,27 @@ type EditDraft = {
 
 type CoverageFilter = "전체" | "부족" | "미가입" | "충분" | "암" | "뇌혈관" | "심장" | "수술비" | "입원비" | "운전자" | "기타";
 
+type CoverageTreeNode = {
+  id: string;
+  level: 1 | 2 | 3;
+  name: string;
+  status: string | null;
+  coverage_ratio: number | null;
+  recommended_amount: number | null;
+  current_amount: number | null;
+  gap_amount: number | null;
+  children?: CoverageTreeNode[];
+  isExpanded?: boolean;
+  metadata?: {
+    insurer?: string;
+    product_name?: string;
+    rider_name?: string;
+    source_page?: number;
+    customer_summary?: string;
+    internal_memo?: string;
+  };
+};
+
 const RECENT_CUSTOMERS_KEY = "coverageAnalysis.recentCustomerIds";
 const DEBUG_PREFIX = "[CoverageAnalysis]";
 const COVERAGE_FILTERS: CoverageFilter[] = ["전체", "부족", "미가입", "충분", "암", "뇌혈관", "심장", "수술비", "입원비", "운전자", "기타"];
@@ -192,8 +213,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function formatAmount(value: number | null | undefined): string {
-  const manwon = Math.round(Number(value || 0) / 10000);
-  return `${manwon.toLocaleString("ko-KR")}만원`;
+  const amount = Number(value || 0);
+  const eok = Math.floor(amount / 100000000);
+  const man = Math.floor((amount % 100000000) / 10000);
+  
+  if (eok > 0 && man > 0) {
+    return `${eok.toLocaleString("ko-KR")}억${man.toLocaleString("ko-KR")}만원`;
+  } else if (eok > 0) {
+    return `${eok.toLocaleString("ko-KR")}억원`;
+  } else {
+    return `${man.toLocaleString("ko-KR")}만원`;
+  }
 }
 
 function countByStatus(items: CoverageItem[], status: string): number {
@@ -259,6 +289,174 @@ function normalizeRunCustomers(body: unknown): CustomerOption[] {
   return [...byCustomerId.values()];
 }
 
+function buildCoverageTree(
+  categories: CoverageCategory[], 
+  policyCoverages: PolicyCoverage[], 
+  expandedNodes: Set<string>
+): CoverageTreeNode[] {
+  const tree: CoverageTreeNode[] = [];
+  
+  // 1단: 카테고리
+  for (const category of categories) {
+    const categoryNode: CoverageTreeNode = {
+      id: `cat-${category.category_id}`,
+      level: 1,
+      name: `${category.category_group} (${category.items.length}개)`,
+      status: category.status_summary,
+      coverage_ratio: null,
+      recommended_amount: null,
+      current_amount: null,
+      gap_amount: null,
+      children: [],
+      isExpanded: expandedNodes.has(`cat-${category.category_id}`),
+    };
+    
+    // 2단: 표준 담보명 (category.items를 coverage_name으로 그룹핑)
+    const standardCoverageMap = new Map<string, CoverageItem[]>();
+    for (const item of category.items) {
+      const key = item.coverage_name;
+      if (!standardCoverageMap.has(key)) {
+        standardCoverageMap.set(key, []);
+      }
+      standardCoverageMap.get(key)!.push(item);
+    }
+    
+    // 2단 노드 생성
+    for (const [coverageName, items] of standardCoverageMap) {
+      const firstItem = items[0];
+      const totalRecommended = items.reduce((sum, item) => sum + item.recommended_amount, 0);
+      const totalCurrent = items.reduce((sum, item) => sum + item.current_amount, 0);
+      const totalGap = totalRecommended - totalCurrent;
+      const ratio = totalRecommended > 0 ? Math.round((totalCurrent / totalRecommended) * 100) : 0;
+      
+      const standardNode: CoverageTreeNode = {
+        id: `std-${category.category_id}-${coverageName}`,
+        level: 2,
+        name: coverageName,
+        status: firstItem.status,
+        coverage_ratio: ratio,
+        recommended_amount: totalRecommended,
+        current_amount: totalCurrent,
+        gap_amount: totalGap,
+        children: [],
+        isExpanded: expandedNodes.has(`std-${category.category_id}-${coverageName}`),
+      };
+      
+      // 3단: 원본 계약 (policy_coverages에서 standard_name 매칭)
+      const matchedPolicies = policyCoverages.filter(
+        (policy) => policy.standard_name === coverageName || policy.rider_name === coverageName
+      );
+      
+      for (const policy of matchedPolicies) {
+        const policyNode: CoverageTreeNode = {
+          id: `pol-${policy.id}`,
+          level: 3,
+          name: [policy.insurer, policy.product_name, policy.rider_name].filter(Boolean).join(" · "),
+          status: null,
+          coverage_ratio: null,
+          recommended_amount: null,
+          current_amount: policy.amount || 0,
+          gap_amount: null,
+          metadata: {
+            insurer: policy.insurer || undefined,
+            product_name: policy.product_name || undefined,
+            rider_name: policy.rider_name || undefined,
+            source_page: policy.source_page || undefined,
+          },
+        };
+        standardNode.children!.push(policyNode);
+      }
+      
+      categoryNode.children!.push(standardNode);
+    }
+    
+    // 카테고리 합계 계산
+    categoryNode.recommended_amount = categoryNode.children!.reduce(
+      (sum, node) => sum + (node.recommended_amount || 0), 
+      0
+    );
+    categoryNode.current_amount = categoryNode.children!.reduce(
+      (sum, node) => sum + (node.current_amount || 0), 
+      0
+    );
+    categoryNode.gap_amount = categoryNode.recommended_amount - categoryNode.current_amount;
+    categoryNode.coverage_ratio = 
+      categoryNode.recommended_amount > 0 
+        ? Math.round((categoryNode.current_amount / categoryNode.recommended_amount) * 100) 
+        : 0;
+    
+    tree.push(categoryNode);
+  }
+  
+  return tree;
+}
+
+function getProgressBarColor(ratio: number | null): string {
+  if (ratio === null) return "#ccc";
+  if (ratio === 0) return "#9ca3af"; // 회색
+  if (ratio < 100) return "#dc2626"; // 빨간색
+  return "#2563eb"; // 파란색
+}
+
+type CoverageTreeRowProps = {
+  node: CoverageTreeNode;
+  onToggle: (nodeId: string) => void;
+};
+
+function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
+  const hasChildren = node.children && node.children.length > 0;
+  const indent = (node.level - 1) * 24; // px
+  
+  return (
+    <>
+      <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
+        <td style={{ paddingLeft: `${indent}px` }}>
+          <div className="coverage-tree-cell">
+            {hasChildren && (
+              <button 
+                type="button"
+                onClick={() => onToggle(node.id)} 
+                className="coverage-tree-toggle"
+                aria-expanded={node.isExpanded}
+              >
+                {node.isExpanded ? "▼" : "▶"}
+              </button>
+            )}
+            <span className="coverage-tree-name">{node.name}</span>
+          </div>
+        </td>
+        <td>
+          {node.status && (
+            <CoverageBadge status={node.status} />
+          )}
+        </td>
+        <td>
+          {node.coverage_ratio !== null && (
+            <div className="coverage-progress-wrapper">
+              <div 
+                className="coverage-progress-bar" 
+                style={{ 
+                  width: `${node.coverage_ratio}%`, 
+                  backgroundColor: getProgressBarColor(node.coverage_ratio) 
+                }} 
+              />
+              <span className="coverage-progress-text">{node.coverage_ratio}%</span>
+            </div>
+          )}
+        </td>
+        <td>{node.recommended_amount !== null ? formatAmount(node.recommended_amount) : "-"}</td>
+        <td>{node.current_amount !== null ? formatAmount(node.current_amount) : "-"}</td>
+        <td className={node.gap_amount && node.gap_amount > 0 ? "is-gap" : ""}>
+          {node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}
+        </td>
+      </tr>
+      {node.isExpanded && node.children?.map(child => (
+        <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
+      ))}
+    </>
+  );
+}
+
 export default function CoverageAnalysisScreen() {
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [customerId, setCustomerId] = useState("");
@@ -272,6 +470,8 @@ export default function CoverageAnalysisScreen() {
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
   const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>("전체");
   const [showAll, setShowAll] = useState(false);
+  const [showTreeView, setShowTreeView] = useState(true);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -409,6 +609,23 @@ export default function CoverageAnalysisScreen() {
     () => allItems.filter((item) => filterMatches(item, coverageFilter)),
     [allItems, coverageFilter],
   );
+  
+  const coverageTree = useMemo(
+    () => data ? buildCoverageTree(data.categories, policyCoverages, expandedNodes) : [],
+    [data, policyCoverages, expandedNodes],
+  );
+  
+  const toggleTreeNode = useCallback((nodeId: string) => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
 
   const customerSuggestions = useMemo(() => {
     const normalizedQuery = customerQuery.trim().toLowerCase();
@@ -585,49 +802,90 @@ export default function CoverageAnalysisScreen() {
             <label className="coverage-show-all-toggle">
               <input
                 type="checkbox"
-                checked={showAll}
-                onChange={(e) => {
-                  setShowAll(e.target.checked);
-                  setCoverageFilter("전체");
-                }}
+                checked={showTreeView}
+                onChange={(e) => setShowTreeView(e.target.checked)}
               />
-              전체 보기 (중복 포함 {policyCoverages.length}개)
+              메리츠 스타일 (3단 계층)
             </label>
-            {COVERAGE_FILTERS.map((filter) => (
-              <button
-                key={filter}
-                type="button"
-                className={`coverage-filter ${coverageFilter === filter ? "is-active" : ""}`}
-                onClick={() => setCoverageFilter(filter)}
-              >
-                {filter}
-              </button>
-            ))}
+            {!showTreeView && (
+              <>
+                <label className="coverage-show-all-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showAll}
+                    onChange={(e) => {
+                      setShowAll(e.target.checked);
+                      setCoverageFilter("전체");
+                    }}
+                  />
+                  전체 보기 (중복 포함 {policyCoverages.length}개)
+                </label>
+                {COVERAGE_FILTERS.map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={`coverage-filter ${coverageFilter === filter ? "is-active" : ""}`}
+                    onClick={() => setCoverageFilter(filter)}
+                  >
+                    {filter}
+                  </button>
+                ))}
+              </>
+            )}
           </div>
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
-              <h3>{showAll ? "계약별 담보 원장 전체" : "보장별 상세표"}</h3>
-              <span>{coverageFilter} {filteredItems.length}개</span>
+              <h3>{showTreeView ? "메리츠 스타일 보장분석" : showAll ? "계약별 담보 원장 전체" : "보장별 상세표"}</h3>
+              <span>
+                {showTreeView 
+                  ? `${coverageTree.length}개 카테고리` 
+                  : `${coverageFilter} ${filteredItems.length}개`}
+              </span>
             </div>
 
-            {filteredItems.length === 0 ? (
-              <div className="coverage-empty in-panel">표시할 세부 담보가 없습니다.</div>
+            {showTreeView ? (
+              coverageTree.length === 0 ? (
+                <div className="coverage-empty in-panel">표시할 세부 담보가 없습니다.</div>
+              ) : (
+                <div className="coverage-table-wrap">
+                  <table className="coverage-table coverage-tree-table">
+                    <thead>
+                      <tr>
+                        <th>보장명</th>
+                        <th>상태</th>
+                        <th>충족률</th>
+                        <th>권장금액</th>
+                        <th>현재보장</th>
+                        <th>부족금액</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {coverageTree.map((node) => (
+                        <CoverageTreeRow key={node.id} node={node} onToggle={toggleTreeNode} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
             ) : (
-              <div className="coverage-table-wrap">
-                <table className="coverage-table">
-                  <thead>
-                    <tr>
-                      <th>보장군</th>
-                      <th>보장상세</th>
-                      <th>권장금액</th>
-                      <th>가입금액</th>
-                      <th>부족금액</th>
-                      <th>상태</th>
-                      <th>관리</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredItems.map((item) => {
+              filteredItems.length === 0 ? (
+                <div className="coverage-empty in-panel">표시할 세부 담보가 없습니다.</div>
+              ) : (
+                <div className="coverage-table-wrap">
+                  <table className="coverage-table">
+                    <thead>
+                      <tr>
+                        <th>보장군</th>
+                        <th>보장상세</th>
+                        <th>권장금액</th>
+                        <th>가입금액</th>
+                        <th>부족금액</th>
+                        <th>상태</th>
+                        <th>관리</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredItems.map((item) => {
                       const editing = editingRowId === item.id;
                       const saving = savingRowId === item.id;
                       const isPolicyCoverage = item.source_kind === "policy";
@@ -712,7 +970,8 @@ export default function CoverageAnalysisScreen() {
                   </tbody>
                 </table>
               </div>
-            )}
+            )
+          )}
           </div>
         </section>
       )}
