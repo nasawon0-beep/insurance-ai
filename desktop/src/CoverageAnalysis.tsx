@@ -316,7 +316,7 @@ function buildCoverageTree(
     const categoryNode: CoverageTreeNode = {
       id: `cat-${categoryName}`,
       level: 1,
-      name: `${categoryName} (${data.items.length}개)`,
+      name: categoryName, // 이름만 표시 (개수, 금액 제거)
       status: null,
       current_amount: null,
       gap_amount: null,
@@ -419,7 +419,7 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
   const hasChildren = node.children && node.children.length > 0;
   const indent = (node.level - 1) * 24; // px
   
-  // 2단: 담보명 + 상태 + 가입금액
+  // 2단: 테이블 형태 (보장명 | 상태 | 현재보장)
   if (node.level === 2) {
     return (
       <>
@@ -443,20 +443,15 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
                   {node.isExpanded ? "▼" : "▶"}
                 </button>
               )}
-              <div className="coverage-level2-header">
-                <div className="coverage-level2-title">
-                  <span className="coverage-tree-name">{node.name}</span>
-                  {node.status && <CoverageBadge status={node.status} />}
-                </div>
-                <div className="coverage-level2-amounts">
-                  <span className="coverage-current-text">
-                    가입금액: {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
-                  </span>
-                </div>
-              </div>
+              <span className="coverage-tree-name">{node.name}</span>
             </div>
           </td>
-          <td colSpan={3}></td>
+          <td>
+            {node.status && <CoverageBadge status={node.status} />}
+          </td>
+          <td className="coverage-level2-current">
+            {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
+          </td>
         </tr>
         {node.isExpanded && node.children?.map(child => (
           <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
@@ -465,11 +460,11 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
     );
   }
   
-  // 3단: 상품 상세 (회사명 + 상품명 + 담보명 | 금액)
+  // 3단: 상품 상세 (4줄: 회사명, 상품명, 담보명, 금액)
   if (node.level === 3) {
     return (
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
-        <td style={{ paddingLeft: `${indent}px` }} colSpan={3}>
+        <td style={{ paddingLeft: `${indent}px` }} colSpan={2}>
           <div className="coverage-level3-detail">
             <div className="coverage-level3-company">{node.metadata?.insurer || node.name}</div>
             {node.metadata?.product_name && (
@@ -478,11 +473,12 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
             {node.metadata?.coverage_name && (
               <div className="coverage-level3-coverage">{node.metadata.coverage_name}</div>
             )}
+            {node.current_amount !== null && (
+              <div className="coverage-level3-amount-text">{formatAmount(node.current_amount)}</div>
+            )}
           </div>
         </td>
-        <td className="coverage-level3-amount">
-          {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
-        </td>
+        <td className="coverage-level3-empty"></td>
       </tr>
     );
   }
@@ -499,13 +495,7 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
             <span className="coverage-tree-name">{node.name}</span>
           </div>
         </td>
-        <td>
-          {node.status && (
-            <CoverageBadge status={node.status} />
-          )}
-        </td>
-        <td>{node.current_amount !== null ? formatAmount(node.current_amount) : "-"}</td>
-        <td>{node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}</td>
+        <td colSpan={2}></td>
       </tr>
       {node.children?.map(child => (
         <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
@@ -826,7 +816,6 @@ export default function CoverageAnalysisScreen() {
                       <th>보장명</th>
                       <th>상태</th>
                       <th>현재보장</th>
-                      <th>부족금액</th>
                     </tr>
                   </thead>
                   <tbody>

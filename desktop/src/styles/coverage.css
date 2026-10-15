@@ -932,9 +932,20 @@
   font-size: var(--text-xs);
 }
 
-.coverage-level3-amount {
+.coverage-level3-amount-text {
   font-weight: var(--font-semibold);
   color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  margin-top: 2px;
+}
+
+.coverage-level3-empty {
+  /* 빈 셀 */
+}
+
+/* 2단 현재보장 우측 정렬 */
+.coverage-level2-current {
   text-align: right;
+  font-weight: var(--font-semibold);
   white-space: nowrap;
 }
