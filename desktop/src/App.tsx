@@ -694,6 +694,26 @@ function CapturePanel({
             rider_count: row.proposal_review?.riders?.length ?? row.quick_coverages?.length ?? 0,
           });
         }
+
+        // 통합 보장분석 문서인 경우 최상위 row.policy_coverages 저장
+        const isCoverageAnalysis = String(row.doc_type ?? "").includes("보장분석");
+        const topLevelCoverages = row.coverage_review?.coverages ?? row.policy_coverages;
+        if (cid && isCoverageAnalysis && Array.isArray(topLevelCoverages) && topLevelCoverages.length > 0) {
+          console.log("[통합 보장분석 저장] 시작", { count: topLevelCoverages.length });
+          try {
+            const saveResponse = await api(`/customers/${cid}/policy-coverages/bulk`, {
+              method: "POST",
+              body: JSON.stringify({ coverages: topLevelCoverages }),
+            });
+            const bulkSaved = saveResponse?.saved ?? 0;
+            savedCoverageCount += bulkSaved;
+            res.policyCoverages += bulkSaved;
+            console.log("[통합 보장분석 저장] 완료", { saved: bulkSaved });
+          } catch (e) {
+            console.error("[통합 보장분석 저장] 실패", e);
+          }
+        }
+
         if (cid) {
           const recalculated = await recalculateCoverageIfNeeded(cid, row, savedCoverageCount);
           if (recalculated) {
