@@ -353,9 +353,14 @@ function buildCoverageTree(
       
       // 2단 상태: 가입 / 미가입
       const enrollmentStatus = firstItem.current_amount > 0 ? "가입" : "미가입";
+      const subcategoryId = `sub-${categoryName}-${subcategoryName}`;
+      
+      // 가입 상품은 초기 펼침, 미가입은 접힘
+      const isEnrolled = firstItem.current_amount > 0;
+      const shouldExpand = isEnrolled || expandedNodes.has(subcategoryId);
       
       const subcategoryNode: CoverageTreeNode = {
-        id: `sub-${categoryName}-${subcategoryName}`,
+        id: subcategoryId,
         level: 2,
         name: subcategoryName,
         status: enrollmentStatus,
@@ -363,7 +368,7 @@ function buildCoverageTree(
         gap_amount: null, // 부족금액 제거
         recommended_amount: null, // 권장금액 제거
         children: [],
-        isExpanded: expandedNodes.has(`sub-${categoryName}-${subcategoryName}`),
+        isExpanded: shouldExpand,
         metadata: {
           customer_summary: firstItem.customer_summary,
           internal_memo: firstItem.internal_memo,
