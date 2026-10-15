@@ -398,15 +398,40 @@ def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
     def has(*tokens: str) -> bool:
         return all(_compact(t) in hay for t in tokens if t)
 
+    excludes = [_compact(ex) for ex in item.get("exclude_keywords", [])]
+    if any(ex and ex in hay for ex in excludes):
+        return False
+
+    # 뇌혈관은 뇌졸중/뇌출혈을 포함하는 상위 보장이다. 표준화된 담보명이
+    # 하위 진단명으로 저장된 경우에도 뇌혈관 진단비의 가입 계약으로 집계한다.
+    if name == "뇌혈관 진단비":
+        return (
+            any(token in hay for token in ("뇌혈관", "뇌졸중", "뇌출혈"))
+            and "진단" in hay
+            and "수술" not in hay
+        )
+
     # 입원비/일당은 실손 입원과 일당/간병인 일당을 분리해서 판정한다.
     if name == "질병입원":
-        return has("질병", "입원") and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+        return (
+            (has("질병", "입원") or ("입원의료비" in hay and "상해" not in hay))
+            and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+        )
     if name == "상해입원":
-        return has("상해", "입원") and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+        return (
+            (has("상해", "입원") or ("입원의료비" in hay and "질병" not in hay))
+            and not any(t in hay for t in ("일당", "간병인", "1인실", "상급병실"))
+        )
     if name == "질병통원":
-        return has("질병", "통원")
+        return (
+            (has("질병") and any(token in hay for token in ("통원", "외래의료비", "통원의료비")))
+            or ("외래의료비" in hay and "상해" not in hay)
+        )
     if name == "상해통원":
-        return has("상해", "통원")
+        return (
+            (has("상해") and any(token in hay for token in ("통원", "외래의료비", "통원의료비")))
+            or ("외래의료비" in hay and "질병" not in hay)
+        )
     if name == "질병일당":
         return has("질병") and ("일당" in hay or "입원일당" in hay) and not any(t in hay for t in ("상해", "간병인", "1인실", "상급병실"))
     if name == "상해일당":
@@ -423,9 +448,6 @@ def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
         return ("1인실" in hay or "상급병실" in hay) and "일당" in hay
 
     names = [name, name.replace(" ", ""), *item.get("keywords", [])]
-    excludes = [_compact(ex) for ex in item.get("exclude_keywords", [])]
-    if any(ex and ex in hay for ex in excludes):
-        return False
     return any(_compact(candidate) and _compact(candidate) in hay for candidate in names)
 
 
@@ -937,6 +959,50 @@ def _row_to_item(row: sqlite3.Row, *, audience: str) -> dict[str, Any]:
     return item
 
 
+def _sync_run_matched_policy_ids(conn: sqlite3.Connection, customer_id: str, run_id: str) -> None:
+    """기존 분석 run의 담보-계약 연결을 현재 policy_coverages 기준으로 보정한다."""
+    coverages = _list_customer_policy_coverages(conn, customer_id)
+    catalog_by_id = {item["id"]: item for item in _COVERAGE_CATALOG}
+    catalog_by_key = {
+        (item["category_group"], item["coverage_name"]): item
+        for item in _COVERAGE_CATALOG
+    }
+    rows = conn.execute(
+        """
+        SELECT id, catalog_id, category_group, coverage_name, matched_policy_ids_json
+        FROM coverage_analysis
+        WHERE run_id = ? AND customer_id = ?
+        """,
+        (run_id, customer_id),
+    ).fetchall()
+    changed = False
+    for row in rows:
+        item = catalog_by_id.get(row["catalog_id"]) or catalog_by_key.get(
+            (row["category_group"], row["coverage_name"])
+        )
+        if item is None:
+            item = {
+                "coverage_name": row["coverage_name"],
+                "keywords": [row["coverage_name"]],
+                "exclude_keywords": [],
+            }
+        _, matched_policy_ids = _extract_current_amount_from_coverages(item, coverages)
+        serialized = json.dumps(matched_policy_ids, ensure_ascii=False)
+        if serialized == (row["matched_policy_ids_json"] or "[]"):
+            continue
+        conn.execute(
+            """
+            UPDATE coverage_analysis
+            SET matched_policy_ids_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (serialized, _now(), row["id"]),
+        )
+        changed = True
+    if changed:
+        conn.commit()
+
+
 def get_analysis_response(
     conn: sqlite3.Connection,
     customer_id: str,
@@ -964,6 +1030,7 @@ def get_analysis_response(
         ).fetchone()
     if run is None:
         return None
+    _sync_run_matched_policy_ids(conn, customer_id, run["id"])
     rows = conn.execute(
         "SELECT * FROM coverage_analysis WHERE run_id = ? AND customer_id = ? ORDER BY priority_score DESC, category_group, coverage_name",
         (run["id"], customer_id),

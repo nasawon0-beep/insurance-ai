@@ -1,4 +1,5 @@
 import base64
+import json
 import sqlite3
 
 import pytest
@@ -165,6 +166,94 @@ def test_recalculate_uses_policy_coverages_for_hospitalization_daily_amount(clie
     assert daily["current_amount"] == 30000
     assert daily["status"] != "미가입"
     assert daily["matched_policy_ids"] == [pid]
+
+
+def test_policy_coverage_matching_persists_flexible_standard_names(client, monkeypatch):
+    from database import coverage
+    from database.db import resolve_db_path
+
+    monkeypatch.setattr(coverage, "rag_search", lambda *args, **kwargs: {"hits": []})
+    customer = _make_customer(client)
+    policy_ids = []
+    for index in range(3):
+        response = client.post(
+            f"/customers/{customer['id']}/policies",
+            json={"insurer": f"테스트보험{index}", "product_name": f"건강보험{index}"},
+        )
+        assert response.status_code == 201, response.text
+        policy_ids.append(response.json()["id"])
+
+    created = client.post(
+        f"/customers/{customer['id']}/policy-coverages/bulk",
+        json={
+            "review_confirmed": True,
+            "items": [
+                {"policy_id": policy_ids[0], "standard_name": "뇌혈관질환 진단비", "amount": 30000000},
+                {"policy_id": policy_ids[1], "standard_name": "뇌출혈 진단비", "amount": 20000000},
+                {"policy_id": policy_ids[2], "standard_name": "뇌졸중 진단비", "amount": 10000000},
+                {"policy_id": policy_ids[0], "standard_name": "질병사망", "amount": 100000000},
+                {"policy_id": policy_ids[1], "standard_name": "상해사망", "amount": 100000000},
+                {"policy_id": policy_ids[0], "standard_name": "상해+질병 입원의료비", "amount": 50000000},
+                {"policy_id": policy_ids[2], "standard_name": "질병 외래의료비", "amount": 250000},
+                {"policy_id": policy_ids[1], "standard_name": "상해 외래의료비", "amount": 250000},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    recalculated = client.post(f"/customers/{customer['id']}/coverage-analysis/recalculate", json={})
+    assert recalculated.status_code == 200, recalculated.text
+    run_id = recalculated.json()["run_id"]
+    response = client.get(
+        f"/customers/{customer['id']}/coverage-analysis",
+        params={"audience": "internal", "run_id": run_id},
+    )
+    assert response.status_code == 200, response.text
+    items = {
+        item["coverage_name"]: item
+        for category in response.json()["categories"]
+        for item in category["items"]
+    }
+    assert items["뇌혈관 진단비"]["matched_policy_ids"] == sorted(policy_ids)
+    assert items["질병사망"]["matched_policy_ids"] == [policy_ids[0]]
+    assert items["상해사망"]["matched_policy_ids"] == [policy_ids[1]]
+    assert items["질병입원"]["matched_policy_ids"] == [policy_ids[0]]
+    assert items["상해입원"]["matched_policy_ids"] == [policy_ids[0]]
+    assert items["질병통원"]["matched_policy_ids"] == [policy_ids[2]]
+    assert items["상해통원"]["matched_policy_ids"] == [policy_ids[1]]
+
+    conn = sqlite3.connect(resolve_db_path())
+    try:
+        stored = conn.execute(
+            """
+            SELECT matched_policy_ids_json FROM coverage_analysis
+            WHERE run_id = ? AND coverage_name = '뇌혈관 진단비'
+            """,
+            (run_id,),
+        ).fetchone()[0]
+        assert sorted(json.loads(stored)) == sorted(policy_ids)
+
+        conn.execute(
+            """
+            UPDATE coverage_analysis SET matched_policy_ids_json = '[]'
+            WHERE run_id = ? AND coverage_name = '뇌혈관 진단비'
+            """,
+            (run_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refreshed = client.get(
+        f"/customers/{customer['id']}/coverage-analysis",
+        params={"audience": "internal", "run_id": run_id},
+    )
+    refreshed_items = {
+        item["coverage_name"]: item
+        for category in refreshed.json()["categories"]
+        for item in category["items"]
+    }
+    assert refreshed_items["뇌혈관 진단비"]["matched_policy_ids"] == sorted(policy_ids)
 
 
 def test_save_coverage_analysis_skips_proposal_riders(client):
