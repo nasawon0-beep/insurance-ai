@@ -321,7 +321,7 @@ function buildCoverageTree(
       current_amount: null,
       gap_amount: null,
       children: [],
-      isExpanded: expandedNodes.has(`cat-${categoryName}`),
+      isExpanded: true, // 1단은 항상 펼침
     };
     
     // 2단: 세부 담보명별 그룹핑 (CoverageItem 기준)
@@ -335,7 +335,7 @@ function buildCoverageTree(
       subcategoryMap.get(subcategory)!.push(item);
     }
     
-    // 2단 노드 생성 (메리츠 스타일)
+    // 2단 노드 생성
     for (const [subcategoryName, items] of subcategoryMap) {
       const firstItem = items[0];
       if (!firstItem) continue;
@@ -351,14 +351,17 @@ function buildCoverageTree(
         }
       }
       
+      // 2단 상태: 가입 / 미가입
+      const enrollmentStatus = firstItem.current_amount > 0 ? "가입" : "미가입";
+      
       const subcategoryNode: CoverageTreeNode = {
         id: `sub-${categoryName}-${subcategoryName}`,
         level: 2,
         name: subcategoryName,
-        status: firstItem.status,
+        status: enrollmentStatus,
         current_amount: firstItem.current_amount,
-        gap_amount: firstItem.gap_amount,
-        recommended_amount: firstItem.recommended_amount,
+        gap_amount: null, // 부족금액 제거
+        recommended_amount: null, // 권장금액 제거
         children: [],
         isExpanded: expandedNodes.has(`sub-${categoryName}-${subcategoryName}`),
         metadata: {
@@ -411,7 +414,7 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
   const hasChildren = node.children && node.children.length > 0;
   const indent = (node.level - 1) * 24; // px
   
-  // 2단: 메리츠 스타일 헤더 (담보명 + 상태 + 권장금액/가입금액 + 부족금액)
+  // 2단: 담보명 + 상태 + 가입금액
   if (node.level === 2) {
     return (
       <>
@@ -441,12 +444,6 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
                   {node.status && <CoverageBadge status={node.status} />}
                 </div>
                 <div className="coverage-level2-amounts">
-                  {node.gap_amount !== null && node.gap_amount > 0 && (
-                    <span className="coverage-shortage-text">부족금액: {formatAmount(node.gap_amount)}</span>
-                  )}
-                  <span className="coverage-recommended-text">
-                    권장금액: {node.recommended_amount !== null ? formatAmount(node.recommended_amount) : "-"}
-                  </span>
                   <span className="coverage-current-text">
                     가입금액: {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
                   </span>
@@ -485,29 +482,15 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
     );
   }
   
-  // 1단: 카테고리 (기존 로직)
+  // 1단: 카테고리 (항상 펼침, 토글 버튼 제거)
   return (
     <>
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
         <td 
           style={{ paddingLeft: `${indent}px` }}
-          onClick={hasChildren ? () => onToggle(node.id) : undefined}
-          className={hasChildren ? "coverage-tree-node" : ""}
+          className=""
         >
           <div className="coverage-tree-cell">
-            {hasChildren && (
-              <button 
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggle(node.id);
-                }}
-                className="coverage-tree-toggle"
-                aria-expanded={node.isExpanded}
-              >
-                {node.isExpanded ? "▼" : "▶"}
-              </button>
-            )}
             <span className="coverage-tree-name">{node.name}</span>
           </div>
         </td>
@@ -517,11 +500,9 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
           )}
         </td>
         <td>{node.current_amount !== null ? formatAmount(node.current_amount) : "-"}</td>
-        <td className={node.gap_amount && node.gap_amount > 0 ? "is-gap" : ""}>
-          {node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}
-        </td>
+        <td>{node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}</td>
       </tr>
-      {node.isExpanded && node.children?.map(child => (
+      {node.children?.map(child => (
         <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
       ))}
     </>
