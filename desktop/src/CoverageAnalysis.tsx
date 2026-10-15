@@ -102,8 +102,6 @@ type CoverageTreeNode = {
   level: 1 | 2 | 3;
   name: string;
   status: string | null;
-  coverage_ratio: number | null;
-  recommended_amount: number | null;
   current_amount: number | null;
   gap_amount: number | null;
   children?: CoverageTreeNode[];
@@ -121,7 +119,7 @@ type CoverageTreeNode = {
 const RECENT_CUSTOMERS_KEY = "coverageAnalysis.recentCustomerIds";
 const DEBUG_PREFIX = "[CoverageAnalysis]";
 
-// 메리츠 스타일 1단 카테고리 고정 순서
+// 1단 카테고리 고정 순서
 const CATEGORY_ORDER = [
   "전체",
   "사망",
@@ -319,7 +317,8 @@ function normalizeRunCustomers(body: unknown): CustomerOption[] {
 function buildCoverageTree(
   categories: CoverageCategory[], 
   policyCoverages: PolicyCoverage[], 
-  expandedNodes: Set<string>
+  expandedNodes: Set<string>,
+  activeTab: string
 ): CoverageTreeNode[] {
   const tree: CoverageTreeNode[] = [];
   
@@ -366,7 +365,10 @@ function buildCoverageTree(
   
   // 1단 카테고리 노드 생성 (순서대로)
   for (const categoryName of CATEGORY_ORDER) {
-    if (categoryName === "전체") continue; // "전체"는 별도 처리 필요시 추가
+    if (categoryName === "전체") continue;
+    
+    // 탭 필터링
+    if (activeTab !== "전체" && activeTab !== categoryName) continue;
     
     const data = categoryDataMap.get(categoryName);
     if (!data || (data.items.length === 0 && data.policies.length === 0)) continue;
@@ -376,8 +378,6 @@ function buildCoverageTree(
       level: 1,
       name: `${categoryName} (${data.items.length + data.policies.length}개)`,
       status: null,
-      coverage_ratio: null,
-      recommended_amount: null,
       current_amount: null,
       gap_amount: null,
       children: [],
@@ -411,12 +411,9 @@ function buildCoverageTree(
     
     // 2단 노드 생성
     for (const [subcategoryName, subData] of subcategoryMap) {
-      const totalRecommended = subData.items.reduce((sum, item) => sum + item.recommended_amount, 0);
       const totalCurrentFromItems = subData.items.reduce((sum, item) => sum + item.current_amount, 0);
       const totalCurrentFromPolicies = subData.policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0);
       const totalCurrent = totalCurrentFromItems + totalCurrentFromPolicies;
-      const totalGap = totalRecommended - totalCurrent;
-      const ratio = totalRecommended > 0 ? Math.round((totalCurrent / totalRecommended) * 100) : 0;
       
       const firstItem = subData.items[0];
       const subcategoryNode: CoverageTreeNode = {
@@ -424,10 +421,8 @@ function buildCoverageTree(
         level: 2,
         name: subcategoryName,
         status: firstItem?.status || null,
-        coverage_ratio: ratio,
-        recommended_amount: totalRecommended,
         current_amount: totalCurrent,
-        gap_amount: totalGap,
+        gap_amount: null,
         children: [],
         isExpanded: expandedNodes.has(`sub-${categoryName}-${subcategoryName}`),
       };
@@ -439,8 +434,6 @@ function buildCoverageTree(
           level: 3,
           name: [policy.insurer, policy.product_name].filter(Boolean).join(" · ") || "상품 정보 미확인",
           status: null,
-          coverage_ratio: null,
-          recommended_amount: null,
           current_amount: policy.amount || 0,
           gap_amount: null,
           metadata: {
@@ -457,31 +450,15 @@ function buildCoverageTree(
     }
     
     // 카테고리 합계 계산
-    categoryNode.recommended_amount = categoryNode.children!.reduce(
-      (sum, node) => sum + (node.recommended_amount || 0), 
-      0
-    );
     categoryNode.current_amount = categoryNode.children!.reduce(
       (sum, node) => sum + (node.current_amount || 0), 
       0
     );
-    categoryNode.gap_amount = categoryNode.recommended_amount - categoryNode.current_amount;
-    categoryNode.coverage_ratio = 
-      categoryNode.recommended_amount > 0 
-        ? Math.round((categoryNode.current_amount / categoryNode.recommended_amount) * 100) 
-        : 0;
     
     tree.push(categoryNode);
   }
   
   return tree;
-}
-
-function getProgressBarColor(ratio: number | null): string {
-  if (ratio === null) return "#ccc";
-  if (ratio === 0) return "#9ca3af"; // 회색
-  if (ratio < 100) return "#dc2626"; // 빨간색
-  return "#2563eb"; // 파란색
 }
 
 type CoverageTreeRowProps = {
@@ -516,21 +493,6 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
             <CoverageBadge status={node.status} />
           )}
         </td>
-        <td>
-          {node.coverage_ratio !== null && (
-            <div className="coverage-progress-wrapper">
-              <div 
-                className="coverage-progress-bar" 
-                style={{ 
-                  width: `${node.coverage_ratio}%`, 
-                  backgroundColor: getProgressBarColor(node.coverage_ratio) 
-                }} 
-              />
-              <span className="coverage-progress-text">{node.coverage_ratio}%</span>
-            </div>
-          )}
-        </td>
-        <td>{node.recommended_amount !== null ? formatAmount(node.recommended_amount) : "-"}</td>
         <td>{node.current_amount !== null ? formatAmount(node.current_amount) : "-"}</td>
         <td className={node.gap_amount && node.gap_amount > 0 ? "is-gap" : ""}>
           {node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}
@@ -552,6 +514,7 @@ export default function CoverageAnalysisScreen() {
   const [data, setData] = useState<CoverageResponse | null>(null);
   const [policyCoverages, setPolicyCoverages] = useState<PolicyCoverage[]>([]);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -682,8 +645,8 @@ export default function CoverageAnalysisScreen() {
   );
   
   const coverageTree = useMemo(
-    () => data ? buildCoverageTree(data.categories, policyCoverages, expandedNodes) : [],
-    [data, policyCoverages, expandedNodes],
+    () => data ? buildCoverageTree(data.categories, policyCoverages, expandedNodes, activeTab) : [],
+    [data, policyCoverages, expandedNodes, activeTab],
   );
   
   const toggleTreeNode = useCallback((nodeId: string) => {
@@ -726,7 +689,7 @@ export default function CoverageAnalysisScreen() {
       <header className="coverage-header">
         <div>
           <h2 className="coverage-title">보장분석</h2>
-          <p className="coverage-subtitle">메리츠 스타일 3단 계층으로 보장분석서를 표시합니다.</p>
+          <p className="coverage-subtitle">3단 계층으로 보장분석서를 표시합니다.</p>
         </div>
         <button type="button" className="coverage-button" onClick={() => void handleRefresh()} disabled={refreshing}>
           {refreshing ? "새로고침 중…" : "🔄 새로고침"}
@@ -823,9 +786,24 @@ export default function CoverageAnalysisScreen() {
 
       {data && (
         <section className="coverage-analysis-panel" aria-label="보장분석 상세표">
+          <div className="coverage-tabs" role="tablist" aria-label="보장 카테고리 탭">
+            {CATEGORY_ORDER.map((category) => (
+              <button
+                key={category}
+                type="button"
+                role="tab"
+                className={`coverage-tab ${activeTab === category ? "is-active" : ""}`}
+                aria-selected={activeTab === category}
+                onClick={() => setActiveTab(category)}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
+
           <div className="coverage-table-card" role="tabpanel">
             <div className="coverage-table-heading">
-              <h3>메리츠 스타일 보장분석</h3>
+              <h3>보장분석</h3>
               <span>{coverageTree.length}개 카테고리</span>
             </div>
 
@@ -838,8 +816,6 @@ export default function CoverageAnalysisScreen() {
                     <tr>
                       <th>보장명</th>
                       <th>상태</th>
-                      <th>충족률</th>
-                      <th>권장금액</th>
                       <th>현재보장</th>
                       <th>부족금액</th>
                     </tr>
