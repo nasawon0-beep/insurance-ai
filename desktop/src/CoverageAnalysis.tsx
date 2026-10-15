@@ -45,6 +45,7 @@ type CoverageItem = {
   customer_summary?: string;
   internal_memo?: string;
   evidence_pages?: number[];
+  matched_policy_ids?: string[];  // 매칭된 policy ID 목록
 };
 
 type PolicyCoverage = {
@@ -74,7 +75,7 @@ type CoverageResponse = {
   run_id: string;
   status: string;
   doc_type?: "coverage_analysis";
-  audience: "customer";
+  audience: "customer" | "internal";
   summary?: {
     overall?: string;
     total_items?: number;
@@ -104,12 +105,14 @@ type CoverageTreeNode = {
   status: string | null;
   current_amount: number | null;
   gap_amount: number | null;
+  recommended_amount?: number | null;  // 2단에서 사용
   children?: CoverageTreeNode[];
   isExpanded?: boolean;
   metadata?: {
     insurer?: string;
     product_name?: string;
     rider_name?: string;
+    coverage_name?: string;  // 3단 원본 담보명
     source_page?: number;
     customer_summary?: string;
     internal_memo?: string;
@@ -133,34 +136,6 @@ const CATEGORY_ORDER = [
   "운전자·법률배상·기타",
   "기타",
 ];
-
-// 2단 세부 분류 매핑 (메리츠 기준)
-const SUBCATEGORY_MAPPING: Record<string, string[]> = {
-  "사망·후유장해": ["질병사망", "상해사망"],
-  "암": ["일반암 진단비", "유사암 진단비", "특정암 진단비"],
-  "뇌혈관질환": ["뇌출혈 진단비", "뇌졸중 진단비", "뇌혈관 진단비"],
-  "심장질환": ["급성심근경색증 진단비", "허혈성심장질환수술비"],
-  "치매": ["중증치매진단", "경증치매진단"],
-  "실손의료비": ["질병입원", "질병통원", "상해입원", "상해통원"],
-  "수술비": ["암수술비", "상해중수술", "뇌혈관수술비", "허혈성심장질환수술비", "상해수술비", "질병수술비", "질병중수술"],
-  "입원비(일당)·치료비": ["고액암치료비(표적)", "중입자방사선치료비", "암 주요치료비", "2대질환 주요치료비", "질병일당", "상해일당", "1인실 입원일당"],
-  "운전자·법률배상·기타": ["민사소송 법률비용", "화재벌금", "치아보철 치료비", "치아보존 치료비", "화상 진단비", "교통사고처리 지원금", "변호사 선임비용", "벌금", "자동차사고 부상치료비", "일상생활 배상책임", "골절 진단비"],
-  "기타": ["질병 3%이상 후유장해", "뇌신경특례대상 진단비", "상장신장특례대상 진단비", "질병 간병인지원 입원일당", "상해 간병인지원 입원일당", "상해 3%이상 후유장해"],
-};
-
-function policyCoverageGroup(coverage: PolicyCoverage): string {
-  const text = `${coverage.standard_name ?? ""} ${coverage.rider_name ?? ""} ${coverage.coverage_type ?? ""}`;
-  if (/암/.test(text)) return "암";
-  if (/뇌|뇌혈관|뇌졸중|뇌출혈/.test(text)) return "뇌혈관질환";
-  if (/심장|허혈|급성심근|협심/.test(text)) return "심장질환";
-  if (/치매/.test(text)) return "치매";
-  if (/실손/.test(text)) return "실손의료비";
-  if (/수술/.test(text)) return "수술비";
-  if (/입원|일당|치료비/.test(text)) return "입원비(일당)·치료비";
-  if (/운전자|교통|벌금|변호사|방어비용|법률|배상|치아|화상|골절/.test(text)) return "운전자·법률배상·기타";
-  if (/사망|후유장해/.test(text)) return "사망·후유장해";
-  return "기타";
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -207,40 +182,8 @@ function formatAmount(value: number | null | undefined): string {
   }
 }
 
-// 담보명 뒤에 표시할 간단한 금액 포맷 (원 제외)
-function formatKoreanWon(value: number | null | undefined): string {
-  const amount = Number(value || 0);
-  const eok = Math.floor(amount / 100000000);
-  const man = Math.floor((amount % 100000000) / 10000);
-  
-  if (eok > 0 && man > 0) {
-    return `${eok.toLocaleString("ko-KR")}억 ${man.toLocaleString("ko-KR")}만`;
-  } else if (eok > 0) {
-    return `${eok.toLocaleString("ko-KR")}억`;
-  } else {
-    return `${man.toLocaleString("ko-KR")}만`;
-  }
-}
-
 function countByStatus(items: CoverageItem[], status: string): number {
   return items.filter((item) => item.status === status).length;
-}
-
-// 담보명에서 2단 세부 분류 추출
-function extractSubcategory(coverageName: string, category: string): string {
-  const subs = SUBCATEGORY_MAPPING[category];
-  if (!subs) return coverageName;
-  
-  const normalized = coverageName.replace(/\s+/g, "");
-  
-  for (const sub of subs) {
-    const subNormalized = sub.replace(/\s+/g, "");
-    if (normalized.includes(subNormalized)) {
-      return sub;
-    }
-  }
-  
-  return coverageName;
 }
 
 // 카테고리 그룹 정규화 (메리츠 기준)
@@ -329,15 +272,20 @@ function buildCoverageTree(
 ): CoverageTreeNode[] {
   const tree: CoverageTreeNode[] = [];
   
+  // PolicyCoverage ID → PolicyCoverage 맵 생성
+  const policyCoverageMap = new Map<string, PolicyCoverage>();
+  for (const policy of policyCoverages) {
+    policyCoverageMap.set(policy.id, policy);
+  }
+  
   // 카테고리별 데이터 수집
   const categoryDataMap = new Map<string, {
     items: CoverageItem[];
-    policies: PolicyCoverage[];
   }>();
   
   // 초기화
   for (const cat of CATEGORY_ORDER) {
-    categoryDataMap.set(cat, { items: [], policies: [] });
+    categoryDataMap.set(cat, { items: [] });
   }
   
   // 분석 데이터 분류
@@ -355,21 +303,6 @@ function buildCoverageTree(
     }
   }
   
-  // policy coverages 분류
-  for (const policy of policyCoverages) {
-    const group = policyCoverageGroup(policy);
-    const normalized = normalizeCategory(group);
-    const data = categoryDataMap.get(normalized);
-    if (data) {
-      data.policies.push(policy);
-    } else {
-      const otherData = categoryDataMap.get("기타");
-      if (otherData) {
-        otherData.policies.push(policy);
-      }
-    }
-  }
-  
   // 1단 카테고리 노드 생성 (순서대로)
   for (const categoryName of CATEGORY_ORDER) {
     if (categoryName === "전체") continue;
@@ -378,12 +311,12 @@ function buildCoverageTree(
     if (activeTab !== "전체" && activeTab !== categoryName) continue;
     
     const data = categoryDataMap.get(categoryName);
-    if (!data || (data.items.length === 0 && data.policies.length === 0)) continue;
+    if (!data || data.items.length === 0) continue;
     
     const categoryNode: CoverageTreeNode = {
       id: `cat-${categoryName}`,
       level: 1,
-      name: `${categoryName} (${data.items.length + data.policies.length}개)`,
+      name: `${categoryName} (${data.items.length}개)`,
       status: null,
       current_amount: null,
       gap_amount: null,
@@ -391,67 +324,63 @@ function buildCoverageTree(
       isExpanded: expandedNodes.has(`cat-${categoryName}`),
     };
     
-    // 2단: 세부 분류별 그룹핑
-    const subcategoryMap = new Map<string, {
-      items: CoverageItem[];
-      policies: PolicyCoverage[];
-    }>();
+    // 2단: 세부 담보명별 그룹핑 (CoverageItem 기준)
+    const subcategoryMap = new Map<string, CoverageItem[]>();
     
-    // 분석 항목에서 세부 분류 추출
     for (const item of data.items) {
-      const subcategory = extractSubcategory(item.coverage_name, categoryName);
+      const subcategory = item.coverage_name;
       if (!subcategoryMap.has(subcategory)) {
-        subcategoryMap.set(subcategory, { items: [], policies: [] });
+        subcategoryMap.set(subcategory, []);
       }
-      subcategoryMap.get(subcategory)!.items.push(item);
+      subcategoryMap.get(subcategory)!.push(item);
     }
     
-    // policy에서 세부 분류 추출
-    for (const policy of data.policies) {
-      const coverageName = policy.rider_name || policy.standard_name || "";
-      const subcategory = extractSubcategory(coverageName, categoryName);
-      if (!subcategoryMap.has(subcategory)) {
-        subcategoryMap.set(subcategory, { items: [], policies: [] });
-      }
-      subcategoryMap.get(subcategory)!.policies.push(policy);
-    }
-    
-    // 2단 노드 생성
-    for (const [subcategoryName, subData] of subcategoryMap) {
-      const totalCurrentFromItems = subData.items.reduce((sum, item) => sum + item.current_amount, 0);
-      const totalCurrentFromPolicies = subData.policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0);
-      const totalCurrent = totalCurrentFromItems + totalCurrentFromPolicies;
+    // 2단 노드 생성 (메리츠 스타일)
+    for (const [subcategoryName, items] of subcategoryMap) {
+      const firstItem = items[0];
+      if (!firstItem) continue;
       
-      const firstItem = subData.items[0];
-      const hasChildren = subData.policies.length > 0;
-      const displayName = hasChildren && totalCurrent > 0
-        ? `${subcategoryName} (${formatKoreanWon(totalCurrent)})`
-        : subcategoryName;
+      // matched_policy_ids로 3단 상품 목록 생성
+      const matchedPolicies: PolicyCoverage[] = [];
+      if (firstItem.matched_policy_ids && Array.isArray(firstItem.matched_policy_ids)) {
+        for (const policyId of firstItem.matched_policy_ids) {
+          const policy = policyCoverageMap.get(policyId);
+          if (policy) {
+            matchedPolicies.push(policy);
+          }
+        }
+      }
       
       const subcategoryNode: CoverageTreeNode = {
         id: `sub-${categoryName}-${subcategoryName}`,
         level: 2,
-        name: displayName,
-        status: firstItem?.status || null,
-        current_amount: totalCurrent,
-        gap_amount: null,
+        name: subcategoryName,
+        status: firstItem.status,
+        current_amount: firstItem.current_amount,
+        gap_amount: firstItem.gap_amount,
+        recommended_amount: firstItem.recommended_amount,
         children: [],
         isExpanded: expandedNodes.has(`sub-${categoryName}-${subcategoryName}`),
+        metadata: {
+          customer_summary: firstItem.customer_summary,
+          internal_memo: firstItem.internal_memo,
+        },
       };
       
-      // 3단: 상품회사·상품명·금액
-      for (const policy of subData.policies) {
+      // 3단: 매칭된 상품 상세 (회사명 + 상품명 + 담보명 + 금액)
+      for (const policy of matchedPolicies) {
         const policyNode: CoverageTreeNode = {
           id: `pol-${policy.id}`,
           level: 3,
-          name: [policy.insurer, policy.product_name].filter(Boolean).join(" · ") || "상품 정보 미확인",
+          name: policy.insurer || "보험사 미확인",
           status: null,
           current_amount: policy.amount || 0,
           gap_amount: null,
           metadata: {
             insurer: policy.insurer || undefined,
             product_name: policy.product_name || undefined,
-            rider_name: policy.rider_name || undefined,
+            rider_name: policy.rider_name || policy.standard_name || undefined,
+            coverage_name: policy.rider_name || policy.standard_name || undefined,
             source_page: policy.source_page || undefined,
           },
         };
@@ -482,6 +411,81 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
   const hasChildren = node.children && node.children.length > 0;
   const indent = (node.level - 1) * 24; // px
   
+  // 2단: 메리츠 스타일 헤더 (담보명 + 상태 + 권장금액/가입금액 + 부족금액)
+  if (node.level === 2) {
+    return (
+      <>
+        <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
+          <td 
+            style={{ paddingLeft: `${indent}px` }}
+            onClick={hasChildren ? () => onToggle(node.id) : undefined}
+            className={hasChildren ? "coverage-tree-node" : ""}
+          >
+            <div className="coverage-tree-cell">
+              {hasChildren && (
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggle(node.id);
+                  }}
+                  className="coverage-tree-toggle"
+                  aria-expanded={node.isExpanded}
+                >
+                  {node.isExpanded ? "▼" : "▶"}
+                </button>
+              )}
+              <div className="coverage-level2-header">
+                <div className="coverage-level2-title">
+                  <span className="coverage-tree-name">{node.name}</span>
+                  {node.status && <CoverageBadge status={node.status} />}
+                </div>
+                <div className="coverage-level2-amounts">
+                  {node.gap_amount !== null && node.gap_amount > 0 && (
+                    <span className="coverage-shortage-text">부족금액: {formatAmount(node.gap_amount)}</span>
+                  )}
+                  <span className="coverage-recommended-text">
+                    권장금액: {node.recommended_amount !== null ? formatAmount(node.recommended_amount) : "-"}
+                  </span>
+                  <span className="coverage-current-text">
+                    가입금액: {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </td>
+          <td colSpan={3}></td>
+        </tr>
+        {node.isExpanded && node.children?.map(child => (
+          <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
+        ))}
+      </>
+    );
+  }
+  
+  // 3단: 상품 상세 (회사명 + 상품명 + 담보명 | 금액)
+  if (node.level === 3) {
+    return (
+      <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
+        <td style={{ paddingLeft: `${indent}px` }} colSpan={3}>
+          <div className="coverage-level3-detail">
+            <div className="coverage-level3-company">{node.metadata?.insurer || node.name}</div>
+            {node.metadata?.product_name && (
+              <div className="coverage-level3-product">{node.metadata.product_name}</div>
+            )}
+            {node.metadata?.coverage_name && (
+              <div className="coverage-level3-coverage">{node.metadata.coverage_name}</div>
+            )}
+          </div>
+        </td>
+        <td className="coverage-level3-amount">
+          {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
+        </td>
+      </tr>
+    );
+  }
+  
+  // 1단: 카테고리 (기존 로직)
   return (
     <>
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
@@ -592,7 +596,7 @@ export default function CoverageAnalysisScreen() {
     setRefreshMessage(null);
     try {
       const [analysis, coverages] = await Promise.all([
-        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
+        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=internal`),
         api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
       ]);
       setData(analysis);

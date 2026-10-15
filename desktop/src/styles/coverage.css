@@ -869,3 +869,72 @@
   z-index: 1;
   white-space: nowrap;
 }
+
+/* 메리츠 스타일 2단 헤더 */
+.coverage-level2-header {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.coverage-level2-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--font-semibold);
+  font-size: var(--text-base);
+}
+
+.coverage-level2-amounts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.coverage-shortage-text {
+  color: #dc2626;
+  font-weight: var(--font-semibold);
+}
+
+.coverage-recommended-text {
+  color: var(--color-text-secondary);
+}
+
+.coverage-current-text {
+  color: var(--color-text-secondary);
+}
+
+/* 메리츠 스타일 3단 상세 */
+.coverage-level3-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--space-3);
+}
+
+.coverage-level3-company {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.coverage-level3-product {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.coverage-level3-coverage {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.coverage-level3-amount {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  text-align: right;
+  white-space: nowrap;
+}
