@@ -207,6 +207,21 @@ function formatAmount(value: number | null | undefined): string {
   }
 }
 
+// 담보명 뒤에 표시할 간단한 금액 포맷 (원 제외)
+function formatKoreanWon(value: number | null | undefined): string {
+  const amount = Number(value || 0);
+  const eok = Math.floor(amount / 100000000);
+  const man = Math.floor((amount % 100000000) / 10000);
+  
+  if (eok > 0 && man > 0) {
+    return `${eok.toLocaleString("ko-KR")}억 ${man.toLocaleString("ko-KR")}만`;
+  } else if (eok > 0) {
+    return `${eok.toLocaleString("ko-KR")}억`;
+  } else {
+    return `${man.toLocaleString("ko-KR")}만`;
+  }
+}
+
 function countByStatus(items: CoverageItem[], status: string): number {
   return items.filter((item) => item.status === status).length;
 }
@@ -408,10 +423,15 @@ function buildCoverageTree(
       const totalCurrent = totalCurrentFromItems + totalCurrentFromPolicies;
       
       const firstItem = subData.items[0];
+      const hasChildren = subData.policies.length > 0;
+      const displayName = hasChildren && totalCurrent > 0
+        ? `${subcategoryName} (${formatKoreanWon(totalCurrent)})`
+        : subcategoryName;
+      
       const subcategoryNode: CoverageTreeNode = {
         id: `sub-${categoryName}-${subcategoryName}`,
         level: 2,
-        name: subcategoryName,
+        name: displayName,
         status: firstItem?.status || null,
         current_amount: totalCurrent,
         gap_amount: null,
@@ -465,12 +485,19 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
   return (
     <>
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
-        <td style={{ paddingLeft: `${indent}px` }}>
+        <td 
+          style={{ paddingLeft: `${indent}px` }}
+          onClick={hasChildren ? () => onToggle(node.id) : undefined}
+          className={hasChildren ? "coverage-tree-node" : ""}
+        >
           <div className="coverage-tree-cell">
             {hasChildren && (
               <button 
                 type="button"
-                onClick={() => onToggle(node.id)} 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(node.id);
+                }}
                 className="coverage-tree-toggle"
                 aria-expanded={node.isExpanded}
               >

@@ -833,6 +833,11 @@
   min-width: 0;
 }
 
+.coverage-tree-node {
+  cursor: pointer;
+  user-select: none;
+}
+
 .coverage-progress-wrapper {
   position: relative;
   width: 100%;
