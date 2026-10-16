@@ -376,6 +376,7 @@ function buildCoverageTree(
       };
       
       // 3단: 매칭된 상품 상세 (회사명 + 상품명 + 담보명 + 금액)
+      console.log(`[DEBUG] ${subcategoryName}: matched_policy_ids=${firstItem.matched_policy_ids?.length || 0}, matchedPolicies=${matchedPolicies.length}`);
       for (const policy of matchedPolicies) {
         const policyNode: CoverageTreeNode = {
           id: `pol-${policy.id}`,

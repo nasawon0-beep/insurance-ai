@@ -30,6 +30,14 @@ datas = [
 if sys.platform == "darwin" and os.path.exists("ocr/pdf-ocr"):
     datas += [("ocr/pdf-ocr", "ocr")]
 binaries = []
+
+# pydantic_core 바이너리 명시 (Windows)
+if sys.platform == "win32":
+    import site
+    site_packages = site.getsitepackages()[0]
+    pydantic_core_pyd = os.path.join(site_packages, "pydantic_core", "_pydantic_core.cp311-win_amd64.pyd")
+    if os.path.exists(pydantic_core_pyd):
+        binaries += [(pydantic_core_pyd, "pydantic_core")]
 hiddenimports = [
     "keyring.backends.macOS",
     "keyring.backends.Windows",
@@ -39,6 +47,7 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
+    "pydantic_core._pydantic_core",
 ]
 
 for package in packages:
@@ -73,5 +82,5 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=sys.platform != "win32",
+    console=True,
 )
