@@ -46,6 +46,7 @@ type CoverageItem = {
   internal_memo?: string;
   evidence_pages?: number[];
   matched_policy_ids?: string[];  // 매칭된 policy ID 목록
+  matched_policy_coverage_ids?: string[];  // 백엔드 필드명
 };
 
 type PolicyCoverage = {
@@ -340,10 +341,11 @@ function buildCoverageTree(
       const firstItem = items[0];
       if (!firstItem) continue;
       
-      // matched_policy_ids로 3단 상품 목록 생성
+      // matched_policy_ids 또는 matched_policy_coverage_ids로 3단 상품 목록 생성
       const matchedPolicies: PolicyCoverage[] = [];
-      if (firstItem.matched_policy_ids && Array.isArray(firstItem.matched_policy_ids)) {
-        for (const policyId of firstItem.matched_policy_ids) {
+      const policyIds = firstItem.matched_policy_ids || firstItem.matched_policy_coverage_ids;
+      if (policyIds && Array.isArray(policyIds)) {
+        for (const policyId of policyIds) {
           const policy = policyCoverageMap.get(policyId);
           if (policy) {
             matchedPolicies.push(policy);
