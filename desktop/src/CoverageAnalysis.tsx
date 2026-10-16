@@ -46,6 +46,7 @@ type CoverageItem = {
   internal_memo?: string;
   evidence_pages?: number[];
   matched_policy_ids?: string[];  // 매칭된 policy ID 목록
+  matched_policy_coverage_ids?: string[];  // 3단에 표시할 policy_coverages 행 ID 목록
 };
 
 type PolicyCoverage = {
@@ -340,15 +341,17 @@ function buildCoverageTree(
       const firstItem = items[0];
       if (!firstItem) continue;
       
-      // matched_policy_ids로 3단 상품 목록 생성
+      // 분석 결과의 계약 ID와 policy_coverages 행 ID는 서로 다르므로,
+      // 백엔드가 제공한 실제 담보 행 ID로 3단 상품 목록을 구성한다.
       const matchedPolicies: PolicyCoverage[] = [];
-      if (firstItem.matched_policy_ids && Array.isArray(firstItem.matched_policy_ids)) {
-        for (const policyId of firstItem.matched_policy_ids) {
-          const policy = policyCoverageMap.get(policyId);
+      const matchedCoverageIds = Array.isArray(firstItem.matched_policy_coverage_ids)
+        ? firstItem.matched_policy_coverage_ids
+        : (Array.isArray(firstItem.matched_policy_ids) ? firstItem.matched_policy_ids : []);
+      for (const coverageId of matchedCoverageIds) {
+          const policy = policyCoverageMap.get(coverageId);
           if (policy) {
             matchedPolicies.push(policy);
           }
-        }
       }
       
       // 2단 상태: 가입 / 미가입
@@ -376,7 +379,6 @@ function buildCoverageTree(
       };
       
       // 3단: 매칭된 상품 상세 (회사명 + 상품명 + 담보명 + 금액)
-      console.log(`[DEBUG] ${subcategoryName}: matched_policy_ids=${firstItem.matched_policy_ids?.length || 0}, matchedPolicies=${matchedPolicies.length}`);
       for (const policy of matchedPolicies) {
         const policyNode: CoverageTreeNode = {
           id: `pol-${policy.id}`,
@@ -514,7 +516,9 @@ export default function CoverageAnalysisScreen() {
   const [data, setData] = useState<CoverageResponse | null>(null);
   const [policyCoverages, setPolicyCoverages] = useState<PolicyCoverage[]>([]);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState("전체");
+  const [activeTab, setActiveTab] = useState(
+    (import.meta as any).env?.VITE_INITIAL_COVERAGE_TAB || "전체",
+  );
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -544,7 +548,16 @@ export default function CoverageAnalysisScreen() {
       const body = await api<unknown>("/coverage-analysis-runs");
       const list = normalizeRunCustomers(body);
       setCustomers(list);
-      setCustomerId((current) => (current && list.some((customer) => customer.id === current) ? current : ""));
+      setCustomerId((current) => {
+        if (current && list.some((customer) => customer.id === current)) return current;
+        const initialCustomerId = (import.meta as any).env?.VITE_INITIAL_COVERAGE_CUSTOMER_ID;
+        const initialCustomer = list.find((customer) => customer.id === initialCustomerId);
+        if (initialCustomer) {
+          setCustomerQuery(initialCustomer.name);
+          return initialCustomer.id;
+        }
+        return "";
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       if (options?.rethrow) throw e;
@@ -576,14 +589,15 @@ export default function CoverageAnalysisScreen() {
         api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
         api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
       ]);
-      console.log('[DEBUG] Analysis categories:', analysis.categories?.length || 0);
-      console.log('[DEBUG] Policy coverages:', coverages.policy_coverages?.length || 0);
+      // 디버깅: API 응답 요약 화면 표시
+      const debugMsg = `API 응답: categories=${analysis.categories?.length || 0}, policy_coverages=${coverages.policy_coverages?.length || 0}`;
+      alert(debugMsg);
       if (analysis.categories && analysis.categories.length > 0) {
         const firstCat = analysis.categories[0];
-        console.log('[DEBUG] First category:', firstCat.category_group, 'items:', firstCat.items?.length || 0);
+        alert(`첫 카테고리: ${firstCat.category_group}, items=${firstCat.items?.length || 0}`);
         if (firstCat.items && firstCat.items.length > 0) {
           const firstItem = firstCat.items[0];
-          console.log('[DEBUG] First item:', firstItem.coverage_name, 'matched_policy_ids:', firstItem.matched_policy_ids);
+          alert(`첫 항목: ${firstItem.coverage_name}, current=${firstItem.current_amount}, matched_ids=${firstItem.matched_policy_ids?.length || 0}`);
         }
       }
       setData(analysis);
