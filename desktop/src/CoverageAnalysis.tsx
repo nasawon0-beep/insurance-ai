@@ -428,8 +428,8 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
         <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
           <td 
             style={{ paddingLeft: `${indent}px` }}
-            onClick={hasChildren ? () => onToggle(node.id) : undefined}
-            className={hasChildren ? "coverage-tree-node" : ""}
+            onClick={() => onToggle(node.id)}
+            className="coverage-tree-node"
           >
             <div className="coverage-tree-cell">
               {hasChildren && (
