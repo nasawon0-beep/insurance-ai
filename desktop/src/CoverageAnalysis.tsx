@@ -589,17 +589,6 @@ export default function CoverageAnalysisScreen() {
         api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
         api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
       ]);
-      // 디버깅: API 응답 요약 화면 표시
-      const debugMsg = `API 응답: categories=${analysis.categories?.length || 0}, policy_coverages=${coverages.policy_coverages?.length || 0}`;
-      alert(debugMsg);
-      if (analysis.categories && analysis.categories.length > 0) {
-        const firstCat = analysis.categories[0];
-        alert(`첫 카테고리: ${firstCat.category_group}, items=${firstCat.items?.length || 0}`);
-        if (firstCat.items && firstCat.items.length > 0) {
-          const firstItem = firstCat.items[0];
-          alert(`첫 항목: ${firstItem.coverage_name}, current=${firstItem.current_amount}, matched_ids=${firstItem.matched_policy_ids?.length || 0}`);
-        }
-      }
       setData(analysis);
       setPolicyCoverages(Array.isArray(coverages.policy_coverages) ? coverages.policy_coverages : []);
     } catch (e) {
