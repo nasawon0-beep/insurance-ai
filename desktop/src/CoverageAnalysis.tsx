@@ -573,9 +573,19 @@ export default function CoverageAnalysisScreen() {
     setRefreshMessage(null);
     try {
       const [analysis, coverages] = await Promise.all([
-        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=internal`),
+        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
         api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
       ]);
+      console.log('[DEBUG] Analysis categories:', analysis.categories?.length || 0);
+      console.log('[DEBUG] Policy coverages:', coverages.policy_coverages?.length || 0);
+      if (analysis.categories && analysis.categories.length > 0) {
+        const firstCat = analysis.categories[0];
+        console.log('[DEBUG] First category:', firstCat.category_group, 'items:', firstCat.items?.length || 0);
+        if (firstCat.items && firstCat.items.length > 0) {
+          const firstItem = firstCat.items[0];
+          console.log('[DEBUG] First item:', firstItem.coverage_name, 'matched_policy_ids:', firstItem.matched_policy_ids);
+        }
+      }
       setData(analysis);
       setPolicyCoverages(Array.isArray(coverages.policy_coverages) ? coverages.policy_coverages : []);
     } catch (e) {
