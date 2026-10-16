@@ -647,8 +647,10 @@ export default function CoverageAnalysisScreen() {
   }, [loadCustomers]);
 
   useEffect(() => {
-    void loadAnalysis();
-  }, [loadAnalysis]);
+    if (customerId) {
+      void loadAnalysis();
+    }
+  }, [customerId, loadAnalysis]);
 
   useEffect(() => {
     if (selectedCustomer) setCustomerQuery(selectedCustomer.name);
