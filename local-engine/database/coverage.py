@@ -948,9 +948,12 @@ def _row_to_item(row: sqlite3.Row, *, audience: str) -> dict[str, Any]:
     item["evidence_pages"] = _json_list(item.pop("evidence_pages_json", "[]"))
     evidence = _json_list(item.pop("evidence_json", "[]"))
     matched_policy_ids = _json_list(item.pop("matched_policy_ids_json", "[]"))
+    # 상품 상세 트리를 구성하는 데 필요한 연결 ID는 고객 화면에도 포함한다.
+    # 내부 근거(evidence)와 달리 로컬 policy ID 자체는 고객 데이터 API에서 이미
+    # 노출되는 식별자이며, 이를 제거하면 가입금액은 보이지만 상세 담보를 찾을 수 없다.
+    item["matched_policy_ids"] = matched_policy_ids
     if audience == "internal":
         item["evidence"] = evidence
-        item["matched_policy_ids"] = matched_policy_ids
     else:
         item.pop("internal_memo", None)
         item.pop("override_reason", None)
@@ -1037,6 +1040,27 @@ def get_analysis_response(
     ).fetchall()
     all_rows = [_row_to_item(r, audience="internal") for r in rows]
     items = [_row_to_item(r, audience=audience) for r in rows]
+    # matched_policy_ids는 계약(policy) ID다. 프론트엔드가 3단에서 실제 담보
+    # (policy_coverages) 행을 정확히 찾을 수 있도록 담보 행 ID도 별도로 제공한다.
+    coverages = _list_customer_policy_coverages(conn, customer_id)
+    coverage_ids_by_catalog_id = {
+        row["catalog_id"]: [
+            str(coverage_row["id"])
+            for coverage_row in coverages
+            if coverage_row.get("id") and _matches_policy_coverage(catalog_item, coverage_row)
+        ]
+        for row in rows
+        if (catalog_item := (
+            next((entry for entry in _COVERAGE_CATALOG if entry["id"] == row["catalog_id"]), None)
+            or {
+                "coverage_name": row["coverage_name"],
+                "keywords": [row["coverage_name"]],
+                "exclude_keywords": [],
+            }
+        ))
+    }
+    for item in [*all_rows, *items]:
+        item["matched_policy_coverage_ids"] = coverage_ids_by_catalog_id.get(item["catalog_id"], [])
     if audience == "customer":
         items = [i for i in items if i["customer_display"]]
     if not include_sufficient:

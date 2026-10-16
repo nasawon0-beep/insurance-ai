@@ -46,7 +46,6 @@ type CoverageItem = {
   internal_memo?: string;
   evidence_pages?: number[];
   matched_policy_ids?: string[];  // 매칭된 policy ID 목록
-  matched_policy_coverage_ids?: string[];  // 3단에 표시할 policy_coverages 행 ID 목록
 };
 
 type PolicyCoverage = {
@@ -317,12 +316,12 @@ function buildCoverageTree(
     const categoryNode: CoverageTreeNode = {
       id: `cat-${categoryName}`,
       level: 1,
-      name: categoryName, // 이름만 표시 (개수, 금액 제거)
+      name: `${categoryName} (${data.items.length}개)`,
       status: null,
       current_amount: null,
       gap_amount: null,
       children: [],
-      isExpanded: true, // 1단은 항상 펼침
+      isExpanded: expandedNodes.has(`cat-${categoryName}`),
     };
     
     // 2단: 세부 담보명별 그룹핑 (CoverageItem 기준)
@@ -336,42 +335,32 @@ function buildCoverageTree(
       subcategoryMap.get(subcategory)!.push(item);
     }
     
-    // 2단 노드 생성
+    // 2단 노드 생성 (메리츠 스타일)
     for (const [subcategoryName, items] of subcategoryMap) {
       const firstItem = items[0];
       if (!firstItem) continue;
       
-      // 분석 결과의 계약 ID와 policy_coverages 행 ID는 서로 다르므로,
-      // 백엔드가 제공한 실제 담보 행 ID로 3단 상품 목록을 구성한다.
+      // matched_policy_ids로 3단 상품 목록 생성
       const matchedPolicies: PolicyCoverage[] = [];
-      const matchedCoverageIds = Array.isArray(firstItem.matched_policy_coverage_ids)
-        ? firstItem.matched_policy_coverage_ids
-        : (Array.isArray(firstItem.matched_policy_ids) ? firstItem.matched_policy_ids : []);
-      for (const coverageId of matchedCoverageIds) {
-          const policy = policyCoverageMap.get(coverageId);
+      if (firstItem.matched_policy_ids && Array.isArray(firstItem.matched_policy_ids)) {
+        for (const policyId of firstItem.matched_policy_ids) {
+          const policy = policyCoverageMap.get(policyId);
           if (policy) {
             matchedPolicies.push(policy);
           }
+        }
       }
       
-      // 2단 상태: 가입 / 미가입
-      const enrollmentStatus = firstItem.current_amount > 0 ? "가입" : "미가입";
-      const subcategoryId = `sub-${categoryName}-${subcategoryName}`;
-      
-      // 가입 상품은 초기 펼침, 미가입은 접힘
-      const isEnrolled = firstItem.current_amount > 0;
-      const shouldExpand = isEnrolled || expandedNodes.has(subcategoryId);
-      
       const subcategoryNode: CoverageTreeNode = {
-        id: subcategoryId,
+        id: `sub-${categoryName}-${subcategoryName}`,
         level: 2,
         name: subcategoryName,
-        status: enrollmentStatus,
+        status: firstItem.status,
         current_amount: firstItem.current_amount,
-        gap_amount: null, // 부족금액 제거
-        recommended_amount: null, // 권장금액 제거
+        gap_amount: firstItem.gap_amount,
+        recommended_amount: firstItem.recommended_amount,
         children: [],
-        isExpanded: shouldExpand,
+        isExpanded: expandedNodes.has(`sub-${categoryName}-${subcategoryName}`),
         metadata: {
           customer_summary: firstItem.customer_summary,
           internal_memo: firstItem.internal_memo,
@@ -422,7 +411,7 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
   const hasChildren = node.children && node.children.length > 0;
   const indent = (node.level - 1) * 24; // px
   
-  // 2단: 테이블 형태 (보장명 | 상태 | 현재보장)
+  // 2단: 메리츠 스타일 헤더 (담보명 + 상태 + 권장금액/가입금액 + 부족금액)
   if (node.level === 2) {
     return (
       <>
@@ -446,15 +435,26 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
                   {node.isExpanded ? "▼" : "▶"}
                 </button>
               )}
-              <span className="coverage-tree-name">{node.name}</span>
+              <div className="coverage-level2-header">
+                <div className="coverage-level2-title">
+                  <span className="coverage-tree-name">{node.name}</span>
+                  {node.status && <CoverageBadge status={node.status} />}
+                </div>
+                <div className="coverage-level2-amounts">
+                  {node.gap_amount !== null && node.gap_amount > 0 && (
+                    <span className="coverage-shortage-text">부족금액: {formatAmount(node.gap_amount)}</span>
+                  )}
+                  <span className="coverage-recommended-text">
+                    권장금액: {node.recommended_amount !== null ? formatAmount(node.recommended_amount) : "-"}
+                  </span>
+                  <span className="coverage-current-text">
+                    가입금액: {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
+                  </span>
+                </div>
+              </div>
             </div>
           </td>
-          <td>
-            {node.status && <CoverageBadge status={node.status} />}
-          </td>
-          <td className="coverage-level2-current">
-            {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
-          </td>
+          <td colSpan={3}></td>
         </tr>
         {node.isExpanded && node.children?.map(child => (
           <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
@@ -463,11 +463,11 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
     );
   }
   
-  // 3단: 상품 상세 (4줄: 회사명, 상품명, 담보명, 금액)
+  // 3단: 상품 상세 (회사명 + 상품명 + 담보명 | 금액)
   if (node.level === 3) {
     return (
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
-        <td style={{ paddingLeft: `${indent}px` }} colSpan={2}>
+        <td style={{ paddingLeft: `${indent}px` }} colSpan={3}>
           <div className="coverage-level3-detail">
             <div className="coverage-level3-company">{node.metadata?.insurer || node.name}</div>
             {node.metadata?.product_name && (
@@ -476,31 +476,52 @@ function CoverageTreeRow({ node, onToggle }: CoverageTreeRowProps) {
             {node.metadata?.coverage_name && (
               <div className="coverage-level3-coverage">{node.metadata.coverage_name}</div>
             )}
-            {node.current_amount !== null && (
-              <div className="coverage-level3-amount-text">{formatAmount(node.current_amount)}</div>
-            )}
           </div>
         </td>
-        <td className="coverage-level3-empty"></td>
+        <td className="coverage-level3-amount">
+          {node.current_amount !== null ? formatAmount(node.current_amount) : "-"}
+        </td>
       </tr>
     );
   }
   
-  // 1단: 카테고리 (항상 펼침, 토글 버튼 제거)
+  // 1단: 카테고리 (기존 로직)
   return (
     <>
       <tr className={`coverage-tree-row coverage-tree-row--level${node.level}`}>
         <td 
           style={{ paddingLeft: `${indent}px` }}
-          className=""
+          onClick={hasChildren ? () => onToggle(node.id) : undefined}
+          className={hasChildren ? "coverage-tree-node" : ""}
         >
           <div className="coverage-tree-cell">
+            {hasChildren && (
+              <button 
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(node.id);
+                }}
+                className="coverage-tree-toggle"
+                aria-expanded={node.isExpanded}
+              >
+                {node.isExpanded ? "▼" : "▶"}
+              </button>
+            )}
             <span className="coverage-tree-name">{node.name}</span>
           </div>
         </td>
-        <td colSpan={2}></td>
+        <td>
+          {node.status && (
+            <CoverageBadge status={node.status} />
+          )}
+        </td>
+        <td>{node.current_amount !== null ? formatAmount(node.current_amount) : "-"}</td>
+        <td className={node.gap_amount && node.gap_amount > 0 ? "is-gap" : ""}>
+          {node.gap_amount !== null ? formatAmount(node.gap_amount) : "-"}
+        </td>
       </tr>
-      {node.children?.map(child => (
+      {node.isExpanded && node.children?.map(child => (
         <CoverageTreeRow key={child.id} node={child} onToggle={onToggle} />
       ))}
     </>
@@ -516,9 +537,7 @@ export default function CoverageAnalysisScreen() {
   const [data, setData] = useState<CoverageResponse | null>(null);
   const [policyCoverages, setPolicyCoverages] = useState<PolicyCoverage[]>([]);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState(
-    (import.meta as any).env?.VITE_INITIAL_COVERAGE_TAB || "전체",
-  );
+  const [activeTab, setActiveTab] = useState("전체");
   const [customersBusy, setCustomersBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -548,16 +567,7 @@ export default function CoverageAnalysisScreen() {
       const body = await api<unknown>("/coverage-analysis-runs");
       const list = normalizeRunCustomers(body);
       setCustomers(list);
-      setCustomerId((current) => {
-        if (current && list.some((customer) => customer.id === current)) return current;
-        const initialCustomerId = (import.meta as any).env?.VITE_INITIAL_COVERAGE_CUSTOMER_ID;
-        const initialCustomer = list.find((customer) => customer.id === initialCustomerId);
-        if (initialCustomer) {
-          setCustomerQuery(initialCustomer.name);
-          return initialCustomer.id;
-        }
-        return "";
-      });
+      setCustomerId((current) => (current && list.some((customer) => customer.id === current) ? current : ""));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       if (options?.rethrow) throw e;
@@ -586,7 +596,7 @@ export default function CoverageAnalysisScreen() {
     setRefreshMessage(null);
     try {
       const [analysis, coverages] = await Promise.all([
-        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=customer`),
+        api<CoverageResponse>(`/customers/${customerId}/coverage-analysis?audience=internal`),
         api<PolicyCoveragesResponse>(`/customers/${customerId}/policy-coverages`),
       ]);
       setData(analysis);
@@ -636,10 +646,8 @@ export default function CoverageAnalysisScreen() {
   }, [loadCustomers]);
 
   useEffect(() => {
-    if (customerId) {
-      void loadAnalysis();
-    }
-  }, [customerId, loadAnalysis]);
+    void loadAnalysis();
+  }, [loadAnalysis]);
 
   useEffect(() => {
     if (selectedCustomer) setCustomerQuery(selectedCustomer.name);
@@ -832,6 +840,7 @@ export default function CoverageAnalysisScreen() {
                       <th>보장명</th>
                       <th>상태</th>
                       <th>현재보장</th>
+                      <th>부족금액</th>
                     </tr>
                   </thead>
                   <tbody>

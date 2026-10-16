@@ -2394,7 +2394,12 @@ function App() {
   );
   const [offline, setOffline] = useState(false);
   const [licenseErr, setLicenseErr] = useState<string | null>(null);
-  const [view, setView] = useState<View>("home");
+  const initialView = (import.meta as any).env?.VITE_INITIAL_VIEW as View | undefined;
+  const [view, setView] = useState<View>(
+    initialView && ["home", "customers", "capture", "coverage", "assistant", "settings"].includes(initialView)
+      ? initialView
+      : "home",
+  );
   // nonce 를 매번 바꿔서, 같은 고객을 연속으로 열어도 목록 화면이 반응하게 한다
   const [focusCustomer, setFocusCustomer] = useState<{ id: string; nonce: number } | null>(null);
   const [focusListView, setFocusListView] = useState<{ view: "expiry" | "birthday"; nonce: number } | null>(null);
