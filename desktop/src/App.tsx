@@ -703,9 +703,9 @@ function CapturePanel({
           try {
             const saveResponse = await api(`/customers/${cid}/policy-coverages/bulk`, {
               method: "POST",
-              body: JSON.stringify({ coverages: topLevelCoverages }),
+              body: JSON.stringify({ review_confirmed: true, items: topLevelCoverages }),
             });
-            const bulkSaved = saveResponse?.saved ?? 0;
+            const bulkSaved = saveResponse?.created ?? saveResponse?.items?.length ?? 0;
             savedCoverageCount += bulkSaved;
             res.policyCoverages += bulkSaved;
             console.log("[통합 보장분석 저장] 완료", { saved: bulkSaved });
@@ -2392,7 +2392,6 @@ function App() {
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => localStorage.getItem("iai.ollamaOnboardingDone") !== "1" && localStorage.getItem("iai.ollamaOnboardingSkipped") !== "1",
   );
-  const [offline, setOffline] = useState(false);
   const [licenseErr, setLicenseErr] = useState<string | null>(null);
   const initialView = (import.meta as any).env?.VITE_INITIAL_VIEW as View | undefined;
   const [view, setView] = useState<View>(
@@ -2576,7 +2575,6 @@ function App() {
         });
         return;
       }
-      setOffline(lic.offline);
       setLicenseErr(lic.state.status === "expired" ? "라이선스가 만료되었습니다. 관리자에게 문의하세요." : null);
       setAuth("in");
       setStartup({
@@ -2855,9 +2853,9 @@ function App() {
             </div>
           </div>
         )}
-        {(offline || licenseErr) && (
-          <div style={{ background: licenseErr ? "#fde8e8" : "#fff7e6", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
-            {licenseErr ?? "오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다."}
+        {licenseErr && (
+          <div style={{ background: "#fde8e8", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
+            {licenseErr}
           </div>
         )}
         {engineNotice.status !== "idle" && (

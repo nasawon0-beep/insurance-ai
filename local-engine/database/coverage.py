@@ -1043,24 +1043,21 @@ def get_analysis_response(
     # matched_policy_ids는 계약(policy) ID다. 프론트엔드가 3단에서 실제 담보
     # (policy_coverages) 행을 정확히 찾을 수 있도록 담보 행 ID도 별도로 제공한다.
     coverages = _list_customer_policy_coverages(conn, customer_id)
-    coverage_ids_by_catalog_id = {
-        row["catalog_id"]: [
-            str(coverage_row["id"])
-            for coverage_row in coverages
-            if coverage_row.get("id") and _matches_policy_coverage(catalog_item, coverage_row)
+    # matched_policy_ids_json에서 policy_id를 읽어 해당하는 policy_coverages.id를 찾는다
+    coverage_ids_by_row_id = {}
+    for row in rows:
+        row_id = row["id"]
+        matched_policy_ids = row.get("matched_policy_ids_json") or "[]"
+        import json
+        policy_ids = json.loads(matched_policy_ids) if isinstance(matched_policy_ids, str) else matched_policy_ids
+        coverage_ids_by_row_id[row_id] = [
+            str(cov["id"])
+            for cov in coverages
+            if cov.get("policy_id") in policy_ids
         ]
-        for row in rows
-        if (catalog_item := (
-            next((entry for entry in _COVERAGE_CATALOG if entry["id"] == row["catalog_id"]), None)
-            or {
-                "coverage_name": row["coverage_name"],
-                "keywords": [row["coverage_name"]],
-                "exclude_keywords": [],
-            }
-        ))
-    }
+    
     for item in [*all_rows, *items]:
-        item["matched_policy_coverage_ids"] = coverage_ids_by_catalog_id.get(item["catalog_id"], [])
+        item["matched_policy_coverage_ids"] = coverage_ids_by_row_id.get(item["id"], [])
     if audience == "customer":
         items = [i for i in items if i["customer_display"]]
     if not include_sufficient:
