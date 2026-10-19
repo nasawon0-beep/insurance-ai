@@ -10,7 +10,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(ROOT, p), "utf8");
 
 function cargoTomlVersion(text) {
-  const pkg = text.match(/^\[package\]\n([\s\S]*?)(?=^\[|\Z)/m);
+  const pkg = text.match(/^\[package\]\r?\n([\s\S]*?)(?=^\[|\Z)/m);
   if (!pkg) return undefined;
   const m = [...pkg[1].matchAll(/^version\s*=\s*"([^"]*)"/gm)];
   return m.length === 1 ? m[0][1] : undefined;

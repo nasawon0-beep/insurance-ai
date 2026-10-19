@@ -61,14 +61,15 @@ const changed = [];
 // Cargo.toml — [package] 섹션만 잘라서 그 안의 단일 version 을 교체
 {
   const raw = readFileSync(P.cargoToml, "utf8");
-  const pkgSection = raw.match(/^\[package\]\n([\s\S]*?)(?=^\[|\Z)/m);
+  const pkgSection = raw.match(/^\[package\]\r?\n([\s\S]*?)(?=^\[|\Z)/m);
   if (!pkgSection) die("Cargo.toml 에서 [package] 섹션을 못 찾음");
   const verMatches = [...pkgSection[1].matchAll(/^version\s*=\s*"([^"]*)"/gm)];
   if (verMatches.length !== 1) {
     die(`Cargo.toml [package] 섹션의 version 줄이 ${verMatches.length}개 (1개여야 함)`);
   }
   if (verMatches[0][1] !== version) {
-    const start = pkgSection.index + "[package]\n".length + verMatches[0].index;
+    const sectionBodyStart = pkgSection.index + pkgSection[0].length - pkgSection[1].length;
+    const start = sectionBodyStart + verMatches[0].index;
     const next =
       raw.slice(0, start) +
       raw.slice(start).replace(/version\s*=\s*"[^"]*"/, `version = "${version}"`);
