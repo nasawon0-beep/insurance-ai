@@ -470,6 +470,14 @@ export async function savePolicies(
   let coverageLinkFailed = 0;
   let err: string | undefined;
   const failures: Array<{ index: number; label: string; error: string }> = [];
+  let existingPolicies: any[] = [];
+  try {
+    const detail = await api(`/customers/${cid}`, {});
+    existingPolicies = Array.isArray((detail as any)?.policies) ? (detail as any).policies : [];
+  } catch {
+    // 계약 목록 선조회 실패는 실제 저장 요청에서 오류를 표면화하도록 계속 진행한다.
+  }
+  const key = (value: unknown) => String(value ?? "").replace(/\s+/g, "").toLowerCase();
   for (let i = 0; i < policies.length; i++) {
     if (checked[i] === false) continue;
     const p = policies[i];
@@ -484,7 +492,13 @@ export async function savePolicies(
         .filter(Boolean)
         .join(" · ") || null;
     try {
-      const created = await api(`/customers/${cid}/policies`, {
+      const existing = existingPolicies.find((item) =>
+        key(item.insurer) === key(p.insurer) &&
+        key(item.product_name) === key(p.product_name) &&
+        key(item.start_date) === key(p.issued_date) &&
+        (key(p.insurer) !== "" || key(p.product_name) !== ""),
+      );
+      const created = existing ?? await api(`/customers/${cid}/policies`, {
         method: "POST",
         body: JSON.stringify({
           insurer: p.insurer || null,
@@ -505,7 +519,10 @@ export async function savePolicies(
           memo,
         }),
       });
-      saved++;
+      if (!existing) {
+        saved++;
+        existingPolicies.push(created);
+      }
       const policyId = typeof created === "object" && created && "id" in created ? String((created as { id: string }).id) : null;
       const coverages = Array.isArray(p.policy_coverages) ? p.policy_coverages : [];
       if (policyId && coverages.length > 0) {
@@ -515,8 +532,8 @@ export async function savePolicies(
             review_confirmed: true,
             items: coverages.map((c) => ({ ...c, policy_id: policyId })),
           }),
-        }) as { created?: number; policy_link_failed?: number };
-        coverageSaved += Number(coverageResult.created ?? 0);
+        }) as { created?: number; skipped_existing?: number; policy_link_failed?: number };
+        coverageSaved += Number(coverageResult.created ?? 0) + Number(coverageResult.skipped_existing ?? 0);
         coverageLinkFailed += Number(coverageResult.policy_link_failed ?? 0);
       }
     } catch (e) {

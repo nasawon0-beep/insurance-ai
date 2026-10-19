@@ -68,8 +68,16 @@ jobs:
         run: |
           cd local-engine
           pip install -r requirements.txt
+          pip install -r ../tests/requirements.txt
           pip install pyinstaller
           pyinstaller local-engine.spec
+          python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b dist/local-engine.exe > local-engine-archive.txt
+          grep '_cffi_backend' local-engine-archive.txt
+          grep 'python311.dll' local-engine-archive.txt
+          if grep -q 'python314.dll' local-engine-archive.txt; then
+            echo "python314.dll must not be bundled" >&2
+            exit 1
+          fi
           cp dist/local-engine.exe ../desktop/src-tauri/binaries/local-engine-x86_64-pc-windows-msvc.exe
         shell: bash
 
@@ -84,8 +92,19 @@ jobs:
       - name: Verify app version
         shell: bash
         run: |
-          node -e "const p=require('./desktop/package.json'); if (p.version !== '${{ steps.version.outputs.VERSION }}') { console.error('desktop/package.json version mismatch', p.version); process.exit(1); }"
-          node -e "const c=require('./desktop/src-tauri/tauri.conf.json'); if (c.version !== '${{ steps.version.outputs.VERSION }}') { console.error('tauri.conf.json version mismatch', c.version); process.exit(1); }"
+          node scripts/check-version-sync.mjs
+          test "$(node -p "require('./desktop/package.json').version")" = "${{ steps.version.outputs.VERSION }}"
+
+      - name: Validate release candidate
+        shell: bash
+        run: |
+          python -m pytest -q tests/test_policy_coverages.py tests/test_main_coverage_recalculate_api.py tests/test_coverage_analysis_api.py tests/test_coverage_analysis_parser.py tests/test_coverage_mapping.py
+          npm test
+          cd desktop
+          node --test --experimental-strip-types tests/*.test.ts tests/*.test.mjs
+          npm run build
+          cd src-tauri
+          cargo check
 
       - name: Build Windows signed bundles
         run: |
@@ -97,9 +116,18 @@ jobs:
       - name: List bundle outputs
         shell: pwsh
         run: |
-          Get-ChildItem desktop\src-tauri\target\release\bundle -Recurse | Select-Object FullName, Length
+          Get-ChildItem desktop/src-tauri/target/release/bundle -Recurse | Select-Object FullName, Length
 
-      - name: Create or update GitHub Release
+      - name: Upload private validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-v${{ steps.version.outputs.VERSION }}-candidate
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*
+            desktop/src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+
+      - name: Create or update draft GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,9 +146,9 @@ jobs:
           EOF
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes-file "$BODY_FILE"
+            gh release edit "$TAG" --draft --title "$TITLE" --notes-file "$BODY_FILE"
           else
-            gh release create "$TAG" --title "$TITLE" --notes-file "$BODY_FILE" --target "$GITHUB_SHA"
+            gh release create "$TAG" --draft --title "$TITLE" --notes-file "$BODY_FILE" --target "$GITHUB_SHA"
           fi
 
           gh release upload "$TAG" \

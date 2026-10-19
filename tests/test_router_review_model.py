@@ -1,12 +1,6 @@
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
-
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures" / "real_pdfs"
-PROPOSAL_PDF = FIXTURES_DIR / "proposal" / "박순남_암승인_261012.pdf"
-COVERAGE_ANALYSIS_PDF = FIXTURES_DIR / "coverage_analysis" / "김민주_261012.pdf"
+from private_pdf_fixtures import private_pdf
 
 
 @pytest.fixture
@@ -17,19 +11,15 @@ def client(tmp_path, monkeypatch):
     return TestClient(main.app)
 
 
-@pytest.mark.skipif(
-    not FIXTURES_DIR.exists(),
-    reason="Real PDF fixtures not available",
-)
 class TestRouterReviewModel:
     def test_proposal_review_model(self, client):
         """가입제안서 review model"""
-        assert PROPOSAL_PDF.exists(), f"fixture not found: {PROPOSAL_PDF}"
+        proposal_pdf = private_pdf("proposal_case_01")
 
-        with PROPOSAL_PDF.open("rb") as f:
+        with proposal_pdf.open("rb") as f:
             response = client.post(
                 "/capture",
-                files={"file": (PROPOSAL_PDF.name, f, "application/pdf")},
+                files={"file": ("private-proposal.pdf", f, "application/pdf")},
             )
 
         assert response.status_code == 200, response.text
@@ -56,12 +46,12 @@ class TestRouterReviewModel:
 
     def test_coverage_analysis_review_model(self, client):
         """보장분석서 review model"""
-        assert COVERAGE_ANALYSIS_PDF.exists(), f"fixture not found: {COVERAGE_ANALYSIS_PDF}"
+        coverage_pdf = private_pdf("coverage_case_05")
 
-        with COVERAGE_ANALYSIS_PDF.open("rb") as f:
+        with coverage_pdf.open("rb") as f:
             response = client.post(
                 "/capture",
-                files={"file": (COVERAGE_ANALYSIS_PDF.name, f, "application/pdf")},
+                files={"file": ("private-coverage-analysis.pdf", f, "application/pdf")},
             )
 
         assert response.status_code == 200, response.text
@@ -75,6 +65,12 @@ class TestRouterReviewModel:
         assert "candidate_pages" in review["metadata"]
         assert "coverages" in review
         assert review["coverages"]
+        contract_rows = item["policy_coverages"]
+        assert contract_rows
+        assert all(row.get("insurer") not in {"통합보장분석", "알 수 없음"} for row in contract_rows)
+        assert all(row.get("source_page") for row in contract_rows)
+        # 검토용 표준항목 집계와 저장용 계약별 원장은 서로 다른 배열이어야 한다.
+        assert len(contract_rows) != len(review["coverages"])
         coverage = review["coverages"][0]
         assert {
             "insurer",

@@ -2,8 +2,16 @@
 
 import os
 import sys
+import importlib.util
 
 from PyInstaller.utils.hooks import collect_all
+
+
+if sys.version_info[:2] != (3, 11):
+    raise RuntimeError(
+        "local-engine bundle must be built with Python 3.11; "
+        f"got {sys.version.split()[0]} from {sys.executable}"
+    )
 
 
 packages = [
@@ -12,6 +20,7 @@ packages = [
     "onnxruntime",
     "rapidocr_onnxruntime",
     "cryptography",
+    "cffi",
     "keyring",
     "pdfminer",
     "pdfplumber",
@@ -31,6 +40,13 @@ if sys.platform == "darwin" and os.path.exists("ocr/pdf-ocr"):
     datas += [("ocr/pdf-ocr", "ocr")]
 binaries = []
 
+# cryptography 50 imports this top-level C extension dynamically.  It is not
+# inside the cffi package directory, so collect_all("cffi") alone misses it.
+cffi_backend = importlib.util.find_spec("_cffi_backend")
+if cffi_backend is None or not cffi_backend.origin:
+    raise RuntimeError("_cffi_backend is not importable in the Python 3.11 build environment")
+binaries += [(cffi_backend.origin, ".")]
+
 # pydantic_core 바이너리 명시 (Windows)
 if sys.platform == "win32":
     import site
@@ -39,6 +55,7 @@ if sys.platform == "win32":
     if os.path.exists(pydantic_core_pyd):
         binaries += [(pydantic_core_pyd, "pydantic_core")]
 hiddenimports = [
+    "_cffi_backend",
     "keyring.backends.macOS",
     "keyring.backends.Windows",
     "keyring.backends.SecretService",

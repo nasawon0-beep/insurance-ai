@@ -96,15 +96,26 @@ CREATE TABLE IF NOT EXISTS policy_coverages (
     source_document_id TEXT,
     source_file_name   TEXT,
     source_hash        TEXT,
+    source_occurrence_key TEXT,
     source_page        INTEGER,
     insurer            TEXT,
     product_name       TEXT,
     rider_no           TEXT,
     coverage_type      TEXT,
     rider_name         TEXT,
+    rider_name_raw     TEXT,
     standard_name      TEXT,
+    standard_name_raw  TEXT,
+    standard_name_extracted_raw TEXT,
+    standard_name_verification TEXT NOT NULL DEFAULT 'raw_cell',
+    source_standard_name TEXT,
+    source_standard_names_json TEXT NOT NULL DEFAULT '[]',
+    source_type        TEXT,
+    source_link_status TEXT NOT NULL DEFAULT 'unlinked',
+    review_status      TEXT NOT NULL DEFAULT 'unreviewed',
     amount             INTEGER,
     amount_text        TEXT,
+    amount_status      TEXT NOT NULL DEFAULT 'known',
     start_date         TEXT,
     end_date           TEXT,
     confidence         REAL,
@@ -112,6 +123,37 @@ CREATE TABLE IF NOT EXISTS policy_coverages (
     link_status        TEXT,
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
+);
+
+-- 원본 상세연결 occurrence 원장. 자동연결 실패도 검수 대상으로 보존한다.
+CREATE TABLE IF NOT EXISTS coverage_source_occurrences (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    source_hash TEXT NOT NULL,
+    source_file_name TEXT,
+    occurrence_key TEXT NOT NULL,
+    source_page INTEGER NOT NULL,
+    source_table INTEGER NOT NULL,
+    source_row INTEGER NOT NULL,
+    source_standard_name_raw TEXT,
+    source_standard_name TEXT,
+    insurer TEXT,
+    product_name TEXT,
+    rider_name TEXT,
+    amount INTEGER,
+    amount_text TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    resolution_status TEXT NOT NULL DEFAULT 'unresolved',
+    resolution_reason TEXT NOT NULL,
+    candidate_source_keys_json TEXT NOT NULL DEFAULT '[]',
+    candidate_policy_coverage_ids_json TEXT NOT NULL DEFAULT '[]',
+    linked_policy_coverage_id TEXT REFERENCES policy_coverages(id) ON DELETE SET NULL,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(customer_id, occurrence_key)
 );
 
 CREATE TABLE IF NOT EXISTS import_batch_rrn (
@@ -149,6 +191,8 @@ CREATE INDEX IF NOT EXISTS idx_policies_customer ON policies(customer_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_customer ON policy_coverages(customer_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_policy ON policy_coverages(policy_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_standard ON policy_coverages(standard_name);
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_customer ON coverage_source_occurrences(customer_id, resolution_status);
+CREATE INDEX IF NOT EXISTS idx_source_occurrences_hash ON coverage_source_occurrences(customer_id, source_hash, source_page, source_table, source_row);
 CREATE INDEX IF NOT EXISTS idx_consultations_customer ON consultations(customer_id);
 CREATE INDEX IF NOT EXISTS idx_consultations_followup ON consultations(follow_up_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_rrn_hash ON customers(rrn_hash);
@@ -195,6 +239,19 @@ _ADDED_COLUMNS = {
         "transcript": "TEXT", "coverage_json": "TEXT", "follow_up_done_at": "TEXT",
         "import_batch_id": "TEXT",
     },
+    "policy_coverages": {
+        "source_occurrence_key": "TEXT",
+        "amount_status": "TEXT NOT NULL DEFAULT 'known'",
+        "rider_name_raw": "TEXT",
+        "standard_name_raw": "TEXT",
+        "standard_name_extracted_raw": "TEXT",
+        "standard_name_verification": "TEXT NOT NULL DEFAULT 'raw_cell'",
+        "source_standard_name": "TEXT",
+        "source_standard_names_json": "TEXT NOT NULL DEFAULT '[]'",
+        "source_type": "TEXT",
+        "source_link_status": "TEXT NOT NULL DEFAULT 'unlinked'",
+        "review_status": "TEXT NOT NULL DEFAULT 'unreviewed'",
+    },
     "rrn_access_log": {
         "actor": "TEXT", "access_type": "TEXT",
     },
@@ -210,6 +267,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for col, coltype in cols.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "policy_coverages" in tables:
+        conn.execute(
+            """
+            UPDATE policy_coverages
+            SET amount_status = CASE
+              WHEN TRIM(COALESCE(amount_text, '')) = '-' THEN 'unknown_dash'
+              WHEN TRIM(COALESCE(amount_text, '')) = '' AND amount IS NULL THEN 'unknown_blank'
+              WHEN amount = 0 AND REPLACE(TRIM(COALESCE(amount_text, '')), ' ', '') IN ('0', '0원') THEN 'explicit_zero'
+              WHEN amount IS NULL THEN 'parse_failed'
+              ELSE 'known'
+            END
+            """
+        )
     conn.commit()
 
 

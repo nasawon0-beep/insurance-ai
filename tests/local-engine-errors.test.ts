@@ -7,12 +7,12 @@ import {
   isFetchNetworkError,
 } from "../desktop/src/localEngineErrors.ts";
 
-test("local-engine network error message names the local API and not the license server", () => {
+test("local-engine network error gives actionable local recovery without naming the license server", () => {
   const msg = formatLocalEngineNetworkError(new TypeError("Failed to fetch"));
 
-  assert.match(msg, /local-engine API/);
-  assert.match(msg, /127\.0\.0\.1:8420/);
-  assert.match(msg, /\/health/);
+  assert.match(msg, /로컬 엔진 요청이 끊겼습니다/);
+  assert.match(msg, /분석이 있으면 잠시 기다린 뒤 다시 시도/);
+  assert.match(msg, /로컬 엔진 재시작|앱 재시작/);
   assert.doesNotMatch(msg, /라이선스 서버/);
 });
 

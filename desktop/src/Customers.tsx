@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CoverageTableEditable,
-  CoverageTableEditableSafe,
   type CoverageRow,
   PolicyList,
   savePolicies,
   STATUS_LABEL,
   type PolicyDraft,
 } from "./PolicyList";
-import { expandCoverageRowsWithCatalog } from "./coverageCatalog";
-import { parseCoverageJson } from "./coverageRows";
+
+import CoverageSourceSnapshot, { type PolicyCoverageSnapshot } from "./CoverageSourceSnapshot";
 import { track } from "./usage";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
@@ -20,6 +19,7 @@ import { computeMergeRows, memoAppend, type MergeRow } from "./mergeDiff";
 import { normalizeDate } from "./normalizeDate";
 import { parsePremium } from "./parsePremium";
 import { hasPendingDraft } from "./analysisDraft";
+import { isCoverageAnalysisDocument, isProposalDocument, selectReviewedPolicyCoverages } from "./coverageDocument";
 
 type Customer = {
   id: string;
@@ -417,6 +417,7 @@ export default function CustomersScreen({
   const [pendingDocType, setPendingDocType] = useState<string | undefined>(undefined);
   const [pendingCoverage, setPendingCoverage] = useState<CoverageRow[]>([]);
   const [pendingCoverageReview, setPendingCoverageReview] = useState<any | null>(null);
+  const [pendingSourceOccurrences, setPendingSourceOccurrences] = useState<any[]>([]);
   const [audioIntakeBusy, setAudioIntakeBusy] = useState(false);
   const [fileKind, setFileKind] = useState<"audio" | "doc" | null>(null); // 분석 중 파일 종류
   const [dragOver, setDragOver] = useState(false);
@@ -532,14 +533,18 @@ export default function CustomersScreen({
         });
         done.push("통화 상담 추가");
         setPendingConsult(null);
-        setPendingCoverage([]);
       }
       const targetId = dupMatch.id;
       const targetName = dupMatch.name;
       setDupMatch(null);
       setMergePreview(null);
       const polMerge = await savePolicyFor(targetId);
+      const ledger = await saveCoverageLedgerFor(targetId, pendingDocType);
+      const coverageRecalculated = await recalculateCoverageIfNeeded(targetId, pendingDocType, ledger.total);
       if (polMerge.saved) done.push(`보험계약 ${polMerge.saved}건 추가`);
+      if (ledger.created) done.push(`담보 ${ledger.created}건 저장`);
+      else if (ledger.existing) done.push(`기존 담보 ${ledger.existing}건 연결`);
+      if (coverageRecalculated) done.push("보장분석 자동 실행");
       if (polMerge.failures.length)
         rrnError =
           (rrnError ? rrnError + " / " : "") +
@@ -804,11 +809,52 @@ export default function CustomersScreen({
     return r;
   };
 
-  const recalculateCoverageIfNeeded = async (cid: string, docType?: string | null) => {
-    if (docType !== "보장분석") return false;
+  const saveCoverageLedgerFor = async (
+    cid: string,
+    docType?: string | null,
+    source: { coverage_review?: any; policy_coverages?: unknown; source_link_occurrences?: unknown } = {
+      coverage_review: pendingCoverageReview,
+      source_link_occurrences: pendingSourceOccurrences,
+    },
+  ) => {
+    if (isProposalDocument(docType)) return { created: 0, existing: 0, total: 0 };
+    if (!isCoverageAnalysisDocument(docType)) return { created: 0, existing: 0, total: 0 };
+    const rows = selectReviewedPolicyCoverages({ doc_type: docType, ...source });
+    if (rows.length === 0) {
+      return { created: 0, existing: 0, total: 0 };
+    }
+    const result = await api(`/customers/${cid}/policy-coverages/bulk`, {
+      method: "POST",
+      body: JSON.stringify({
+        review_confirmed: true,
+        items: rows,
+        source_occurrences: Array.isArray(source.source_link_occurrences) ? source.source_link_occurrences : [],
+      }),
+    });
+    const created = Number(result?.created ?? result?.items?.length ?? 0);
+    const existing = Number(result?.skipped_existing ?? 0);
+    return { created, existing, total: created + existing };
+  };
+
+  const recalculateCoverageIfNeeded = async (
+    cid: string,
+    docType?: string | null,
+    ledgerCount = 0,
+    summaryRows: CoverageRow[] = pendingCoverage,
+  ) => {
+    if (isProposalDocument(docType) || !isCoverageAnalysisDocument(docType)) return false;
+    if (ledgerCount <= 0 && summaryRows.length === 0) {
+      throw new Error("계약별 담보 원장과 PDF 표준항목 집계가 모두 없어 보장분석 재계산을 중단했습니다.");
+    }
     await api(`/customers/${cid}/coverage-analysis/recalculate`, {
       method: "POST",
-      body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
+      body: JSON.stringify({
+        audience: "customer",
+        force: true,
+        source: "capture_pdf",
+        source_hash: pendingSourceOccurrences[0]?.source_hash,
+        observed_summary: summaryRows,
+      }),
     });
     return true;
   };
@@ -861,12 +907,14 @@ export default function CustomersScreen({
             setPendingConsult(null);
             setPendingCoverage([]);
             setPendingCoverageReview(null);
+          setPendingSourceOccurrences([]);
           } catch (e) {
             setNotice("고객은 등록됐지만 상담 이력 저장에 실패했습니다: " + String(e));
           }
         }
         const pol = await savePolicyFor(created.id);
-        const coverageRecalculated = await recalculateCoverageIfNeeded(created.id, pendingDocType);
+        const ledger = await saveCoverageLedgerFor(created.id, pendingDocType);
+        const coverageRecalculated = await recalculateCoverageIfNeeded(created.id, pendingDocType, ledger.total);
         await refreshList();
         if (rrnError) {
           // 고객은 만들어졌지만 주민번호 형식이 틀림 — 화면을 떠나지 말고 고치게 한다.
@@ -880,6 +928,7 @@ export default function CustomersScreen({
             `${created.name} 등록 완료` +
               (rrnSaved ? " · 주민번호 저장됨" : "") +
               (pol.saved ? ` · 보험계약 ${pol.saved}건 추가` : "") +
+              (ledger.created ? ` · 담보 ${ledger.created}건 저장` : ledger.existing ? ` · 기존 담보 ${ledger.existing}건 연결` : "") +
               (coverageRecalculated ? " · 보장분석 자동 실행" : ""),
           );
           onOpenCustomer?.(created.id);
@@ -906,12 +955,16 @@ export default function CustomersScreen({
             body: JSON.stringify(pendingConsult),
           });
           setPendingConsult(null);
-          setPendingCoverage([]);
-          setPendingCoverageReview(null);
           consultSaved = true;
         }
         const pol = await savePolicyFor(selectedId);
-        const coverageRecalculated = await recalculateCoverageIfNeeded(selectedId, pendingDocType);
+        const ledger = await saveCoverageLedgerFor(selectedId, pendingDocType);
+        const coverageRecalculated = await recalculateCoverageIfNeeded(selectedId, pendingDocType, ledger.total);
+        if (coverageRecalculated) {
+          setPendingCoverage([]);
+          setPendingCoverageReview(null);
+          setPendingSourceOccurrences([]);
+        }
         await refreshList();
         if (selectedIdRef.current !== selectedId) return;
         const fresh = await reloadDetail(selectedId);
@@ -929,6 +982,8 @@ export default function CustomersScreen({
         else if (rrnSaved) done.push("주민번호 갱신됨");
         if (consultSaved) done.push("보장분석 상담 1건 추가");
         if (pol.saved) done.push(`보험계약 ${pol.saved}건 추가`);
+        if (ledger.created) done.push(`담보 ${ledger.created}건 저장`);
+        else if (ledger.existing) done.push(`기존 담보 ${ledger.existing}건 연결`);
         if (coverageRecalculated) done.push("보장분석 자동 실행");
         if (!done.length && !rrnError) done.push("저장됨");
         setNotice(done.join(" · "));
@@ -983,13 +1038,17 @@ export default function CustomersScreen({
             : {}),
         });
       }
+      setPendingDocType(it.doc_type);
       if (it.policies?.length) {
         setPendingPolicies(it.policies);
         setPolicyChecked(it.policies.map((p: PolicyDraft) => !!(p.insurer || p.product_name)));
-        setPendingDocType(it.doc_type);
       }
       if (it.coverage_status?.length) setPendingCoverage(it.coverage_status);
-      setPendingCoverageReview(it.coverage_review ?? null);
+      setPendingCoverageReview({
+        ...(it.coverage_review ?? {}),
+        coverages: selectReviewedPolicyCoverages(it),
+      });
+      setPendingSourceOccurrences(Array.isArray(it.source_link_occurrences) ? it.source_link_occurrences : []);
       if (it.warnings?.length) note.push("확인 필요: " + it.warnings.join(" / "));
       if (it.match) setDupMatch({ id: it.match.id, name: it.match.name, reason: it.match_reason });
       if (note.length) setNotice(note.join(" · "));
@@ -1095,6 +1154,17 @@ export default function CustomersScreen({
         lastErr = "주민번호 저장 실패: " + (e instanceof Error ? e.message : String(e));
       }
     };
+    const saveExtractedAnalysis = async (cid: string, row: any) => {
+      if (Array.isArray(row.policies) && row.policies.length > 0 && !isProposalDocument(row.doc_type)) {
+        const pol = await savePolicies(api, cid, row.policies, row.policies.map(() => true));
+        if (pol.failures.length > 0) throw new Error(`보험계약 저장 ${pol.failures.length}건 실패`);
+      }
+      const ledger = await saveCoverageLedgerFor(cid, row.doc_type, {
+        coverage_review: row.coverage_review,
+        policy_coverages: row.policy_coverages,
+      });
+      return recalculateCoverageIfNeeded(cid, row.doc_type, ledger.total, Array.isArray(row.coverage_status) ? row.coverage_status : []);
+    };
     for (const row of bulkRows) {
       if (row.action === "skip") {
         res.skipped++;
@@ -1120,7 +1190,7 @@ export default function CustomersScreen({
           await saveRrn(ex.id, rd);
           if (row.consultation)
             await api(`/customers/${ex.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
-          if (await recalculateCoverageIfNeeded(ex.id, row.doc_type)) res.coverageAnalyses++;
+          if (await saveExtractedAnalysis(ex.id, row)) res.coverageAnalyses++;
           res.merged++;
         } else {
           const payload: Record<string, unknown> = {
@@ -1137,7 +1207,7 @@ export default function CustomersScreen({
           await saveRrn(created.id, rd);
           if (row.consultation)
             await api(`/customers/${created.id}/consultations`, { method: "POST", body: JSON.stringify(row.consultation) });
-          if (await recalculateCoverageIfNeeded(created.id, row.doc_type)) res.coverageAnalyses++;
+          if (await saveExtractedAnalysis(created.id, row)) res.coverageAnalyses++;
           res.created++;
         }
       } catch (e) {
@@ -2059,7 +2129,7 @@ function PoliciesSection({
         </span>
       </h3>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 700 }}>
+        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", fontSize: 13, width: "100%", minWidth: 700 }}>
           <colgroup>
             <col style={{ width: 130 }} />
             <col style={{ minWidth: 140 }} />
@@ -2639,51 +2709,98 @@ function AuditPanel({ customerId, active }: { customerId: string; active: boolea
 
 function CoveragePanel({
   customerId,
-  consultations,
-  wrap,
+  consultations: _consultations,
+  wrap: _wrap,
 }: {
   customerId: string;
   consultations: Consultation[];
   wrap: Wrap;
 }) {
-  void customerId;
-  const latest = consultations.find((c) => c.coverage_json);
-  const latestCoverage = latest ? parseCoverageJson(latest.coverage_json) : null;
-  const rows = latestCoverage?.rows ?? [];
-  const latestCoverageJson = latestCoverage && !latestCoverage.corrupt ? JSON.stringify(expandCoverageRowsWithCatalog(rows)) : latest?.coverage_json ?? null;
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<any | null>(null);
+  const [policyCoverages, setPolicyCoverages] = useState<PolicyCoverageSnapshot[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadDedicatedAnalysis = useCallback(async () => {
+    try {
+      const [nextAnalysis, ledger] = await Promise.all([
+        api(`/customers/${customerId}/coverage-analysis?audience=internal`),
+        api(`/customers/${customerId}/policy-coverages`),
+      ]);
+      setAnalysis(nextAnalysis);
+      setPolicyCoverages(Array.isArray(ledger?.policy_coverages) ? ledger.policy_coverages : []);
+      setLoadError(null);
+      return nextAnalysis;
+    } catch (e) {
+      setAnalysis(null);
+      setPolicyCoverages([]);
+      setLoadError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  }, [customerId]);
+
+  useEffect(() => {
+    void loadDedicatedAnalysis();
+  }, [loadDedicatedAnalysis]);
+
+  const refreshIndependentAnalysis = async () => {
+    setLinkBusy(true);
+    setLinkMessage(null);
+    try {
+      const result = await api(`/customers/${customerId}/coverage-analysis/link-refresh`, {
+        method: "POST",
+        body: JSON.stringify({ audience: "internal", run_id: analysis?.run_id }),
+      });
+      const refreshed = await loadDedicatedAnalysis();
+      if (!refreshed || refreshed.run_id !== result?.run_id) {
+        throw new Error("갱신된 분석 run을 다시 불러오지 못했습니다.");
+      }
+      const ledgerCount = Number(result?.source_policy_coverages ?? 0);
+      const summaryCount = Number(result?.source_summary_items ?? 0);
+      setLinkMessage(
+        result?.source_kind === "observed_summary"
+          ? `보장분석 갱신 완료 · PDF 표준항목 집계 ${summaryCount}건`
+          : `보장분석 갱신 완료 · 원본 계약담보 ${ledgerCount}건`,
+      );
+    } catch (e) {
+      setLinkMessage(`연결 실패: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const reviewSourceOccurrence = async (
+    occurrenceId: string,
+    action: "link" | "hold",
+    policyCoverageId?: string,
+  ) => {
+    await api(`/customers/${customerId}/coverage-source-occurrences/${occurrenceId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ action, policy_coverage_id: policyCoverageId }),
+    });
+    await loadDedicatedAnalysis();
+  };
 
   return (
-    <div
-      style={{
-        marginTop: 24,
-        padding: 12,
-        border: "1px solid var(--color-border-default)",
-        borderRadius: 8,
-        background: "var(--color-bg-surface)",
-      }}
-    >
-      {latest ? (
-        <>
-          <h4 style={{ marginTop: 0 }}>
-            저장된 보장분석 — {latest.title || "(제목 없음)"} · {(latest.consulted_at || "").slice(0, 10)}
-          </h4>
-          <CoverageTableEditableSafe
-            json={latestCoverageJson}
-            onCommit={wrap(async (newRows: CoverageRow[]) => {
-              await api(`/consultations/${latest.id}`, {
-                method: "PATCH",
-                body: JSON.stringify({ coverage_json: JSON.stringify(newRows) }),
-              });
-            }, true)}
-          />
-
-
-        </>
-      ) : (
-        <p style={{ color: "#888", fontSize: 13 }}>
-          보장분석 데이터가 없습니다. 던져넣기나 고객 등록 시 보장분석 PDF를 업로드하세요.
-        </p>
-      )}
+    <div style={{ marginTop: 24, padding: 12, border: "1px solid var(--color-border-default)", borderRadius: 8, background: "var(--color-bg-surface)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <button onClick={refreshIndependentAnalysis} disabled={linkBusy}>
+          {linkBusy ? "연결 중…" : "보장분석 연결·갱신"}
+        </button>
+        <span style={{ color: linkMessage?.startsWith("연결 실패") ? "#b00" : "#286c3c", fontSize: 12 }}>{linkMessage}</span>
+      </div>
+      {loadError && <p style={{ color: "#b00" }}>보장분석 조회 실패: {loadError}</p>}
+      {analysis ? (
+        <CoverageSourceSnapshot
+          key={analysis.run_id}
+          analysis={analysis}
+          policyCoverages={policyCoverages}
+          onReviewOccurrence={reviewSourceOccurrence}
+        />
+      ) : !loadError ? (
+        <p style={{ color: "#888", fontSize: 13 }}>저장된 보장분석 데이터가 없습니다.</p>
+      ) : null}
     </div>
   );
 }

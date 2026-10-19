@@ -39,17 +39,19 @@ test("coverage-analysis PDFs saved from drop intake trigger automatic recalculat
   assert.match(app, /input\.value\s*=\s*["']["']/);
 });
 
-test("coverage analysis tab uses consultations coverage_json instead of coverage-analysis API", () => {
+test("coverage analysis tab uses dedicated analysis and policy-ledger APIs", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
+  const refresh = read("desktop/src/coverageRefresh.ts");
 
   assert.doesNotMatch(coverage, /coverage-upload/);
   assert.doesNotMatch(coverage, /type="file"/);
   assert.doesNotMatch(coverage, /PDF 업로드/);
-  assert.doesNotMatch(coverage, /\/customers\/\$\{customerId\}\/coverage-analysis/);
-  assert.doesNotMatch(coverage, /coverage-analysis\/recalculate/);
-  assert.match(coverage, /\/customers\/\$\{customerId\}\/consultations/);
-  assert.match(coverage, /coverage_json/);
-  assert.match(coverage, /parseCoverageJson/);
+  assert.match(coverage, /\/coverage-analysis-runs/);
+  assert.match(coverage, /\/customers\/\$\{customerId\}\/coverage-analysis\?audience=internal/);
+  assert.match(coverage, /\/customers\/\$\{customerId\}\/policy-coverages/);
+  assert.match(coverage, /refreshLatestCoverageAnalysis/);
+  assert.match(refresh, /coverage-analysis\/link-refresh/);
+  assert.doesNotMatch(coverage, /\/customers\/\$\{customerId\}\/consultations/);
 });
 
 test("coverage analysis starts blank until a customer is selected", () => {
@@ -60,15 +62,15 @@ test("coverage analysis starts blank until a customer is selected", () => {
   assert.match(coverage, /placeholder=\{customersBusy \? "고객 불러오는 중…" : "고객을 검색하세요\.\.\."\}/);
 });
 
-test("coverage analysis maps coverage_json rows into thirteen tabs", () => {
+test("coverage analysis maps backend categories into the ordered category tab set", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
+  const snapshot = read("desktop/src/CoverageSourceSnapshot.tsx");
 
-  assert.match(coverage, /const COVERAGE_TABS: CoverageTab\[\] = \[[\s\S]*\{ key: "death", label: "사망" \}[\s\S]*\{ key: "dental", label: "치아\/화상\/골절"/);
-  assert.match(coverage, /categoryIdForCoverageName\("질병사망"\)[\s\S]*"death"/);
-  assert.match(coverage, /categoryIdForCoverageName\("유사암 진단비"\)[\s\S]*"cancer"/);
-  assert.match(coverage, /categoryIdForCoverageName\("뇌혈관 진단비"\)[\s\S]*"brain"/);
-  assert.match(coverage, /categoryIdForCoverageName\("급성심근경색 진단비"\)[\s\S]*"heart"/);
-  assert.match(coverage, /buildCoverageResponseFromRows/);
+  assert.match(coverage, /CoverageSourceSnapshot/);
+  assert.match(snapshot, /COVERAGE_CATEGORY_TABS = \[[\s\S]*"전체"[\s\S]*"사망·후유장해"[\s\S]*"기타"/);
+  assert.match(snapshot, /COVERAGE_CATEGORY_TABS\.map\(\(category\)/);
+  assert.match(snapshot, /if \(activeTab === "전체"\) return categories/);
+  assert.match(snapshot, /coverageCategoryTab\(category\.category_group\) === activeTab/);
 });
 
 test("coverage catalog defines the full backend catalog of fifty items", () => {
@@ -86,57 +88,57 @@ test("coverage catalog defines the full backend catalog of fifty items", () => {
   assert.match(catalog, /name: "골절 진단비", category: "치아 \/ 화상 \/ 골절", recommended: 300000/);
 });
 
-test("coverage analysis screens expand saved coverage_json rows with uninsured catalog defaults", () => {
+test("coverage analysis joins standard analysis items to original policy ledger rows", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
-  const customers = read("desktop/src/Customers.tsx");
+  const snapshot = read("desktop/src/CoverageSourceSnapshot.tsx");
 
-  assert.match(coverage, /import \{ COVERAGE_CATALOG/);
-  assert.match(coverage, /for \(const catalogItem of COVERAGE_CATALOG\)/);
-  assert.match(coverage, /status: matchedRow\?\.status \|\| "미가입"/);
-  assert.match(coverage, /current_amount: currentAmount/);
-  assert.match(coverage, /gap_amount: gapAmount/);
-  assert.match(coverage, /summary[\s\S]*total_items: COVERAGE_CATALOG\.length/);
-
-  assert.match(customers, /import \{ expandCoverageRowsWithCatalog/);
-  assert.match(customers, /expandCoverageRowsWithCatalog\(rows\)/);
+  assert.match(coverage, /analysis=\{data\}/);
+  assert.match(coverage, /policyCoverages=\{policyCoverages\}/);
+  assert.match(snapshot, /matched_policy_coverage_ids/);
+  assert.match(snapshot, /new Map\(policyCoverages\.map\(\(row\) => \[row\.id, row\]\)\)/);
+  assert.match(snapshot, /detailIds\.map/);
+  assert.match(snapshot, /detail\.insurer/);
+  assert.match(snapshot, /detail\.product_name/);
+  assert.match(snapshot, /detail\.rider_name_raw \|\| detail\.rider_name/);
 });
 
-test("coverage analysis tab renders full detail table summary and filters", () => {
+test("coverage analysis tab renders category-standard-contract tree and summary", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
+  const snapshot = read("desktop/src/CoverageSourceSnapshot.tsx");
 
-  assert.match(coverage, /COVERAGE_FILTERS/);
-  assert.match(coverage, /전체\/미가입\/부족\/충분/);
-  assert.match(coverage, /보장별 상세표 전체/);
-  assert.match(coverage, /<th>보장군<\/th>[\s\S]*<th>보장상세<\/th>[\s\S]*<th>출처<\/th>/);
-  assert.match(coverage, /evidence_pages\?\.length \? `p\.\$\{item\.evidence_pages\.join/);
+  assert.match(coverage, /CoverageSourceSnapshot/);
+  assert.match(snapshot, /visibleCategories\.map/);
+  assert.match(snapshot, /category\.items\.map/);
+  assert.match(snapshot, /<CoverageDetail/);
+  assert.match(snapshot, /<CoverageBadge status=\{status\}/);
+  assert.match(snapshot, /원본 요약 없음 · 계약담보 자체계산/);
+  assert.match(snapshot, /원본과 다름/);
+  assert.doesNotMatch(snapshot, /충분|부족/);
 });
 
-test("coverage analysis supports inline row editing and saves coverage_json", () => {
+test("coverage analysis refresh reloads and compare-and-swaps the latest observed revision", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
+  const refresh = read("desktop/src/coverageRefresh.ts");
 
-  assert.match(coverage, /const \[editingRowId, setEditingRowId\] = useState<string \| null>\(null\)/);
-  assert.match(coverage, /수정/);
-  assert.match(coverage, /저장/);
-  assert.match(coverage, /취소/);
-  assert.match(coverage, /<select[\s\S]*value=\{editDraft\.status\}/);
-  assert.match(coverage, /\/consultations\/\$\{latestConsultation\.id\}/);
-  assert.match(coverage, /method: "PATCH"/);
-  assert.match(coverage, /coverage_json: JSON\.stringify\(nextRows\)/);
+  assert.match(coverage, /refreshLatestCoverageAnalysis/);
+  assert.match(refresh, /coverage-analysis\?audience=internal/);
+  assert.match(refresh, /coverage-analysis\/link-refresh/);
+  assert.match(refresh, /method: "POST"/);
+  assert.match(refresh, /run_id: latest\.run_id/);
+  assert.doesNotMatch(coverage, /run_id: data\?\.run_id/);
+  assert.match(coverage, /docType === "proposal"/);
+  assert.match(coverage, /가입제안서는 신규 제안 검토용이라 보유담보에 저장하지 않았습니다/);
   assert.match(coverage, /await loadAnalysis\(\)/);
+  assert.doesNotMatch(coverage, /coverage_json: JSON\.stringify/);
 });
 
-test("coverage analysis guards empty consultations and corrupt coverage_json without render crashes", () => {
+test("coverage analysis guards missing selections and malformed policy arrays", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
 
-  assert.match(coverage, /Array\.isArray\(body\?\.consultations\)/);
-  assert.match(coverage, /setLatestConsultation\(null\)/);
-  assert.match(coverage, /parsed\.corrupt/);
-  assert.match(coverage, /저장된 보장분석 데이터 형식이 손상되었습니다/);
-  assert.match(coverage, /로컬 엔진 연결 실패/);
-  assert.match(coverage, /HTTP \$\{res\.status\}/);
-  assert.doesNotMatch(coverage, /const \[recalculating, setRecalculating\]/);
-  assert.doesNotMatch(coverage, /manual_reanalysis/);
-  assert.doesNotMatch(coverage, /recalculateAnalysis/);
+  assert.match(coverage, /if \(!customerId\) \{[\s\S]*setData\(null\);[\s\S]*setPolicyCoverages\(\[\]\)/);
+  assert.match(coverage, /Array\.isArray\(coverages\.policy_coverages\) \? coverages\.policy_coverages : \[\]/);
+  assert.match(coverage, /setData\(null\);[\s\S]*setPolicyCoverages\(\[\]\);[\s\S]*setError/);
+  assert.match(coverage, /\(data\?\.categories \?\? \[\]\)/);
 });
 
 test("customer coverage edit preserves saved row order", () => {
@@ -164,20 +166,23 @@ test("customer coverage edit renders pct as read-only text instead of an input",
   assert.doesNotMatch(editable, /update\(i, \{ pct:/);
 });
 
-test("coverage analysis accepts nullable API bodies and direct consultation arrays", () => {
+test("coverage run selector accepts nullable and wrapped API bodies while preferring customer IDs", () => {
   const coverage = read("desktop/src/CoverageAnalysis.tsx");
 
-  assert.match(coverage, /const list = Array\.isArray\(body\?\.customers\) \? body\.customers : \[\]/);
-  assert.match(coverage, /Array\.isArray\(body\) \? body : Array\.isArray\(body\?\.consultations\) \? body\.consultations : \[\]/);
-  assert.match(coverage, /typeof consultation\?\.coverage_json === "string"/);
+  assert.match(coverage, /if \(!source\) return \[\]/);
+  assert.match(coverage, /Array\.isArray\(source\.runs\)/);
+  assert.match(coverage, /Array\.isArray\(source\.items\)/);
+  assert.match(coverage, /Array\.isArray\(source\.data\)/);
+  assert.match(coverage, /run\.customer_id \?\? customer\?\.customer_id \?\? customer\?\.id \?\? run\.id/);
 });
 
-test("home drop intake has a top-right save button without removing bottom save", () => {
+test("home drop intake keeps an explicit user-triggered save action", () => {
   const app = read("desktop/src/App.tsx");
 
-  assert.match(app, /aria-label="상단 분석 후 저장"[\s\S]*onClick=\{run\}/);
-  assert.match(app, /justifyContent: "space-between"[\s\S]*던져넣기/);
-  assert.match(app, /<button onClick=\{run\} disabled=\{busy\} style=\{\{ marginTop: 6, fontWeight: 600 \}\}>/);
+  assert.match(app, /aria-label="고객 등록 및 저장"[\s\S]*onClick=\{run\}[\s\S]*disabled=\{busy\}/);
+  assert.match(app, /const saveButtonLabel = busy \? "⏳ 저장 중…" : "💾 고객 등록 및 저장"/);
+  assert.match(app, /\{saveButtonLabel\}/);
+  assert.match(app, /const run = async \(\) =>/);
 });
 
 test("new customer quick registration analysis buttons remain visible buttons", () => {
@@ -196,25 +201,26 @@ test("customer policy table uses fixed readable columns and single-line expiry t
   const policyTable = customers.slice(customers.indexOf("const policyCellStyle"));
 
   assert.match(policyTable, /tableLayout:\s*"fixed"[\s\S]*width:\s*"100%"/);
-  assert.match(policyTable, /<colgroup>[\s\S]*width:\s*120[\s\S]*width:\s*"auto"[\s\S]*width:\s*130[\s\S]*width:\s*100[\s\S]*width:\s*140[\s\S]*width:\s*90[\s\S]*width:\s*200/);
+  assert.match(policyTable, /<colgroup>[\s\S]*width:\s*130[\s\S]*minWidth:\s*140[\s\S]*width:\s*110[\s\S]*width:\s*90[\s\S]*width:\s*140[\s\S]*width:\s*80[\s\S]*width:\s*180/);
   assert.match(policyTable, /whiteSpace:\s*"nowrap"[\s\S]*overflow:\s*"hidden"[\s\S]*textOverflow:\s*"ellipsis"/);
-  assert.match(policyTable, /borderRight:\s*"1px solid #eee"/);
+  assert.match(policyTable, /borderRight:\s*"1px solid var\(--color-border-default\)"/);
   assert.match(policyTable, /fontSize:\s*11/);
   assert.match(policyTable, /` \(납입 \$\{p\.payment_end_date\}\)`/);
   assert.doesNotMatch(policyTable, /납입종료 \{p\.payment_end_date\}/);
 });
 
-test("customer coverage panel only shows saved coverage_json and no legacy run button", () => {
+test("customer coverage panel uses the same dedicated analysis snapshot and reloads the refreshed run", () => {
   const customers = read("desktop/src/Customers.tsx");
   const coveragePanel = customers.slice(
     customers.indexOf("function CoveragePanel"),
     customers.indexOf("function AskPanel"),
   );
 
-  assert.match(coveragePanel, /저장된 보장분석/);
-  assert.match(coveragePanel, /보장분석 데이터가 없습니다\. 던져넣기나 고객 등록 시 보장분석 PDF를 업로드하세요\./);
-  assert.doesNotMatch(coveragePanel, /분석 실행/);
-  assert.doesNotMatch(coveragePanel, /coverage-analysis`/);
-  assert.doesNotMatch(coveragePanel, /const \[busy, setBusy\]/);
-  assert.doesNotMatch(coveragePanel, /const \[res, setRes\]/);
+  assert.match(coveragePanel, /coverage-analysis\?audience=internal/);
+  assert.match(coveragePanel, /\/policy-coverages/);
+  assert.match(coveragePanel, /CoverageSourceSnapshot/);
+  assert.match(coveragePanel, /await loadDedicatedAnalysis\(\)/);
+  assert.match(coveragePanel, /refreshed\.run_id !== result\?\.run_id/);
+  assert.doesNotMatch(coveragePanel, /coverage_json/);
+  assert.doesNotMatch(coveragePanel, /CoverageTableEditableSafe/);
 });

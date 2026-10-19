@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 버전 단일 정본 = desktop/package.json. 이 스크립트가 나머지 3파일에 그 값을 반영한다.
+// 버전 단일 정본 = desktop/package.json. 이 스크립트가 나머지 4파일에 그 값을 반영한다.
+//   - desktop/package-lock.json           (root + packages[""] version)
 //   - desktop/src-tauri/tauri.conf.json  ("version")
 //   - desktop/src-tauri/Cargo.toml       ([package] 섹션의 version)
 //   - desktop/src-tauri/Cargo.lock       (name = "desktop-scaffold" 항목의 version)
@@ -14,6 +15,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const P = {
   pkg: join(ROOT, "desktop/package.json"),
+  pkgLock: join(ROOT, "desktop/package-lock.json"),
   tauri: join(ROOT, "desktop/src-tauri/tauri.conf.json"),
   cargoToml: join(ROOT, "desktop/src-tauri/Cargo.toml"),
   cargoLock: join(ROOT, "desktop/src-tauri/Cargo.lock"),
@@ -30,6 +32,20 @@ if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
 }
 
 const changed = [];
+
+// package-lock.json — npm version을 거치지 않고 직접 sync해도 root 두 곳을 맞춘다.
+{
+  const obj = JSON.parse(readFileSync(P.pkgLock, "utf8"));
+  if (typeof obj.version !== "string" || typeof obj.packages?.[""]?.version !== "string") {
+    die("package-lock.json 에 root version 두 곳이 없음");
+  }
+  if (obj.version !== version || obj.packages[""].version !== version) {
+    obj.version = version;
+    obj.packages[""].version = version;
+    writeFileSync(P.pkgLock, JSON.stringify(obj, null, 2) + "\n");
+    changed.push("package-lock.json");
+  }
+}
 
 // tauri.conf.json — JSON 파싱해 version 만 교체, 2-space + 개행 유지
 {
@@ -64,7 +80,7 @@ const changed = [];
 // Cargo.lock — name = "desktop-scaffold" 바로 뒤의 version 줄만 (정확히 1개)
 {
   const raw = readFileSync(P.cargoLock, "utf8");
-  const re = /(name = "desktop-scaffold"\nversion = ")([^"]*)(")/g;
+  const re = /(name = "desktop-scaffold"\r?\nversion = ")([^"]*)(")/g;
   const matches = [...raw.matchAll(re)];
   if (matches.length !== 1) {
     die(`Cargo.lock 의 desktop-scaffold version 항목이 ${matches.length}개 (1개여야 함)`);

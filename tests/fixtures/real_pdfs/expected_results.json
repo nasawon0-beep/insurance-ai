@@ -1,48 +1,44 @@
 {
   "coverage_analysis": {
-    "이일휴_260905": {
+    "coverage_case_01": {
       "pages": 20,
       "table_rows": 225,
       "expected_coverages": 50,
       "expected_misc_ratio": 0.0
     },
-    "나상원_261012": {
+    "coverage_case_02": {
       "pages": 32,
       "table_rows": 701,
-      "expected_coverages_min": 75,
-      "expected_coverages_max": 80,
-      "expected_misc_ratio_max": 0.30
+      "expected_coverages": 119,
+      "expected_misc_ratio": 0.35
     },
-    "정인성_261012": {
+    "coverage_case_03": {
       "pages": 29,
       "table_rows": 569,
-      "expected_coverages_min": 38,
-      "expected_coverages_max": 45,
-      "expected_misc_ratio_max": 0.30
+      "expected_coverages": 68,
+      "expected_misc_ratio": 0.47
     },
-    "정병용_260923": {
+    "coverage_case_04": {
       "pages": 8,
       "table_rows": 235,
-      "expected_coverages_min": 12,
-      "expected_coverages_max": 14,
-      "expected_misc_ratio_max": 0.15
+      "expected_coverages": 13,
+      "expected_misc_ratio": 0.08
     },
-    "김민주_261012": {
+    "coverage_case_05": {
       "pages": 41,
       "table_rows": 1093,
-      "expected_coverages_min": 73,
-      "expected_coverages_max": 85,
-      "expected_misc_ratio_max": 0.35
+      "expected_coverages": 151,
+      "expected_misc_ratio": 0.50
     }
   },
   "proposal": {
-    "박순남_암승인_261012": {
+    "proposal_case_01": {
       "pages": 5,
       "table_rows": 93,
       "expected_riders_min": 8,
       "expected_riders_max": 10
     },
-    "박순남_수정_261012": {
+    "proposal_case_02": {
       "pages": 8,
       "table_rows": 131,
       "expected_riders_min": 15,

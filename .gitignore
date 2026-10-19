@@ -10,6 +10,7 @@ local-engine/whisper/models/
 desktop/dist/
 desktop/src-tauri/target/
 logs/
+.build-tmp/
 .pytest_cache/
 .DS_Store
 *.log

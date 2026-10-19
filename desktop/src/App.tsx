@@ -28,6 +28,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { engineFetch, ensureLocalEngineRecovered } from "./engine";
 import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
+import { isCoverageAnalysisDocument, isProposalDocument, selectReviewedPolicyCoverages } from "./coverageDocument";
 
 type EngineStatus = {
   local_engine?: string;
@@ -490,7 +491,7 @@ function CapturePanel({
     });
 
     const docType = String(row.doc_type ?? "");
-    if (docType === "proposal" || docType.includes("가입제안서")) {
+    if (isProposalDocument(docType)) {
       console.log("[보장분석 재계산] SKIP - 가입제안서는 검토용이며 보유담보로 저장하지 않음");
       setMsg("✅ 가입제안서 검토 완료 - 보유담보 저장 없이 고객 정보만 저장했습니다.");
       return false;
@@ -501,12 +502,16 @@ function CapturePanel({
           (sum: number, p: any) => sum + (Array.isArray(p.policy_coverages) ? p.policy_coverages.length : 0),
           0,
         );
-    const willSkip = !docType.includes("보장분석") && savedCoverageCount <= 0 && extractedCoverageCount <= 0;
+    const observedSummary = Array.isArray(row.coverage_review?.coverages) && row.coverage_review.coverages.length > 0
+      ? row.coverage_review.coverages
+      : Array.isArray(row.coverage_status) ? row.coverage_status : [];
+    const willSkip = !isCoverageAnalysisDocument(docType) && savedCoverageCount <= 0 && extractedCoverageCount <= 0;
     console.log("[보장분석 재계산] 조건 검사", {
       docType,
-      includes_보장분석: docType.includes("보장분석"),
+      isCoverageAnalysis: isCoverageAnalysisDocument(docType),
       savedCoverageCount,
       extractedCoverageCount,
+      observedSummaryCount: observedSummary.length,
       will_skip: willSkip,
     });
 
@@ -539,11 +544,17 @@ function CapturePanel({
     const polling = pollProgress();
     try {
       console.log("[DEBUG] 재계산 호출 ID:", cid);
-      const result = await api(`/customers/${cid}/coverage-analysis/recalculate`, {
+      const response = await api(`/customers/${cid}/coverage-analysis/recalculate`, {
         method: "POST",
-        body: JSON.stringify({ audience: "customer", force: true, source: "capture_pdf" }),
+        body: JSON.stringify({
+          audience: "customer",
+          force: true,
+          source: "capture_pdf",
+          source_hash: row.source_hash,
+          observed_summary: observedSummary,
+        }),
       });
-      console.log("[보장분석 재계산] 성공", result);
+      console.log("[보장분석 재계산] 성공", response);
       console.log("[저장 로그]", JSON.stringify({
         timestamp: new Date().toISOString(),
         customer_id: cid,
@@ -566,15 +577,14 @@ function CapturePanel({
         error: error instanceof Error ? error.message : String(error),
       }, null, 2));
       const errorMsg = error?.message || String(error);
-      alert(`⚠️ 보장분석 재계산 실패\n\n오류: ${errorMsg}\n\n고객 ID: ${cid}\n\n고객 탭에서 수동으로 재계산하세요.`);
-      setMsg(`⚠️ 저장 완료 (보장분석 재계산 실패: ${errorMsg})`);
+      setMsg(null);
       onBackgroundJob?.({
         id: "coverage-analysis",
         label: "보장분석",
         status: "error",
         message: `보장분석 재계산 실패: ${errorMsg}`,
       });
-      return false;
+      throw error instanceof Error ? error : new Error(errorMsg);
     } finally {
       done = true;
       await polling.catch(() => undefined);
@@ -681,7 +691,7 @@ function CapturePanel({
         // 가입제안서(proposal)의 riders는 신규 제안 검토용이다.
         // 보유담보(policy_coverages)에 저장하면 기존 가입 보장으로 오인되므로 저장/재계산 대상에서 제외한다.
         let savedCoverageCount = 0;
-        const isProposalReview = row.doc_type === "proposal" || String(row.doc_type ?? "").includes("가입제안서");
+        const isProposalReview = isProposalDocument(row.doc_type);
         if (cid && row.policies?.length && !isProposalReview) {
           const r = await savePolicies(api, cid, row.policies, row.policyChecked || []);
           res.policies += r.saved;
@@ -696,22 +706,25 @@ function CapturePanel({
         }
 
         // 통합 보장분석 문서인 경우 최상위 row.policy_coverages 저장
-        const isCoverageAnalysis = String(row.doc_type ?? "").includes("보장분석");
-        const topLevelCoverages = row.coverage_review?.coverages ?? row.policy_coverages;
+        const isCoverageAnalysis = isCoverageAnalysisDocument(row.doc_type);
+        const topLevelCoverages = selectReviewedPolicyCoverages(row);
         if (cid && isCoverageAnalysis && Array.isArray(topLevelCoverages) && topLevelCoverages.length > 0) {
           console.log("[통합 보장분석 저장] 시작", { count: topLevelCoverages.length });
-          try {
-            const saveResponse = await api(`/customers/${cid}/policy-coverages/bulk`, {
-              method: "POST",
-              body: JSON.stringify({ review_confirmed: true, items: topLevelCoverages }),
-            });
-            const bulkSaved = saveResponse?.created ?? saveResponse?.items?.length ?? 0;
-            savedCoverageCount += bulkSaved;
-            res.policyCoverages += bulkSaved;
-            console.log("[통합 보장분석 저장] 완료", { saved: bulkSaved });
-          } catch (e) {
-            console.error("[통합 보장분석 저장] 실패", e);
-          }
+          const saveResponse = await api(`/customers/${cid}/policy-coverages/bulk`, {
+            method: "POST",
+            body: JSON.stringify({
+              review_confirmed: true,
+              items: topLevelCoverages,
+              source_occurrences: Array.isArray(row.source_link_occurrences) ? row.source_link_occurrences : [],
+            }),
+          });
+          const bulkCreated = Number(saveResponse?.created ?? saveResponse?.items?.length ?? 0);
+          const bulkExisting = Number(saveResponse?.skipped_existing ?? 0);
+          savedCoverageCount += bulkCreated + bulkExisting;
+          res.policyCoverages += bulkCreated;
+          console.log("[통합 보장분석 저장] 완료", { created: bulkCreated, existing: bulkExisting });
+        } else if (cid && isCoverageAnalysis && !(Array.isArray(row.coverage_status) && row.coverage_status.length > 0)) {
+          throw new Error("계약별 담보 원장이 없어 보장분석을 연결할 수 없습니다. 요약금액으로 계약담보를 생성하지 않습니다.");
         }
 
         if (cid) {
@@ -1208,7 +1221,7 @@ function CapturePanel({
                 fontWeight: 800,
                 background: busy ? "var(--color-bg-surface)" : "var(--primary-500)",
                 color: busy ? "#737373" : "#fff",
-                border: "none",
+                border: "1px solid transparent",
                 borderRadius: 8,
                 cursor: busy ? "not-allowed" : "pointer",
                 minWidth: 220,
@@ -2274,7 +2287,7 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
       onClick={() => setView("assistant")}
       style={{
         padding: "8px 16px",
-        border: "none",
+        border: "1px solid transparent",
         borderBottom: view === "assistant" ? "2px solid #3b82f6" : "2px solid transparent",
         background: "none",
         fontWeight: view === "assistant" ? 700 : 500,
@@ -2372,7 +2385,7 @@ function StartupScreen({ state, onRetry, onRelaunch }: { state: StartupState; on
           ))}
         </div>
         {state.status === "error" && (
-          <div role="dialog" aria-modal="true" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 12, padding: 14 }}>
+          <div role="dialog" aria-modal="true" style={{ border: "1px solid var(--coverage-shortage)", background: "var(--color-bg-surface)", color: "var(--color-error)", borderRadius: 12, padding: 14 }}>
             <h2 style={{ margin: "0 0 8px", fontSize: 18 }}>local-engine 서버를 시작할 수 없습니다</h2>
             <p style={{ margin: "0 0 8px" }}>{state.error}</p>
             {state.logPath && <p style={{ margin: "0 0 12px", wordBreak: "break-all" }}>로그 위치: {state.logPath}</p>}
@@ -2806,7 +2819,7 @@ function App() {
         onClick={() => guardedSetView(key)}
         style={{
           padding: "8px 16px",
-          border: "none",
+          border: "1px solid transparent",
           borderBottom: view === key ? "2px solid #3b82f6" : "2px solid transparent",
           background: "none",
           fontWeight: view === key ? 700 : 500,
@@ -2884,7 +2897,7 @@ function App() {
         </nav>
         <AssistantBackgroundBanner />
         {backgroundJobs.length > 0 && (
-          <div style={{ background: "#eff6ff", color: "#1d4ed8", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid #bfdbfe" }} role="status" aria-live="polite">
+          <div style={{ background: "var(--color-bg-surface)", color: "var(--color-info)", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid var(--color-border-default)" }} role="status" aria-live="polite">
             {backgroundJobs.map((job) => job.message).join(" · ")}
             <div style={{ height: 3, background: "#bfdbfe", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
               <div style={{ width: "35%", height: "100%", background: "#2563eb", borderRadius: 999 }} />

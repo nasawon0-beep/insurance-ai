@@ -290,6 +290,12 @@ async def recalculate_coverage_analysis(
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     body = body or {}
     mode = body.get("mode") or "full"
+    observed_coverages = coverage._normalize_observed_summary(body.get("observed_summary"))
+    profile = dict(body.get("profile") or {})
+    if body.get("source"):
+        profile["source"] = str(body["source"])
+    if body.get("source_hash"):
+        profile["source_hash"] = str(body["source_hash"])
     with _COVERAGE_PROGRESS_LOCK:
         _COVERAGE_PROGRESS[customer_id].clear()
     result = coverage.analyze(
@@ -298,8 +304,9 @@ async def recalculate_coverage_analysis(
         audience=body.get("audience") or "internal",
         persist=bool(body.get("persist", True)),
         force_recalculate=bool(body.get("force", True)),
-        profile=body.get("profile") or {},
+        profile=profile,
         mode=mode,
+        observed_coverages=observed_coverages,
         progress_callback=lambda payload: _record_coverage_progress(customer_id, payload),
     )
     if result is None:
@@ -315,6 +322,7 @@ async def recalculate_coverage_analysis(
         "started_at": started_at,
         "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "items_count": len(items),
+        "observed_summary_count": len(observed_coverages),
         "links": {
             "result": f"/customers/{customer_id}/coverage-analysis?run_id={run_id}"
         },

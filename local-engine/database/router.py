@@ -35,7 +35,7 @@ import tempfile
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import (
     APIRouter,
@@ -1339,6 +1339,7 @@ async def capture(
             if kind == "pdf":
                 source_hash = hashlib.sha256(data).hexdigest()
                 policy_coverage_rows = []
+                source_occurrence_rows = []
                 policy_coverage_warning = None
                 full_text_pages: list[tuple[int, str]] = []
                 try:
@@ -1480,6 +1481,7 @@ async def capture(
                         "policies": [],
                         "coverage_status": [],
                         "policy_coverages": [],
+                        "source_link_occurrences": [],
                         "coverage_review": review,
                         "coverages_text": "",
                         "analysis_status": "proposal_review_ready",
@@ -1518,29 +1520,37 @@ async def capture(
                     try:
                         tmp_pdf.write(data)
                         tmp_pdf.close()
-                        candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
-                        parsed_coverages = parse_coverage_analysis(tmp_pdf.name, candidate_pages)
+                        try:
+                            if doc_type_enum in coverage_doc_types:
+                                direct_ledger_rows, source_occurrence_rows = cast(
+                                    tuple[list[dict], list[dict]],
+                                    policy_coverages.parse_policy_coverages_from_pdf(
+                                    tmp_pdf.name,
+                                    source_file_name=file.filename if file else None,
+                                    source_hash=source_hash,
+                                    with_occurrences=True,
+                                    ),
+                                )
+                                if direct_ledger_rows:
+                                    policy_coverage_rows = direct_ledger_rows
+                            candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
+                            parsed_coverages = parse_coverage_analysis(tmp_pdf.name, candidate_pages)
+                        except Exception as exc:
+                            # 텍스트 추출은 성공했지만 PDF 표 계층만 손상된 문서도
+                            # 고객/검토 흐름 전체를 500으로 중단하지 않는다.
+                            logger.warning("coverage analysis table parsing failed: %s", exc, exc_info=True)
+                            candidate_pages = {
+                                "coverage_summary_pages": [], "detail_list_pages": [],
+                                "product_detail_pages": [], "category_detail_pages": [],
+                                "contract_ledger_pages": [], "proposal_table_pages": [],
+                            }
+                            parsed_coverages = []
                     finally:
                         try:
                             os.unlink(tmp_pdf.name)
                         except OSError:
                             pass
                     perf["coverage_analysis_parse"] = time.perf_counter() - t0
-                    policy_coverage_rows = [
-                        {
-                            "insurer": c.insurer,
-                            "product_name": c.product_name,
-                            "rider_name": c.coverage_name,
-                            "coverage_name": c.coverage_name,
-                            "standard_name": policy_coverages.normalize_standard_name(c.coverage_name, c.coverage_name),
-                            "amount": c.amount,
-                            "amount_text": c.amount_text,
-                            "current_amount": c.amount_text,
-                            "source_page": c.source_page,
-                            "confidence": c.confidence,
-                        }
-                        for c in parsed_coverages
-                    ]
                     coverage_analysis_review = {
                         "doc_type": "coverage_analysis",
                         "metadata": {
@@ -1554,11 +1564,16 @@ async def capture(
                                 "insurer": c.insurer,
                                 "product_name": c.product_name,
                                 "coverage_name": c.coverage_name,
+                                "source_coverage_name": c.source_coverage_name,
+                                "source_status": c.source_status,
+                                "recommended_amount": c.recommended_amount,
+                                "recommended_amount_text": c.recommended_amount_text,
                                 "category": c.category,
                                 "coverage_period": c.coverage_period,
                                 "payment_period": c.payment_period,
                                 "amount": c.amount,
                                 "amount_text": c.amount_text,
+                                "amount_status": c.amount_status,
                                 "source_page": c.source_page,
                                 "source_type": c.source_type,
                                 "confidence": c.confidence,
@@ -1761,7 +1776,12 @@ async def capture(
                     "policies": policies,
                     "coverage_status": coverage_status,
                     "policy_coverages": policy_coverage_rows,
-                    "coverage_review": coverage_analysis_review or _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows),
+                    "source_link_occurrences": source_occurrence_rows,
+                    "coverage_review": (
+                        coverage_analysis_review
+                        if coverage_analysis_review and coverage_analysis_review.get("coverages")
+                        else _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows)
+                    ),
                     "coverages_text": cov_raw,
                     "analysis_status": "quick_analysis_done",
                     "quick_contracts": [
@@ -2197,7 +2217,9 @@ def get_export(request: Request, conn=Depends(get_conn)):
             "export",
         )
 
-    r = _export.build_export(conn, rrn_audit=audit_rrn_export)
+    # 입력/저장은 항상 활성이나 대량 내보내기는 별도 승인 경로가 없으므로
+    # 주민번호를 기본 제외한다. 토글 제거를 CSV 전체값 노출 승인으로 해석하지 않는다.
+    r = _export.build_export(conn, include_rrn=False, rrn_audit=audit_rrn_export)
     try:
         _usage.record(conn, "export_run", {
             "format": "zip", "rows": r["rows"], "include_rrn": r["include_rrn"],
@@ -2494,12 +2516,169 @@ async def add_policy_coverages_bulk(cid: str, request: Request, conn=Depends(get
     if raw.get("review_confirmed") is not True:
         raise HTTPException(status_code=409, detail="계약별 담보는 검수 완료 후 저장해야 합니다.")
     try:
-        result = policy_coverages.create_many(conn, cid, raw["items"], require_review=True)
+        source_occurrences = raw.get("source_occurrences") or []
+        if not isinstance(source_occurrences, list):
+            raise ValueError("source_occurrences는 배열이어야 합니다.")
+        result = policy_coverages.create_many(
+            conn, cid, raw["items"], require_review=True, source_occurrences=source_occurrences
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     if result["created"]:
         _audit(conn, request, action="create", entity="policy_coverage", entity_id=repo._new_id(), customer_id=cid, fields=f"{result['created']} rows")
     return result
+
+
+@router.get("/customers/{cid}/coverage-source-occurrences")
+def list_coverage_source_occurrences(cid: str, conn=Depends(get_conn)):
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    rows = policy_coverages.list_source_occurrences(conn, cid)
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("resolution_status") or "unresolved")
+        counts[status] = counts.get(status, 0) + 1
+    return {"source_link_occurrences": rows, "total": len(rows), "counts": counts}
+
+
+def _profile_object(raw: str | None) -> dict:
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _persisted_observed_summary(
+    conn, customer_id: str, run_id: str | None = None, source_hash: str | None = None
+) -> tuple[str | None, list[dict]]:
+    tables = {
+        str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "coverage_analysis_runs" not in tables or "coverage_analysis" not in tables:
+        return None, []
+    if run_id:
+        run = conn.execute(
+            "SELECT id,profile_json FROM coverage_analysis_runs WHERE id=? AND customer_id=? AND status='completed'",
+            (run_id, customer_id),
+        ).fetchone()
+    elif source_hash:
+        completed = conn.execute(
+            "SELECT id,profile_json FROM coverage_analysis_runs WHERE customer_id=? AND status='completed' ORDER BY completed_at DESC,created_at DESC,rowid DESC",
+            (customer_id,),
+        ).fetchall()
+        run = next(
+            (
+                row for row in completed
+                if str(_profile_object(row["profile_json"]).get("source_hash") or "") == source_hash
+            ),
+            None,
+        )
+        if run is None:
+            ledger_hashes = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT source_hash FROM policy_coverages WHERE customer_id=? AND source_hash IS NOT NULL AND source_hash!=''",
+                    (customer_id,),
+                ).fetchall()
+            }
+            if ledger_hashes == {source_hash}:
+                run = next(
+                    (row for row in completed if not _profile_object(row["profile_json"]).get("source_hash")),
+                    None,
+                )
+    else:
+        run = conn.execute(
+            "SELECT id,profile_json FROM coverage_analysis_runs WHERE customer_id=? AND status='completed' ORDER BY completed_at DESC,created_at DESC,rowid DESC LIMIT 1",
+            (customer_id,),
+        ).fetchone()
+    if run is None:
+        return None, []
+    profile_source_hash = str(_profile_object(run["profile_json"]).get("source_hash") or "")
+    if source_hash and profile_source_hash and profile_source_hash != source_hash:
+        return None, []
+    rows = conn.execute(
+        """SELECT coverage_name,observed_coverage_name,observed_current_amount,observed_amount_text,
+                  observed_amount_status,observed_status,observed_source_page
+           FROM coverage_analysis WHERE run_id=? AND customer_id=? AND source_kind='observed_summary'""",
+        (run["id"], customer_id),
+    ).fetchall()
+    return str(run["id"]), [
+        {
+            "coverage_name": row["coverage_name"],
+            "source_coverage_name": row["observed_coverage_name"] or row["coverage_name"],
+            "amount": row["observed_current_amount"],
+            "amount_text": row["observed_amount_text"],
+            "amount_status": row["observed_amount_status"],
+            "source_status": row["observed_status"],
+            "source_page": row["observed_source_page"],
+        }
+        for row in rows
+    ]
+
+
+@router.post("/customers/{cid}/coverage-source-occurrences/{occurrence_id}/review")
+def review_coverage_source_occurrence(
+    cid: str,
+    occurrence_id: str,
+    request: Request,
+    body: dict = Body(...),
+    conn=Depends(get_conn),
+):
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    try:
+        pending_occurrence = conn.execute(
+            "SELECT source_hash FROM coverage_source_occurrences WHERE id=? AND customer_id=?",
+            (occurrence_id, cid),
+        ).fetchone()
+        if pending_occurrence is None:
+            raise HTTPException(status_code=404, detail="검수할 원본 상세연결을 찾을 수 없습니다.")
+        source_hash = str(pending_occurrence["source_hash"] or "")
+        source_run_id, observed_summary = _persisted_observed_summary(
+            conn, cid, source_hash=source_hash or None
+        )
+        if source_run_id is None:
+            raise ValueError("해당 고객과 원본 문서의 완료된 분석 revision이 없어 검수를 반영하지 않았습니다.")
+        reviewed = policy_coverages.review_source_occurrence(
+            conn,
+            cid,
+            occurrence_id,
+            str(body.get("action") or ""),
+            str(body.get("policy_coverage_id")) if body.get("policy_coverage_id") else None,
+            str(body.get("note")) if body.get("note") else None,
+        )
+        if reviewed is None:
+            raise HTTPException(status_code=404, detail="검수할 원본 상세연결을 찾을 수 없습니다.")
+        revision = coverage.recalculate(
+            conn,
+            cid,
+            {
+                "force": True,
+                "persist": True,
+                "source": "source_occurrence_review",
+                "source_hash": source_hash,
+                "observed_summary": observed_summary,
+            },
+        )
+        if revision is None:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    _audit(
+        conn,
+        request,
+        action="review",
+        entity="coverage_source_occurrence",
+        entity_id=occurrence_id,
+        customer_id=cid,
+        fields=str(body.get("action") or ""),
+    )
+    return {"status": "reviewed", "occurrence": reviewed, "run_id": revision.get("run_id")}
 
 
 @router.patch("/policies/{pid}")
@@ -2951,6 +3130,90 @@ def recalculate_coverage_analysis(
     if result is None:
         raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
     return result
+
+
+@router.post("/customers/{cid}/coverage-analysis/link-refresh")
+def link_refresh_coverage_analysis(
+    cid: str,
+    body: dict = Body(default_factory=dict),
+    conn=Depends(get_conn),
+):
+    """최신 완료 revision의 원본/원장 연결만 compare-and-swap으로 갱신한다."""
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    requested_run_id = str(body.get("run_id") or "").strip() or None
+    locked = False
+    if requested_run_id:
+        # GET과 POST 사이에 등록/복구/다른 창이 새 revision을 만들 수 있다.
+        # 쓰기 잠금 아래 최신 id를 비교하고 새 revision 저장까지 잠금을 유지한다.
+        conn.execute("BEGIN IMMEDIATE")
+        locked = True
+        latest = conn.execute(
+            """SELECT id FROM coverage_analysis_runs
+               WHERE customer_id=? AND status='completed'
+               ORDER BY completed_at DESC,created_at DESC,rowid DESC LIMIT 1""",
+            (cid,),
+        ).fetchone()
+        if latest is None or str(latest["id"]) != requested_run_id:
+            conn.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="선택한 분석 revision이 최신 결과가 아닙니다. 최신 분석을 다시 불러온 뒤 재시도하세요.",
+            )
+    try:
+        source_items = policy_coverages.list_policy_coverages(conn, cid)
+        source_run_id, observed_summary = _persisted_observed_summary(conn, cid, requested_run_id)
+        if requested_run_id and source_run_id is None:
+            raise HTTPException(status_code=409, detail="지정한 분석 revision이 없거나 다른 고객의 결과입니다.")
+        source_run_hash = ""
+        if source_run_id:
+            source_run = conn.execute(
+                "SELECT profile_json FROM coverage_analysis_runs WHERE id=? AND customer_id=?",
+                (source_run_id, cid),
+            ).fetchone()
+            if source_run:
+                source_run_hash = str(_profile_object(source_run["profile_json"]).get("source_hash") or "")
+        if not source_items and not observed_summary:
+            for consultation in repo.list_consultations(conn, cid):
+                raw = consultation.get("coverage_json")
+                if not raw:
+                    continue
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, list) and parsed:
+                    observed_summary = [row for row in parsed if isinstance(row, dict)]
+                    break
+            if not observed_summary:
+                raise HTTPException(
+                    status_code=409,
+                    detail="저장된 계약별 원본 담보 또는 PDF 표준항목 집계가 없습니다. 보장분석 PDF를 다시 업로드해 검수·저장하세요.",
+                )
+        payload = {
+            **{key: value for key, value in body.items() if key != "run_id"},
+            "force": True,
+            "persist": True,
+            "source": "customer_link_refresh",
+            "source_hash": source_run_hash,
+            "observed_summary": observed_summary,
+            # BEGIN IMMEDIATE를 executescript가 조기 commit하지 않게 한다.
+            "_schema_ready": locked,
+        }
+        result = coverage.recalculate(conn, cid, payload)
+        if result is None:
+            raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+        return {
+            **result,
+            "source_policy_coverages": len(source_items),
+            "source_summary_items": len(observed_summary),
+            "source_run_id": source_run_id,
+            "source_kind": "contract_ledger" if source_items else "observed_summary",
+        }
+    except Exception:
+        if locked and conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 @router.patch("/customers/{cid}/coverage-analysis/{coverage_id}")

@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -77,7 +79,7 @@ def classify_document_type(pdf_path: str) -> tuple[DocumentType, dict]:
         ]
         if any(kw in head_text for kw in coverage_analysis_keywords):
             # 긴 양식 vs 짧은 양식 구분
-            if "간편보장분석" in head_text or page_count <= 10:
+            if page_count <= 10:
                 metadata["is_short_form"] = True
                 return DocumentType.COVERAGE_ANALYSIS_SHORT, metadata
             elif "가입담보상세List" in head_text or "상품별가입담보상세" in head_text:
@@ -136,7 +138,7 @@ def detect_candidate_pages(pdf_path: str, doc_type: DocumentType) -> dict:
                 result["product_detail_pages"].append(page_num)
 
             # 보장별상세표
-            if "보장별상세표" in text or ("보장군" in text and "권장금액" in text):
+            if "보장별상세표" in text or ("보장군" in text and "권장금액" in text) or "전체 담보 진단 현황" in text:
                 result["category_detail_pages"].append(page_num)
 
             # 보유계약리스트
@@ -160,14 +162,15 @@ def _new_id() -> str:
 
 _AMOUNT_RE = re.compile(r"(?P<amount>\d[\d,]*(?:\.\d+)?\s*(?:억|천|백|십)?\s*만?|\d[\d,]*\s*원)(?:\s|$)")
 _DATE_RE = re.compile(r"\d{4}[-.]\d{2}[-.]\d{2}")
+_AMOUNT_TOKEN_RE = r"\d[\d,]*(?:\.\d+)?\s*(?:억(?:\s*\d[\d,]*(?:\.\d+)?\s*만(?:\s*\d[\d,]*(?:\.\d+)?\s*천)?)?|천\s*만|백\s*만|십\s*만|만(?:\s*\d[\d,]*(?:\.\d+)?\s*천)?|천|백|십|원)?"
 _ROW_RE = re.compile(
-    r"^(?P<no>\d{1,3})\s+(?P<ctype>실손|정액|기타)\s+"
-    r"(?P<body>.+?)\s+(?P<amount>\d[\d,]*(?:\.\d+)?\s*(?:억|천|백|십)?\s*만|\d[\d,]*\s*원|\d[\d,]*)$"
+    rf"^(?P<no>\d{{1,3}})\s+(?P<ctype>실손|정액|기타)\s+"
+    rf"(?P<body>.+?)\s+(?P<amount>{_AMOUNT_TOKEN_RE})$"
 )
 _DETAIL_ROW_RE = re.compile(
     r"^(?:(?P<std>[가-힣A-Za-z0-9%·/()\-+]+)\s+)?"
     r"(?P<insurer>삼성화재|메리츠화재|메리츠|한화생명|한화손보|현대해상|KB손보|DB손보|ABL생명|흥국화재|하나손보|MG손보|라이나생명|신한라이프생명|흥국생명)\s+"
-    r"(?P<rest>.+?)\s+(?P<amount>\d[\d,]*(?:\.\d+)?\s*(?:억|천|백|십)?\s*만|\d[\d,]*\s*원|\d[\d,]*)\s+"
+    rf"(?P<rest>.+?)\s+(?P<amount>{_AMOUNT_TOKEN_RE})\s+"
     r"(?P<start>\d{4}[-.]\d{2}[-.]\d{2})\s+(?P<end>\d{4}[-.]\d{2}[-.]\d{2})$"
 )
 _KNOWN_INSURERS = (
@@ -221,9 +224,14 @@ _INTEGRATED_INSURER = "통합보장분석"
 _INTEGRATED_PRODUCT = "M·보장분석"
 
 _STD_ALIASES: list[tuple[str, str]] = [
+    ("질병입원의료", "질병입원"), ("상해입원의료", "상해입원"),
+    ("질병외래의료비", "질병통원"), ("질병통원의료비", "질병통원"), ("질병통원", "질병통원"),
+    ("상해외래의료비", "상해통원"), ("상해통원의료비", "상해통원"), ("상해통원", "상해통원"),
+    ("일상생활배상", "일상생활 배상책임"), ("가족생활배상", "일상생활 배상책임"),
     ("질병1~5종수술비", "질병종수술"), ("질병1-5종수술비", "질병종수술"), ("질병N종수술비", "질병종수술"), ("질병종수술", "질병종수술"),
     ("상해1~5종수술비", "상해종수술"), ("상해1-5종수술비", "상해종수술"), ("상해N종수술비", "상해종수술"), ("상해종수술", "상해종수술"),
     ("뇌혈관질환진단비", "뇌혈관 진단비"), ("뇌혈관질환진단", "뇌혈관 진단비"), ("뇌혈관진단비", "뇌혈관 진단비"),
+    ("뇌출혈진단비", "뇌출혈 진단비"), ("두번째뇌출혈", "뇌출혈 진단비"), ("뇌졸중진단비", "뇌졸중 진단비"),
     ("허혈성심장질환진단비", "허혈성심장질환 진단비"), ("허혈성심장질환진단", "허혈성심장질환 진단비"), ("허혈심장질환진단", "허혈성심장질환 진단비"),
     ("유사암진단비", "유사암 진단비"), ("유사암진단", "유사암 진단비"), ("기타피부암", "유사암 진단비"), ("갑상선암", "유사암 진단비"), ("제자리암", "유사암 진단비"), ("경계성종양", "유사암 진단비"),
     ("통합암진단비(유사암제외)", "통합암 진단비"), ("통합암진단비", "통합암 진단비"), ("통합암", "통합암 진단비"),
@@ -237,6 +245,11 @@ _STD_ALIASES: list[tuple[str, str]] = [
     ("질병80%이상후유장해", "질병 80%이상 후유장해"), ("질병후유장해", "질병 3%이상 후유장해"),
     ("뇌혈관질환수술", "뇌혈관수술비"), ("허혈성심장질환수술", "허혈심장질환수술비"), ("급성심근경색진단", "급성심근경색증 진단비"),
     ("상해수술(유병자)", "상해수술비"), ("질병수술(유병자)", "질병수술비"), ("특정질병수술", "질병수술비"), ("기타수술", "질병수술비"),
+    ("질병수술비", "질병수술비"), ("상해수술비", "상해수술비"),
+    ("교통사고처리지원금", "교통사고처리 지원금"), ("교통사고벌금", "벌금"), ("과실치사상벌금", "벌금"),
+    ("자동차사고부상", "자동차사고 부상치료비"), ("골절진단비", "골절 진단비"),
+    ("질병입원간병인사용일당", "질병 간병인사용 입원일당"), ("1인실입원일당", "1인실 입원일당"), ("암수술비", "암수술비"),
+    ("질병입원일당", "질병일당"), ("상해입원일당", "상해일당"),
     ("치매진단(경증)", "경증치매진단"), ("골절통원치료", "골절 진단비"), ("중증화상", "화상 진단비"),
 ]
 
@@ -246,11 +259,41 @@ def compact(text: str | None) -> str:
 
 
 def normalize_standard_name(company_name: str | None, standard_name: str | None = None) -> str:
-    hay = compact((company_name or "") + " " + (standard_name or ""))
+    # PDF의 신정원 담보명은 문서 작성자가 확정한 분류다. 회사 담보명의
+    # 광범위 키워드로 이를 덮어쓰면 의미가 다른 담보가 합산된다.
+    explicit = (standard_name or "").strip()
+    if explicit:
+        if compact(explicit) == "기타":
+            return "기타"
+        explicit_hay = compact(explicit)
+        exact_source_names = {
+            "허혈성심장질환수술비": "허혈심장질환수술비",
+            "허혈심장질환수술비": "허혈심장질환수술비",
+            "질병간병인사용입원일당": "질병 간병인사용 입원일당",
+            "상해간병인사용입원일당": "상해 간병인사용 입원일당",
+            "변호사선임비용": "변호사 선임비용",
+        }
+        if explicit_hay in exact_source_names:
+            return exact_source_names[explicit_hay]
+        if "외상성뇌출혈" in explicit_hay or "상해성뇌출혈" in explicit_hay:
+            return explicit
+        for needle, canonical in _STD_ALIASES:
+            if compact(needle) in explicit_hay:
+                return canonical
+        return explicit
+
+    hay = compact(company_name or "")
+    if "외상성뇌출혈" in hay or "상해성뇌출혈" in hay:
+        return "기타"
     for needle, canonical in _STD_ALIASES:
         if compact(needle) in hay:
             return canonical
-    return (standard_name or "기타").strip() or "기타"
+    if "입원일당" in hay:
+        if "상해" in hay:
+            return "상해일당"
+        if "질병" in hay:
+            return "질병일당"
+    return "기타"
 
 
 def parse_amount(amount_text: str | None) -> Optional[int]:
@@ -271,8 +314,16 @@ def parse_amount(amount_text: str | None) -> Optional[int]:
     if m:
         total += int(float(m.group(1)) * 100_000)
     m = re.search(r"(\d+(?:\.\d+)?)\s*만", s)
-    if m and "천" not in s and "백" not in s and "십" not in s:
+    if m and "천만" not in s and "백만" not in s and "십만" not in s:
         total += int(float(m.group(1)) * 10_000)
+        tail = re.search(r"만\s*(\d+(?:\.\d+)?)\s*천", s)
+        if tail:
+            total += int(float(tail.group(1)) * 1_000)
+    if total == 0:
+        # 원문 표에서 "1천"은 1천만원 약식으로 사용된다.
+        standalone = re.fullmatch(r"(\d+(?:\.\d+)?)\s*천", s)
+        if standalone:
+            total += int(float(standalone.group(1)) * 10_000_000)
     if total:
         return total
     m = re.search(r"\d+(?:\.\d+)?", s)
@@ -367,9 +418,16 @@ def _parse_appendix_pages(pages: list[tuple[int, str]], source_file_name: str | 
                 "source_page": page_no,
                 "insurer": current_policy.get("insurer"),
                 "product_name": current_policy.get("product_name"),
+                "rider_no": m.group("no"),
                 "coverage_type": m.group("ctype"),
                 "rider_name": company,
+                "rider_name_raw": company,
+                "standard_name_raw": std,
                 "standard_name": normalize_standard_name(company, std),
+                "source_standard_name": None,
+                "source_type": "contract_ledger",
+                "source_link_status": "unlinked",
+                "review_status": "unreviewed",
                 "amount": parse_amount(m.group("amount")),
                 "amount_text": m.group("amount"),
                 "start_date": current_policy.get("start_date"),
@@ -405,7 +463,13 @@ def _parse_detail_list_pages(pages: list[tuple[int, str]], source_file_name: str
                 "product_name": product,
                 "coverage_type": None,
                 "rider_name": rider,
+                "rider_name_raw": rider,
+                "standard_name_raw": std,
                 "standard_name": normalize_standard_name(rider, std),
+                "source_standard_name": normalize_standard_name(None, std) if std else None,
+                "source_type": "detail_list",
+                "source_link_status": "source_exact" if std else "unlinked",
+                "review_status": "unreviewed",
                 "amount": parse_amount(m.group("amount")),
                 "amount_text": m.group("amount"),
                 "start_date": m.group("start").replace(".", "-"),
@@ -449,7 +513,7 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
                 break
             if amount_parts == ["-"] or not amount_parts:
                 amount_text = "-"
-                amount = 0
+                amount = None
             else:
                 amount_text = " ".join(amount_parts)
                 amount = parse_amount(amount_text) or 0
@@ -465,6 +529,7 @@ def _parse_short_form_summary_pages(pages: list[tuple[int, str]], source_file_na
                 "standard_name": std,
                 "amount": amount,
                 "amount_text": amount_text,
+                "amount_status": "unknown_dash" if amount is None else ("explicit_zero" if amount == 0 else "known"),
                 "confidence": 0.9,
                 "raw_text": line,
             })
@@ -527,24 +592,426 @@ def _parse_diagnosis_detail_pages(pages: list[tuple[int, str]], source_file_name
     return rows
 
 
+_AMOUNT_STATUSES = {"known", "explicit_zero", "unknown_dash", "unknown_blank", "parse_failed"}
+
+
+def infer_amount_status(amount, amount_text, supplied=None) -> str:
+    supplied = str(supplied or "").strip()
+    if supplied in _AMOUNT_STATUSES:
+        return supplied
+    text = str(amount_text or "").strip()
+    if text == "-":
+        return "unknown_dash"
+    if not text and amount is None:
+        return "unknown_blank"
+    if amount == 0 and re.sub(r"\s+", "", text) in {"0", "0원"}:
+        return "explicit_zero"
+    if amount is None:
+        return "parse_failed"
+    return "known"
+
+
 def _with_compat_fields(row: dict) -> dict:
     """프론트 보장분석 UI가 기대하는 필드명을 기존 원장 필드와 함께 제공한다."""
     coverage_name = row.get("coverage_name") or row.get("rider_name") or row.get("standard_name")
-    current_amount = row.get("current_amount") or row.get("amount_text")
-    return {**row, "coverage_name": coverage_name, "current_amount": current_amount}
+    amount_status = infer_amount_status(row.get("amount"), row.get("amount_text"), row.get("amount_status"))
+    current_amount = row.get("current_amount") if "current_amount" in row else (
+        None if amount_status in {"unknown_dash", "unknown_blank", "parse_failed"} else row.get("amount_text")
+    )
+    return {**row, "coverage_name": coverage_name, "current_amount": current_amount, "amount_status": amount_status}
+
+
+def _cell_text(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _appendix_header_policy(rows: list[list[str]], header_index: int) -> tuple[str, dict]:
+    """Extract insurer/product from appendix table geometry, without an allow-list."""
+    title_index = next(
+        (index for index, row in enumerate(rows[:header_index])
+         if any("상품별보험가입현황" in compact(cell) for cell in row)),
+        None,
+    )
+    if title_index is None:
+        return "ambiguous", {}
+    stop_index = next(
+        (index for index, row in enumerate(rows[title_index + 1:header_index], title_index + 1)
+         if any(marker in compact(cell) for cell in row
+                for marker in ("계약자/피보험자", "가입담보명및가입금액", "보험기간"))),
+        header_index,
+    )
+    identity_rows = [
+        [_cell_text(cell) for cell in row if _cell_text(cell)]
+        for row in rows[title_index + 1:stop_index]
+        if any(_cell_text(cell) for cell in row)
+    ]
+    if not identity_rows:
+        return "continuation", {}
+    if len(identity_rows) != 2 or any(len(row) != 1 for row in identity_rows):
+        return "ambiguous", {}
+    insurer, product_name = identity_rows[0][0], identity_rows[1][0]
+    if not insurer or not product_name or _DATE_RE.search(insurer) or _DATE_RE.search(product_name):
+        return "ambiguous", {}
+    dates = _DATE_RE.findall(" ".join(cell for row in rows[:header_index] for cell in row if cell))
+    return "explicit", {
+        "insurer": insurer,
+        "product_name": product_name,
+        "start_date": dates[0].replace(".", "-") if dates else None,
+        "end_date": dates[1].replace(".", "-") if len(dates) > 1 else None,
+    }
+
+
+def _rider_number(value) -> int | None:
+    match = re.fullmatch(r"\d+", _cell_text(value))
+    return int(match.group(0)) if match else None
+
+
+def _can_carry_appendix_identity(
+    previous_page: int | None,
+    current_page: int,
+    previous_rider_no: int | None,
+    first_rider_no: int | None,
+) -> bool:
+    return (
+        previous_page is not None
+        and current_page == previous_page + 1
+        and previous_rider_no is not None
+        and first_rider_no is not None
+        and first_rider_no == previous_rider_no + 1
+        and first_rider_no > 1
+    )
+
+
+def _find_cell_index(row: list[str], token: str) -> int | None:
+    return next((index for index, cell in enumerate(row) if token in cell), None)
+
+
+def _same_source_rider(left: str | None, right: str | None) -> bool:
+    a, b = compact(left), compact(right)
+    return a == b or (min(len(a), len(b)) >= 12 and (a.startswith(b) or b.startswith(a)))
+
+
+def _known_source_identity(value: str | None) -> bool:
+    return compact(value).lower() not in {"", "-", "미확인", "알수없음", "unknown", "none"}
+
+
+def _insurer_identity(value: str | None) -> str:
+    normalized = compact(value).replace("㈜", "").replace("(주)", "").replace("주식회사", "")
+    normalized = normalized.replace("손해보험", "손해").replace("손보", "손해")
+    if normalized.endswith("생명보험"):
+        normalized = normalized[:-2]
+    elif normalized.endswith("보험"):
+        normalized = normalized[:-2]
+    return normalized.lower()
+
+
+def _same_source_insurer(left: str | None, right: str | None) -> bool:
+    return _insurer_identity(left) == _insurer_identity(right)
+
+
+def _repair_clipped_appendix_rider(rider: str, product_name: str | None) -> str:
+    """표 오른쪽 경계에서 건강가입 꼬리가 잘린 회사 담보명만 복원한다."""
+    if "건강" not in str(product_name or "") or "(건강가입)" in rider or "[건강]" in rider:
+        return rider
+    if not any(marker in rider for marker in ["입원일당", "기계적혈전제거술"]):
+        return rider
+    marker = rider.rfind("(건강")
+    if marker >= 0:
+        return rider[:marker] + "(건강가입)"
+    if rider.endswith("("):
+        return rider[:-1] + "(건강가입)"
+    return rider + "(건강가입)"
+
+
+def _chars_in_bbox(page, bbox) -> list[dict]:
+    return [
+        char for char in page.chars
+        if char["x0"] >= bbox[0] - 1.0 and char["x1"] <= bbox[2] + 0.1
+        and char["top"] >= bbox[1] - 0.1 and char["bottom"] <= bbox[3] + 0.1
+    ]
+
+
+def _infer_standard_column_geometry(page, table, rows: list[list[str]], start: int, column: int) -> tuple[float | None, float]:
+    """표 전체에서 신정원 열의 반복 시작점/글자 advance 비율을 추정한다."""
+    relative_starts: list[float] = []
+    scales: list[float] = []
+    for row_index in range(start, min(len(rows), len(table.rows))):
+        cells = table.rows[row_index].cells
+        if column >= len(cells) or not cells[column]:
+            continue
+        bbox = cells[column]
+        words = page.crop(bbox).extract_words(use_text_flow=True, keep_blank_chars=False, x_tolerance=1, y_tolerance=1)
+        for word in words:
+            relative = float(word["x0"]) - float(bbox[0])
+            if 0.75 <= relative <= 6.0:
+                relative_starts.append(round(relative, 2))
+        extracted = compact(rows[row_index][column] if column < len(rows[row_index]) else "")
+        chars = sorted(_chars_in_bbox(page, bbox), key=lambda char: char["x0"])
+        if extracted and len(chars) == len(extracted):
+            for left, right in zip(chars, chars[1:]):
+                adv = float(left.get("adv") or left.get("width") or 0)
+                if adv > 0 and right["x0"] > left["x0"]:
+                    ratio = (right["x0"] - left["x0"]) / adv
+                    if 0.55 <= ratio <= 1.15:
+                        scales.append(ratio)
+    anchor = Counter(relative_starts).most_common(1)[0][0] if relative_starts else None
+    scale = sorted(scales)[len(scales) // 2] if scales else 0.91
+    return anchor, scale
+
+
+def _verified_standard_cell_text(page, table, row_index: int, column: int, anchor_relative: float | None, advance_scale: float) -> tuple[str | None, str]:
+    """overflow glyph와 겹친 셀에서 신정원 열의 독립 text stream만 복원한다."""
+    if anchor_relative is None or row_index >= len(table.rows):
+        return None, "needs_review"
+    cells = table.rows[row_index].cells
+    if column >= len(cells) or not cells[column]:
+        return None, "needs_review"
+    bbox = cells[column]
+    anchor = float(bbox[0]) + anchor_relative
+    words = page.crop(bbox).extract_words(use_text_flow=True, keep_blank_chars=False, x_tolerance=1, y_tolerance=1)
+    chars = sorted(_chars_in_bbox(page, bbox), key=lambda char: char["x0"])
+    anchor_chars = [char for char in chars if abs(float(char["x0"]) - anchor) <= 0.45]
+    standard_advance = float(anchor_chars[0].get("adv") or anchor_chars[0].get("width") or 0) * advance_scale if anchor_chars else 0
+    competing_words = [word for word in words if float(word["x0"]) <= float(bbox[0]) + 0.45]
+    if standard_advance and any(float(word["x1"]) - float(bbox[0]) > standard_advance * 4.5 for word in competing_words):
+        return None, "needs_review"
+    anchored_words = [word for word in words if abs(float(word["x0"]) - anchor) <= 0.45]
+    if anchored_words:
+        text = _cell_text(" ".join(str(word["text"]) for word in sorted(anchored_words, key=lambda word: word["x0"])))
+        if text:
+            return text, "geometry_word"
+
+    start_candidates = [char for char in chars if abs(float(char["x0"]) - anchor) <= 0.45]
+    if not start_candidates:
+        return None, "needs_review"
+    current = min(start_candidates, key=lambda char: abs(float(char["x0"]) - anchor))
+    selected = [current]
+    remaining = [char for char in chars if char is not current]
+    while remaining:
+        adv = float(current.get("adv") or current.get("width") or 0)
+        if adv <= 0:
+            break
+        target = float(current["x0"]) + adv * advance_scale
+        tolerance = max(0.55, adv * 0.18)
+        candidates = [char for char in remaining if float(char["x0"]) > float(current["x0"]) and abs(float(char["x0"]) - target) <= tolerance]
+        if not candidates:
+            break
+        current = min(candidates, key=lambda char: abs(float(char["x0"]) - target))
+        selected.append(current)
+        remaining.remove(current)
+    text = _cell_text("".join(str(char["text"]) for char in selected))
+    return (text, "geometry_trace") if text else (None, "needs_review")
+
+
+def parse_policy_coverages_from_pdf(
+    pdf_path: str,
+    source_file_name: str | None = None,
+    source_hash: str | None = None,
+    *,
+    with_occurrences: bool = False,
+) -> list[dict] | tuple[list[dict], list[dict]]:
+    """pdfplumber 원시 표 셀에서 별첨 원장과 원본 분류 연결을 함께 추출한다."""
+    import pdfplumber
+
+    ledger: list[dict] = []
+    source_links: list[dict] = []
+    source_occurrences: list[dict] = []
+    current_policy: dict = {}
+    last_appendix_page: int | None = None
+    last_appendix_rider_no: int | None = None
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_no, page in enumerate(pdf.pages, start=1):
+            for table_index, found_table in enumerate(page.find_tables() or []):
+                rows = [[_cell_text(cell) for cell in row] for row in (found_table.extract() or [])]
+                if not rows:
+                    continue
+                compact_table = compact(" ".join(cell for row in rows for cell in row))
+                detail_header = next((i for i, row in enumerate(rows) if all(_find_cell_index(row, token) is not None for token in ["구분", "회사명", "담보명"])), None)
+                if detail_header is not None:
+                    header = rows[detail_header]
+                    indices = {name: index for name in ["구분", "회사명", "상품명", "담보명", "보험시기", "보험종기"] if (index := _find_cell_index(header, name)) is not None}
+                    amount_index = _find_cell_index(header, "가입금액")
+                    current_group = current_insurer = None
+                    for source_row, row in enumerate(rows[detail_header + 1:], start=detail_header + 1):
+                        if amount_index is None or len(row) <= max(amount_index, indices.get("담보명", 0)):
+                            continue
+                        group_cell = row[indices["구분"]]
+                        if group_cell:
+                            current_group = re.sub(r"\s*\([^)]*\)\s*$", "", group_cell).strip()
+                        insurer_cell = row[indices["회사명"]]
+                        if insurer_cell:
+                            current_insurer = insurer_cell
+                        rider = row[indices["담보명"]]
+                        amount_text = row[amount_index]
+                        if current_group and rider:
+                            source_links.append({
+                                "occurrence_key": f"link:{source_hash or 'nohash'}:{page_no}:{table_index}:{source_row}",
+                                "source_hash": source_hash, "source_file_name": source_file_name,
+                                "source_table": table_index, "source_row": source_row,
+                                "standard_name": normalize_standard_name(None, current_group),
+                                "standard_name_raw": current_group, "insurer": current_insurer,
+                                "product_name": row[indices["상품명"]], "rider_name": rider,
+                                "amount": parse_amount(amount_text), "amount_text": amount_text,
+                                "start_date": row[indices["보험시기"]].replace(".", "-"),
+                                "end_date": row[indices["보험종기"]].replace(".", "-"), "source_page": page_no,
+                            })
+                if "상품별보험가입현황" not in compact_table:
+                    continue
+                header_index = next((i for i, row in enumerate(rows) if "회사 담보명" in row and "가입금액" in row), None)
+                if header_index is None:
+                    continue
+                header = rows[header_index]
+                rider_index = header.index("회사 담보명")
+                standard_index = header.index("신정원 담보명") if "신정원 담보명" in header else None
+                amount_index = header.index("가입금액")
+                no_index = header.index("NO") if "NO" in header else None
+                type_index = header.index("구분") if "구분" in header else None
+                rider_numbers = [
+                    number
+                    for row in rows[header_index + 1:]
+                    if no_index is not None and len(row) > no_index
+                    for number in [_rider_number(row[no_index])]
+                    if number is not None
+                ]
+                first_rider_no = rider_numbers[0] if rider_numbers else None
+                header_state, explicit_policy = _appendix_header_policy(rows, header_index)
+                if header_state == "explicit":
+                    current_policy = explicit_policy
+                elif header_state == "continuation" and _can_carry_appendix_identity(
+                    last_appendix_page, page_no, last_appendix_rider_no, first_rider_no
+                ):
+                    pass
+                else:
+                    # Partial/new headers and unproven continuations fail closed.
+                    current_policy = {}
+                standard_anchor, standard_scale = _infer_standard_column_geometry(
+                    page, found_table, rows, header_index + 1, standard_index
+                ) if standard_index is not None else (None, 0.91)
+                for row_index, row in enumerate(rows[header_index + 1:], start=header_index + 1):
+                    if len(row) <= max(rider_index, amount_index) or not row[rider_index]:
+                        continue
+                    rider_raw = row[rider_index]
+                    rider = _repair_clipped_appendix_rider(rider_raw, current_policy.get("product_name"))
+                    standard_extracted_raw = row[standard_index] if standard_index is not None and len(row) > standard_index else ""
+                    standard_verified, standard_verification = _verified_standard_cell_text(
+                        page, found_table, row_index, standard_index, standard_anchor, standard_scale
+                    ) if standard_index is not None else (None, "needs_review")
+                    standard_raw = standard_verified or standard_extracted_raw
+                    amount_text = row[amount_index]
+                    amount = parse_amount(amount_text)
+                    ledger.append({
+                        "source_file_name": source_file_name, "source_hash": source_hash, "source_page": page_no,
+                        "source_occurrence_key": f"ledger:{source_hash or 'nohash'}:{page_no}:{table_index}:{row_index}",
+                        "insurer": current_policy.get("insurer"), "product_name": current_policy.get("product_name"),
+                        "rider_no": row[no_index] if no_index is not None else None,
+                        "coverage_type": row[type_index] if type_index is not None else None,
+                        "rider_name": rider, "rider_name_raw": rider_raw,
+                        "standard_name_extracted_raw": standard_extracted_raw,
+                        "standard_name_raw": standard_raw, "standard_name": normalize_standard_name(rider, standard_raw),
+                        "standard_name_verification": standard_verification,
+                        "source_standard_name": None, "source_standard_names_json": "[]",
+                        "source_type": "contract_ledger", "source_link_status": "unlinked",
+                        "review_status": "needs_review" if standard_verification == "needs_review" else "unreviewed",
+                        "amount": amount, "amount_text": amount_text, "amount_status": infer_amount_status(amount, amount_text),
+                        "start_date": current_policy.get("start_date"), "end_date": current_policy.get("end_date"),
+                        "confidence": 0.99, "raw_text": " | ".join(cell for cell in row if cell),
+                    })
+                last_appendix_page = page_no
+                last_appendix_rider_no = rider_numbers[-1] if rider_numbers else None
+    for link in source_links:
+        amount_candidates = [row for row in ledger if row.get("amount") == link.get("amount")]
+        rider_candidates = [
+            row for row in amount_candidates
+            if _same_source_rider(row.get("rider_name") or row.get("rider_name_raw"), link.get("rider_name"))
+        ]
+        period_candidates = [
+            row for row in rider_candidates
+            if (not link.get("start_date") or row.get("start_date") == link.get("start_date"))
+            and (not link.get("end_date") or row.get("end_date") == link.get("end_date"))
+        ]
+        candidates = period_candidates
+        identity_conflict = None
+        if _known_source_identity(link.get("insurer")):
+            insurer_candidates = [
+                row for row in candidates if _same_source_insurer(row.get("insurer"), link.get("insurer"))
+            ]
+            if not insurer_candidates:
+                identity_conflict = "insurer_mismatch"
+            candidates = insurer_candidates
+        if candidates and _known_source_identity(link.get("product_name")):
+            product_candidates = [
+                row for row in candidates if _same_source_rider(row.get("product_name"), link.get("product_name"))
+            ]
+            if not product_candidates:
+                identity_conflict = "product_mismatch"
+            candidates = product_candidates
+        if len(candidates) > 1 and link.get("standard_name"):
+            # 원본 상세표의 그룹과 원장의 검증된 신정원 분류가 정확히 같은 경우만
+            # identity를 좁힌다. needs_review 원문이나 키워드 유사도는 사용하지 않는다.
+            narrowed = [
+                row for row in candidates
+                if row.get("standard_name_verification") != "needs_review"
+                and compact(row.get("standard_name_raw")) == compact(link.get("standard_name_raw"))
+            ]
+            candidates = narrowed or candidates
+        if len(candidates) == 1:
+            target = candidates[0]
+            if len(compact(link.get("rider_name"))) > len(compact(target.get("rider_name"))):
+                target["rider_name"] = link["rider_name"]
+            names = json.loads(target.get("source_standard_names_json") or "[]")
+            if link["standard_name"] not in names:
+                names.append(link["standard_name"])
+            target["source_standard_names_json"] = json.dumps(names, ensure_ascii=False)
+            target["source_standard_name"] = names[0]
+            target["source_link_status"] = "source_exact"
+            resolution_status = "exact"
+            resolution_reason = "identity_exact"
+            linked_source_key = target.get("source_occurrence_key")
+        else:
+            linked_source_key = None
+            resolution_status = "unresolved"
+            if len(candidates) > 1:
+                resolution_reason = "candidate_multiple"
+            elif not amount_candidates:
+                resolution_reason = "amount_mismatch"
+            elif not rider_candidates:
+                resolution_reason = "rider_name_mismatch"
+            elif not period_candidates:
+                resolution_reason = "period_mismatch"
+            elif identity_conflict:
+                resolution_reason = identity_conflict
+            else:
+                resolution_reason = "identity_mismatch"
+        if len(candidates) > 1:
+            for target in candidates:
+                target["source_link_status"] = "needs_review"
+                target["review_status"] = "needs_review"
+        source_occurrences.append({
+            **link,
+            "source_standard_name_raw": link.get("standard_name_raw"),
+            "source_standard_name": link.get("standard_name"),
+            "resolution_status": resolution_status,
+            "resolution_reason": resolution_reason,
+            "candidate_source_keys_json": json.dumps(
+                [row.get("source_occurrence_key") for row in candidates if row.get("source_occurrence_key")], ensure_ascii=False
+            ),
+            "linked_source_key": linked_source_key,
+        })
+    result = [_with_compat_fields(row) for row in ledger]
+    return (result, source_occurrences) if with_occurrences else result
 
 
 def parse_policy_coverages_from_pages(pages: list[tuple[int, str]], source_file_name: str | None = None, source_hash: str | None = None) -> list[dict]:
     """PDF 페이지 텍스트에서 계약별 담보 원장 후보를 추출한다. 페이지 번호 하드코딩 없음."""
     rows = _parse_appendix_pages(pages, source_file_name, source_hash)
+    # 같은 담보가 요약/상세/별첨에 반복된다. 회사·상품이 정확한 별첨 원장이
+    # 있으면 그것만 사용하고, 없을 때만 상세 List → 요약표 순서로 fallback한다.
+    if not rows:
+        rows = _parse_detail_list_pages(pages, source_file_name, source_hash)
+    if not rows:
+        rows = _parse_short_form_summary_pages(pages, source_file_name, source_hash)
     seen = {(r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text")) for r in rows}
-    for parser in (_parse_detail_list_pages, _parse_short_form_summary_pages):
-        for r in parser(pages, source_file_name, source_hash):
-            key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
-            if key not in seen:
-                rows.append(r)
-                seen.add(key)
-    # 상품별/계약별 담보 원장이 전혀 없는 신형 요약 문서만 보장별 상세 표를 fallback으로 사용한다.
+    # 계약별 원장이 전혀 없는 문서만 보장별 집계표를 최종 fallback으로 사용한다.
     if not rows:
         for r in _parse_diagnosis_detail_pages(pages, source_file_name, source_hash):
             key = (r.get("source_page"), r.get("insurer"), compact(r.get("product_name")), compact(r.get("rider_name")), r.get("amount_text"))
@@ -578,16 +1045,76 @@ def _match_policy_id(conn: sqlite3.Connection, customer_id: str, row: dict) -> t
     return (best["id"], "matched") if best and best_score >= 5 else (None, "unmatched")
 
 
-def create_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: dict) -> dict:
-    if not data.get("policy_id"):
+def _validate_policy_owner(conn: sqlite3.Connection, customer_id: str, policy_id: str) -> None:
+    owned = conn.execute(
+        "SELECT 1 FROM policies WHERE id = ? AND customer_id = ?", (policy_id, customer_id)
+    ).fetchone()
+    if owned is None:
+        raise ValueError("다른 고객의 보험계약에는 담보를 연결할 수 없습니다.")
+
+
+def _natural_existing(conn: sqlite3.Connection, customer_id: str, data: dict) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT * FROM policy_coverages
+        WHERE customer_id = ?
+          AND COALESCE(source_hash, '') = ?
+          AND COALESCE(source_page, -1) = ?
+          AND COALESCE(insurer, '') = ?
+          AND COALESCE(product_name, '') = ?
+          AND COALESCE(rider_no, '') = ?
+          AND COALESCE(rider_name, '') = ?
+          AND COALESCE(standard_name, '') = ?
+          AND COALESCE(amount, -1) = ?
+          AND COALESCE(amount_status, '') = ?
+        ORDER BY created_at, id LIMIT 1
+        """,
+        (
+            customer_id,
+            str(data.get("source_hash") or ""),
+            int(str(data.get("source_page"))) if data.get("source_page") is not None else -1,
+            str(data.get("insurer") or ""),
+            str(data.get("product_name") or ""),
+            str(data.get("rider_no") or ""),
+            str(data.get("rider_name") or ""),
+            str(data.get("standard_name") or ""),
+            -1 if data.get("amount") is None else int(data.get("amount")),
+            infer_amount_status(data.get("amount"), data.get("amount_text"), data.get("amount_status")),
+        ),
+    ).fetchone()
+    return _with_compat_fields(dict(row)) if row else None
+
+
+def _insert_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: dict) -> dict:
+    data = {
+        **data,
+        "rider_name_raw": data.get("rider_name_raw") if data.get("rider_name_raw") is not None else data.get("rider_name"),
+        "standard_name_raw": data.get("standard_name_raw") if data.get("standard_name_raw") is not None else data.get("standard_name"),
+        "standard_name_extracted_raw": data.get("standard_name_extracted_raw") if data.get("standard_name_extracted_raw") is not None else (
+            data.get("standard_name_raw") if data.get("standard_name_raw") is not None else data.get("standard_name")
+        ),
+        "standard_name_verification": data.get("standard_name_verification") or "raw_cell",
+        "source_type": data.get("source_type") or "uploaded_pdf",
+        "source_standard_names_json": data.get("source_standard_names_json") or json.dumps(
+            [data["source_standard_name"]] if data.get("source_standard_name") else [], ensure_ascii=False
+        ),
+        "source_link_status": data.get("source_link_status") or ("source_exact" if data.get("source_standard_name") else "unlinked"),
+        "review_status": data.get("review_status") or "unreviewed",
+        "amount_status": infer_amount_status(data.get("amount"), data.get("amount_text"), data.get("amount_status")),
+    }
+    if data.get("policy_id"):
+        _validate_policy_owner(conn, customer_id, str(data["policy_id"]))
+        data = {**data, "link_status": "provided"}
+    else:
         pid, status = _match_policy_id(conn, customer_id, data)
         data = {**data, "policy_id": pid, "link_status": status}
-    else:
-        data = {**data, "link_status": "provided"}
     cid, now = _new_id(), _now()
     cols = [
-        "id", "customer_id", "policy_id", "source_document_id", "source_file_name", "source_hash", "source_page",
-        "insurer", "product_name", "rider_no", "coverage_type", "rider_name", "standard_name", "amount", "amount_text",
+        "id", "customer_id", "policy_id", "source_document_id", "source_file_name", "source_hash", "source_occurrence_key", "source_page",
+        "insurer", "product_name", "rider_no", "coverage_type", "rider_name", "rider_name_raw",
+        "standard_name", "standard_name_raw", "standard_name_extracted_raw", "standard_name_verification",
+        "source_standard_name", "source_standard_names_json", "source_type", "source_link_status", "review_status",
+        "amount", "amount_text", "amount_status",
         "start_date", "end_date", "confidence", "raw_text", "link_status", "created_at", "updated_at",
     ]
     vals = {c: data.get(c) for c in cols}
@@ -596,8 +1123,16 @@ def create_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: dic
         f"INSERT INTO policy_coverages ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
         [vals[c] for c in cols],
     )
-    conn.commit()
     return get_policy_coverage(conn, cid)
+
+
+def create_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: dict) -> dict:
+    existing = _natural_existing(conn, customer_id, data)
+    if existing:
+        return existing
+    created = _insert_policy_coverage(conn, customer_id, data)
+    conn.commit()
+    return created
 
 
 def get_policy_coverage(conn: sqlite3.Connection, cid: str) -> dict:
@@ -618,14 +1153,172 @@ def list_policy_coverages(conn: sqlite3.Connection, customer_id: str, policy_id:
     return [_with_compat_fields(dict(r)) for r in rows]
 
 
-def create_many(conn: sqlite3.Connection, customer_id: str, items: list[dict], require_review: bool = True) -> dict:
+def _decode_json_list(value) -> list:
+    try:
+        decoded = json.loads(value or "[]") if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return decoded if isinstance(decoded, list) else []
+
+
+def sync_source_occurrences(conn: sqlite3.Connection, customer_id: str, occurrences: list[dict]) -> dict:
+    ledger_rows = conn.execute(
+        "SELECT id, source_occurrence_key FROM policy_coverages WHERE customer_id=? AND source_occurrence_key IS NOT NULL",
+        (customer_id,),
+    ).fetchall()
+    by_source_key = {str(row["source_occurrence_key"]): str(row["id"]) for row in ledger_rows}
+    now = _now()
+    created = updated = 0
+    for occurrence in occurrences:
+        occurrence_key = str(occurrence.get("occurrence_key") or "").strip()
+        source_hash = str(occurrence.get("source_hash") or "").strip()
+        if not occurrence_key or not source_hash:
+            raise ValueError("원본 상세연결 occurrence_key와 source_hash가 필요합니다.")
+        candidate_source_keys = [str(value) for value in _decode_json_list(occurrence.get("candidate_source_keys_json"))]
+        candidate_ids = [by_source_key[value] for value in candidate_source_keys if value in by_source_key]
+        linked_id = by_source_key.get(str(occurrence.get("linked_source_key") or ""))
+        existing = conn.execute(
+            "SELECT id, resolution_status FROM coverage_source_occurrences WHERE customer_id=? AND occurrence_key=?",
+            (customer_id, occurrence_key),
+        ).fetchone()
+        values = (
+            source_hash, occurrence.get("source_file_name"), int(occurrence.get("source_page") or 0),
+            int(occurrence.get("source_table") or 0), int(occurrence.get("source_row") or 0),
+            occurrence.get("source_standard_name_raw"), occurrence.get("source_standard_name"),
+            occurrence.get("insurer"), occurrence.get("product_name"), occurrence.get("rider_name"),
+            occurrence.get("amount"), occurrence.get("amount_text"), occurrence.get("start_date"), occurrence.get("end_date"),
+            occurrence.get("resolution_status") or "unresolved", occurrence.get("resolution_reason") or "identity_mismatch",
+            json.dumps(candidate_source_keys, ensure_ascii=False), json.dumps(candidate_ids, ensure_ascii=False), linked_id, now,
+        )
+        if existing:
+            conn.execute(
+                """UPDATE coverage_source_occurrences SET source_hash=?,source_file_name=?,source_page=?,source_table=?,source_row=?,
+                   source_standard_name_raw=?,source_standard_name=?,insurer=?,product_name=?,rider_name=?,amount=?,amount_text=?,
+                   start_date=?,end_date=?,
+                   resolution_status=CASE WHEN resolution_status IN ('confirmed','held') THEN resolution_status ELSE ? END,
+                   resolution_reason=CASE WHEN resolution_status IN ('confirmed','held') THEN resolution_reason ELSE ? END,
+                   candidate_source_keys_json=?,candidate_policy_coverage_ids_json=?,
+                   linked_policy_coverage_id=CASE WHEN resolution_status IN ('confirmed','held') THEN linked_policy_coverage_id ELSE ? END,
+                   updated_at=? WHERE id=? AND customer_id=?""",
+                (*values, existing["id"], customer_id),
+            )
+            updated += 1
+        else:
+            conn.execute(
+                """INSERT INTO coverage_source_occurrences
+                   (id,customer_id,occurrence_key,source_hash,source_file_name,source_page,source_table,source_row,
+                    source_standard_name_raw,source_standard_name,insurer,product_name,rider_name,amount,amount_text,start_date,end_date,
+                    resolution_status,resolution_reason,candidate_source_keys_json,candidate_policy_coverage_ids_json,
+                    linked_policy_coverage_id,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (_new_id(), customer_id, occurrence_key, *values[:-1], now, now),
+            )
+            created += 1
+    return {"created": created, "updated": updated, "total": len(occurrences)}
+
+
+def list_source_occurrences(conn: sqlite3.Connection, customer_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM coverage_source_occurrences WHERE customer_id=? ORDER BY source_hash,source_page,source_table,source_row,id",
+        (customer_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["candidate_source_keys"] = _decode_json_list(item.get("candidate_source_keys_json"))
+        item["candidate_policy_coverage_ids"] = _decode_json_list(item.get("candidate_policy_coverage_ids_json"))
+        result.append(item)
+    return result
+
+
+def review_source_occurrence(
+    conn: sqlite3.Connection, customer_id: str, occurrence_id: str, action: str,
+    policy_coverage_id: str | None = None, note: str | None = None,
+) -> dict | None:
+    occurrence = conn.execute(
+        "SELECT * FROM coverage_source_occurrences WHERE id=? AND customer_id=?", (occurrence_id, customer_id)
+    ).fetchone()
+    if occurrence is None:
+        return None
+    if occurrence["resolution_status"] != "unresolved":
+        raise ValueError("이미 검수된 원본 상세연결입니다. 최신 미해결 항목을 다시 조회하세요.")
+    now = _now()
+    if action == "hold":
+        conn.execute(
+            "UPDATE coverage_source_occurrences SET resolution_status='held',resolution_reason='user_held',linked_policy_coverage_id=NULL,review_note=?,reviewed_at=?,updated_at=? WHERE id=? AND customer_id=?",
+            (note, now, now, occurrence_id, customer_id),
+        )
+    elif action == "link":
+        if not policy_coverage_id:
+            raise ValueError("연결할 계약담보를 선택해야 합니다.")
+        target = conn.execute(
+            "SELECT * FROM policy_coverages WHERE id=? AND customer_id=?", (policy_coverage_id, customer_id)
+        ).fetchone()
+        if target is None:
+            raise ValueError("다른 고객이거나 존재하지 않는 계약담보입니다.")
+        candidate_ids = {str(value) for value in _decode_json_list(occurrence["candidate_policy_coverage_ids_json"])}
+        candidate_source_keys = {str(value) for value in _decode_json_list(occurrence["candidate_source_keys_json"])}
+        if not candidate_ids:
+            raise ValueError("연결 가능한 후보가 없습니다. 원본을 확인한 뒤 보류하세요.")
+        if str(target["id"]) not in candidate_ids:
+            raise ValueError("이 계약담보는 해당 원본 상세행의 후보가 아닙니다.")
+        target_source_key = str(target["source_occurrence_key"] or "")
+        if not target_source_key or target_source_key not in candidate_source_keys:
+            raise ValueError("후보 원장 정보가 변경되었습니다. 다시 분석한 뒤 검수하세요.")
+        if str(target["source_hash"] or "") != str(occurrence["source_hash"] or ""):
+            raise ValueError("다른 원본 문서의 계약담보에는 연결할 수 없습니다.")
+        names = _decode_json_list(target["source_standard_names_json"])
+        source_name = occurrence["source_standard_name"]
+        if source_name and source_name not in names:
+            names.append(source_name)
+        conn.execute(
+            """UPDATE policy_coverages SET source_standard_name=?,source_standard_names_json=?,
+               source_link_status='user_confirmed',review_status='reviewed',updated_at=? WHERE id=? AND customer_id=?""",
+            (names[0] if names else source_name, json.dumps(names, ensure_ascii=False), now, policy_coverage_id, customer_id),
+        )
+        conn.execute(
+            """UPDATE coverage_source_occurrences SET resolution_status='confirmed',resolution_reason='user_confirmed',
+               linked_policy_coverage_id=?,review_note=?,reviewed_at=?,updated_at=? WHERE id=? AND customer_id=?""",
+            (policy_coverage_id, note, now, now, occurrence_id, customer_id),
+        )
+    else:
+        raise ValueError("action은 link 또는 hold여야 합니다.")
+    return next((row for row in list_source_occurrences(conn, customer_id) if row["id"] == occurrence_id), None)
+
+
+def create_many(
+    conn: sqlite3.Connection, customer_id: str, items: list[dict], require_review: bool = True,
+    source_occurrences: list[dict] | None = None,
+) -> dict:
     if require_review is not True:
         raise ValueError("policy_coverages 저장은 검수 완료 플래그가 필요합니다.")
-    created = [create_policy_coverage(conn, customer_id, item) for item in items]
+    if any(str(item.get("insurer") or "").strip() in {"통합보장분석", "알 수 없음"} for item in items):
+        raise ValueError("표준항목 집계표는 계약별 담보 원장으로 저장할 수 없습니다.")
+    # 교차 고객 policy_id를 DML 전에 전부 검증해 mixed bulk의 부분 저장을 막는다.
+    for item in items:
+        if item.get("policy_id"):
+            _validate_policy_owner(conn, customer_id, str(item["policy_id"]))
+    created: list[dict] = []
+    skipped: list[dict] = []
+    try:
+        for item in items:
+            existing = _natural_existing(conn, customer_id, item)
+            if existing:
+                skipped.append(existing)
+                continue
+            created.append(_insert_policy_coverage(conn, customer_id, item))
+        occurrence_result = sync_source_occurrences(conn, customer_id, source_occurrences or [])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {
         "created": len(created),
+        "skipped_existing": len(skipped),
         "policy_link_failed": sum(1 for r in created if not r.get("policy_id")),
         "items": created,
+        "existing_items": skipped,
+        "source_occurrences": occurrence_result,
     }
 
 

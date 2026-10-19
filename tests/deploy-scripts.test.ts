@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { statSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const root = new URL("..", import.meta.url);
-const read = (path: string) => readFileSync(new URL(path, root), "utf8");
-const mode = (path: string) => statSync(new URL(path, root)).mode & 0o777;
+const read = (path: string) => readFileSync(new URL(path, root), "utf8").replace(/\r\n/g, "\n");
+const syntaxOk = (path: string) => {
+  const bashPath = new URL(path, root).pathname.replace(/^\/([A-Za-z]):/, (_, drive: string) => `/${drive.toLowerCase()}`);
+  return spawnSync("bash", ["-n", bashPath], { encoding: "utf8" });
+};
 
 test("Windows deployment script builds, releases, and updates GitHub Pages metadata", () => {
   const script = read("scripts/deploy-windows.sh");
@@ -17,7 +21,8 @@ test("Windows deployment script builds, releases, and updates GitHub Pages metad
   assert.match(script, /cd ~\/insurance-ai-updates/);
   assert.match(script, /api\/windows\.json <<EOF[\s\S]*"version": "\$\{VERSION\}"/);
   assert.match(script, /"url": "\$\{DOWNLOAD_URL\}"/);
-  assert.equal((mode("scripts/deploy-windows.sh") & 0o111) !== 0, true);
+  const checked = syntaxOk("scripts/deploy-windows.sh");
+  assert.equal(checked.status, 0, checked.stderr);
 });
 
 test("Android deployment script builds, releases, and updates GitHub Pages metadata", () => {
@@ -30,7 +35,8 @@ test("Android deployment script builds, releases, and updates GitHub Pages metad
   assert.match(script, /cd ~\/insurance-ai-updates/);
   assert.match(script, /api\/android\.json <<EOF[\s\S]*"latest_version": "\$\{VERSION\}"/);
   assert.match(script, /"download_url": "\$\{DOWNLOAD_URL\}"/);
-  assert.equal((mode("scripts/deploy-android.sh") & 0o111) !== 0, true);
+  const checked = syntaxOk("scripts/deploy-android.sh");
+  assert.equal(checked.status, 0, checked.stderr);
 });
 
 test("deployment README documents usage for both release scripts", () => {

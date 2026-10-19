@@ -10,10 +10,22 @@ from typing import Dict, List, Optional
 import pdfplumber
 
 try:  # 기존 표준담보 정규화 로직 재사용
-    from .policy_coverages import normalize_standard_name
+    from .policy_coverages import infer_amount_status, normalize_standard_name
 except Exception:  # pragma: no cover
     def normalize_standard_name(company_name: str | None, standard_name: str | None = None) -> str:
         return (standard_name or company_name or "기타").strip() or "기타"
+
+    def infer_amount_status(amount, amount_text, supplied=None) -> str:
+        text = str(amount_text or "").strip()
+        if supplied:
+            return str(supplied)
+        if text == "-":
+            return "unknown_dash"
+        if not text and amount is None:
+            return "unknown_blank"
+        if amount == 0 and text.replace(" ", "") in {"0", "0원"}:
+            return "explicit_zero"
+        return "parse_failed" if amount is None else "known"
 
 try:
     from .coverage_mapping import STANDARD_COVERAGE_CATEGORIES, normalize_coverage_name
@@ -30,12 +42,17 @@ class ParsedCoverage:
     coverage_name: str
     coverage_period: Optional[str]
     payment_period: Optional[str]
-    amount: int
+    amount: Optional[int]
     amount_text: str
+    amount_status: str
     source_page: int
     source_type: str  # "detail_list", "product_detail", "category_detail"
     confidence: float
     category: str = "기타"
+    source_coverage_name: Optional[str] = None
+    source_status: Optional[str] = None
+    recommended_amount: Optional[int] = None
+    recommended_amount_text: Optional[str] = None
 
 
 def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[ParsedCoverage]:
@@ -53,6 +70,7 @@ def parse_coverage_analysis(pdf_path: str, candidate_pages: dict) -> List[Parsed
 
     result = _deduplicate_coverages(coverages)
     for cov in result:
+        cov.source_coverage_name = cov.source_coverage_name or cov.coverage_name
         cov.coverage_name = normalize_coverage_name(cov.coverage_name)
         cov.category = _categorize_coverage(cov.coverage_name)
     return result
@@ -156,6 +174,7 @@ def _parse_detail_list_pages(pdf_path: str, pages: List[int]) -> List[ParsedCove
                         payment_period=None,
                         amount=amount,
                         amount_text=amount_text,
+                        amount_status=infer_amount_status(amount, amount_text),
                         source_page=page_num,
                         source_type="detail_list",
                         confidence=0.95,
@@ -179,18 +198,25 @@ def _parse_category_detail_pages(pdf_path: str, pages: List[int]) -> List[Parsed
                 continue
             page = pdf.pages[page_num - 1]
             text = page.extract_text() or ""
-            if "보장별 상세" not in text and "보장별상세표" not in text:
+            if "보장별 상세" not in text and "보장별상세표" not in text and "전체 담보 진단 현황" not in text:
                 continue
 
             for table in page.extract_tables() or []:
                 header_row = _find_header_row(table, ["보장상세", "권장금액", "가입금액", "과부족"])
                 if header_row is None:
-                    continue
-                header = table[header_row]
-                group_col = _find_col_index(header, ["보장군"])
-                coverage_col = _find_col_index(header, ["보장상세", "담보명", "보장명"])
-                amount_col = _find_col_index(header, ["가입금액"])
-                status_col = _find_col_index(header, ["과부족"])
+                    # 구형 "전체 담보 진단 현황" 표는 헤더 없이
+                    # [보장군, 담보명, 권장, 가입, 과부족금액, 상태] 6열로 시작한다.
+                    if not any(row and len(row) >= 6 and _get_cell(row, 5) in {"충분", "부족", "미가입", "확인필요", "적정"} for row in table):
+                        continue
+                    header_row = -1
+                    group_col, coverage_col, recommended_col, amount_col, status_col = 0, 1, 2, 3, 5
+                else:
+                    header = table[header_row]
+                    group_col = _find_col_index(header, ["보장군"])
+                    coverage_col = _find_col_index(header, ["보장상세", "담보명", "보장명"])
+                    recommended_col = _find_col_index(header, ["권장금액"])
+                    amount_col = _find_col_index(header, ["가입금액"])
+                    status_col = _find_col_index(header, ["과부족"])
 
                 current_group = ""
                 for row in table[header_row + 1:]:
@@ -202,7 +228,7 @@ def _parse_category_detail_pages(pdf_path: str, pages: List[int]) -> List[Parsed
                     coverage_name = _get_cell(row, coverage_col)
                     amount_text = _get_cell(row, amount_col)
                     status = _get_cell(row, status_col)
-                    if not coverage_name or status not in {"충분", "부족", "미가입", "확인필요"}:
+                    if not coverage_name or status not in {"충분", "부족", "미가입", "확인필요", "적정"}:
                         continue
                     coverages.append(ParsedCoverage(
                         insurer="통합보장분석",
@@ -212,9 +238,14 @@ def _parse_category_detail_pages(pdf_path: str, pages: List[int]) -> List[Parsed
                         payment_period=None,
                         amount=_parse_amount(amount_text),
                         amount_text=amount_text,
+                        amount_status=infer_amount_status(_parse_amount(amount_text), amount_text),
                         source_page=page_num,
                         source_type="category_detail",
                         confidence=0.9,
+                        source_coverage_name=coverage_name,
+                        source_status=status,
+                        recommended_amount=_parse_amount(_get_cell(row, recommended_col)),
+                        recommended_amount_text=_get_cell(row, recommended_col),
                     ))
 
     return coverages
@@ -269,10 +300,10 @@ def _get_cell(row: list, col_index: Optional[int]) -> str:
     return re.sub(r"\s+", " ", str(cell)).strip()
 
 
-def _parse_amount(text: str) -> int:
+def _parse_amount(text: str) -> Optional[int]:
     """금액 파싱"""
-    if not text:
-        return 0
+    if not text or str(text).strip() == "-":
+        return None
 
     text = str(text).replace(",", "").replace("원", "").strip()
 
@@ -301,7 +332,7 @@ def _parse_amount(text: str) -> int:
     if num_match:
         return int(float(num_match.group(0)))
 
-    return 0
+    return None
 
 
 def _join_period(start: str, end: str) -> Optional[str]:

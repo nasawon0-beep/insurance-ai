@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS coverage_analysis (
     status TEXT NOT NULL CHECK (status IN ('충분','부족','미가입','확인필요')),
     recommended_amount INTEGER NOT NULL CHECK (recommended_amount >= 0),
     current_amount INTEGER NOT NULL DEFAULT 0 CHECK (current_amount >= 0),
+    amount_status TEXT NOT NULL DEFAULT 'known',
+    source_kind TEXT NOT NULL DEFAULT 'calculated',
+    observed_coverage_name TEXT,
+    observed_current_amount INTEGER,
+    observed_amount_text TEXT,
+    observed_amount_status TEXT,
+    observed_status TEXT,
+    observed_source_page INTEGER,
+    calculated_current_amount INTEGER NOT NULL DEFAULT 0,
+    calculated_amount_status TEXT NOT NULL DEFAULT 'no_evidence',
+    source_difference TEXT,
     gap_amount INTEGER NOT NULL DEFAULT 0 CHECK (gap_amount >= 0),
     coverage_ratio REAL NOT NULL DEFAULT 0 CHECK (coverage_ratio >= 0),
     gap_ratio REAL NOT NULL DEFAULT 0 CHECK (gap_ratio >= 0),
@@ -139,6 +150,7 @@ CREATE TABLE IF NOT EXISTS coverage_analysis (
     evidence_pages_json TEXT NOT NULL DEFAULT '[]',
     evidence_json TEXT NOT NULL DEFAULT '[]',
     matched_policy_ids_json TEXT NOT NULL DEFAULT '[]',
+    matched_policy_coverage_ids_json TEXT NOT NULL DEFAULT '[]',
     manual_override INTEGER NOT NULL DEFAULT 0 CHECK (manual_override IN (0, 1)),
     override_reason TEXT,
     reviewed_by TEXT,
@@ -305,6 +317,28 @@ def _new_id(prefix: str) -> str:
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA_SQL)
+    coverage_columns = {row["name"] for row in conn.execute("PRAGMA table_info(coverage_analysis)")}
+    if "amount_status" not in coverage_columns:
+        conn.execute("ALTER TABLE coverage_analysis ADD COLUMN amount_status TEXT NOT NULL DEFAULT 'known'")
+        conn.execute(
+            "UPDATE coverage_analysis SET amount_status = CASE WHEN current_amount = 0 AND status = '미가입' THEN 'no_evidence' ELSE 'known' END"
+        )
+    added_coverage_columns = {
+        "source_kind": "TEXT NOT NULL DEFAULT 'calculated'",
+        "observed_coverage_name": "TEXT",
+        "observed_current_amount": "INTEGER",
+        "observed_amount_text": "TEXT",
+        "observed_amount_status": "TEXT",
+        "observed_status": "TEXT",
+        "observed_source_page": "INTEGER",
+        "calculated_current_amount": "INTEGER NOT NULL DEFAULT 0",
+        "calculated_amount_status": "TEXT NOT NULL DEFAULT 'no_evidence'",
+        "source_difference": "TEXT",
+        "matched_policy_coverage_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+    }
+    for column, column_type in added_coverage_columns.items():
+        if column not in coverage_columns:
+            conn.execute(f"ALTER TABLE coverage_analysis ADD COLUMN {column} {column_type}")
     for item in _COVERAGE_CATALOG:
         conn.execute(
             """
@@ -395,6 +429,33 @@ def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
     if not hay:
         return False
 
+    # 문서의 표준담보 열이 있으면 회사 담보명의 광범위 키워드보다 우선한다.
+    # `기타`는 "비슷한 이름에 강제 연결하지 말라"는 명시적 분류다.
+    try:
+        source_standards = json.loads(row.get("source_standard_names_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        source_standards = []
+    source_standards = [str(value).strip() for value in source_standards if str(value).strip()]
+    if source_standards:
+        from .policy_coverages import normalize_standard_name
+
+        normalized_sources = [normalize_standard_name(None, value) for value in source_standards]
+        return any(_compact(value) == _compact(name) for value in normalized_sources)
+    explicit_standard = str(row.get("source_standard_name") or row.get("standard_name") or "").strip()
+    if explicit_standard:
+        from .policy_coverages import normalize_standard_name
+
+        normalized_standard = normalize_standard_name(None, explicit_standard)
+        if _compact(normalized_standard) == "기타":
+            return False
+        if _compact(normalized_standard) == _compact(name):
+            return True
+        # 하나의 실손 원장이 PDF에서 질병/상해 양쪽에 명시되는 경우만 예외로 둔다.
+        combined_hay = _compact((row.get("rider_name_raw") or row.get("rider_name") or "") + " " + explicit_standard)
+        if name in {"질병입원", "상해입원"} and "상해+질병" in combined_hay and "입원의료비" in combined_hay:
+            return True
+        return False
+
     def has(*tokens: str) -> bool:
         return all(_compact(t) in hay for t in tokens if t)
 
@@ -402,13 +463,22 @@ def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
     if any(ex and ex in hay for ex in excludes):
         return False
 
-    # 뇌혈관은 뇌졸중/뇌출혈을 포함하는 상위 보장이다. 표준화된 담보명이
-    # 하위 진단명으로 저장된 경우에도 뇌혈관 진단비의 가입 계약으로 집계한다.
-    if name == "뇌혈관 진단비":
+    # 뇌혈관/뇌졸중/뇌출혈은 서로 다른 표준 항목이다. 상위·하위라는 이유로
+    # 다른 진단비를 합산하지 않고 PDF 원장에 적힌 진단명만 해당 항목에 연결한다.
+    brain_tokens = {
+        "뇌혈관 진단비": "뇌혈관",
+        "뇌졸중 진단비": "뇌졸중",
+        "뇌출혈 진단비": "뇌출혈",
+    }
+    if name in brain_tokens:
+        own = brain_tokens[name]
+        others = {token for item_name, token in brain_tokens.items() if item_name != name}
         return (
-            any(token in hay for token in ("뇌혈관", "뇌졸중", "뇌출혈"))
+            own in hay
+            and not any(token in hay for token in others)
             and "진단" in hay
             and "수술" not in hay
+            and "외상성" not in hay
         )
 
     # 입원비/일당은 실손 입원과 일당/간병인 일당을 분리해서 판정한다.
@@ -451,13 +521,25 @@ def _matches_policy_coverage(item: dict[str, Any], row: dict[str, Any]) -> bool:
     return any(_compact(candidate) and _compact(candidate) in hay for candidate in names)
 
 
-def _extract_current_amount_from_coverages(item: dict[str, Any], coverages: list[dict[str, Any]]) -> tuple[int, list[str]]:
+def _extract_current_amount_from_coverages(
+    item: dict[str, Any], coverages: list[dict[str, Any]]
+) -> tuple[int, list[str], str, list[str]]:
     total = 0
     matched: list[str] = []
+    matched_coverage_ids: list[str] = []
     seen_rows: set[str] = set()
+    matched_rows = 0
+    has_unknown = False
+    has_explicit_zero = False
     for row in coverages:
         if not _matches_policy_coverage(item, row):
             continue
+        matched_rows += 1
+        amount_status = str(row.get("amount_status") or "")
+        if amount_status in {"unknown_dash", "unknown_blank", "parse_failed"}:
+            has_unknown = True
+        elif amount_status == "explicit_zero":
+            has_explicit_zero = True
         amount = _coverage_amount(row)
         row_id = str(row.get("id") or id(row))
         if amount > 0 and row_id not in seen_rows:
@@ -465,14 +547,17 @@ def _extract_current_amount_from_coverages(item: dict[str, Any], coverages: list
             seen_rows.add(row_id)
         if row.get("policy_id"):
             matched.append(str(row["policy_id"]))
-    return total, sorted(set(matched))
+        if row.get("id"):
+            matched_coverage_ids.append(str(row["id"]))
+    status = "partial_unknown" if has_unknown and total > 0 else "unknown" if has_unknown else "known" if total > 0 else "explicit_zero" if has_explicit_zero else "no_evidence" if not matched_rows else "known"
+    return total, sorted(set(matched)), status, sorted(set(matched_coverage_ids))
 
 
-def _extract_current_amount(item: dict[str, Any], policies: list[dict[str, Any]], coverages: list[dict[str, Any]] | None = None) -> tuple[int, list[str]]:
+def _extract_current_amount(item: dict[str, Any], policies: list[dict[str, Any]], coverages: list[dict[str, Any]] | None = None) -> tuple[int, list[str], str]:
     if coverages:
-        current, matched_policy_ids = _extract_current_amount_from_coverages(item, coverages)
-        if current > 0 or matched_policy_ids:
-            return current, matched_policy_ids
+        current, matched_policy_ids, amount_status, _matched_coverage_ids = _extract_current_amount_from_coverages(item, coverages)
+        if amount_status != "no_evidence":
+            return current, matched_policy_ids, amount_status
 
     best = 0
     matched: list[str] = []
@@ -495,7 +580,7 @@ def _extract_current_amount(item: dict[str, Any], policies: list[dict[str, Any]]
             matched.append(policy["id"])
         elif item["coverage_name"] in text:
             matched.append(policy["id"])
-    return best, sorted(set(matched))
+    return best, sorted(set(matched)), "known" if best > 0 else "unknown" if matched else "no_evidence"
 
 
 def _compute_status(recommended: int, current: int, has_evidence: bool, amount_failed: bool = False):
@@ -680,7 +765,11 @@ def _internal_memo(item: dict[str, Any], status: str, evidence_confidence: str) 
 def _list_customer_policy_coverages(conn: sqlite3.Connection, customer_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id, customer_id, policy_id, standard_name, rider_name, amount, amount_text, raw_text
+        SELECT id, customer_id, policy_id, source_hash, source_file_name, source_occurrence_key,
+               standard_name, standard_name_raw, standard_name_extracted_raw, standard_name_verification,
+               source_standard_name, source_standard_names_json,
+               rider_name, rider_name_raw, amount, amount_text, amount_status, raw_text,
+               source_page, source_type, source_link_status, review_status, insurer, product_name, start_date, end_date
         FROM policy_coverages
         WHERE customer_id = ?
           AND (policy_id IS NULL OR policy_id IN (SELECT id FROM policies WHERE customer_id = ?))
@@ -690,11 +779,45 @@ def _list_customer_policy_coverages(conn: sqlite3.Connection, customer_id: str) 
     return [dict(r) for r in rows]
 
 
+def _list_source_occurrences(conn: sqlite3.Connection, customer_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM coverage_source_occurrences WHERE customer_id=? ORDER BY source_hash,source_page,source_table,source_row,id",
+        (customer_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for source, target in [
+            ("candidate_source_keys_json", "candidate_source_keys"),
+            ("candidate_policy_coverage_ids_json", "candidate_policy_coverage_ids"),
+        ]:
+            try:
+                value = json.loads(item.get(source) or "[]")
+            except (TypeError, json.JSONDecodeError):
+                value = []
+            item[target] = value if isinstance(value, list) else []
+        result.append(item)
+    return result
+
+
+def _observed_summary_for_item(item: dict[str, Any], observed: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """원본 요약표는 정확한 표준명으로만 연결하고 키워드 확장은 하지 않는다."""
+    from .coverage_mapping import normalize_coverage_name
+
+    target = _compact(item["coverage_name"])
+    for row in observed:
+        raw_name = str(row.get("standard_name") or row.get("coverage_name") or "").strip()
+        if raw_name and _compact(normalize_coverage_name(raw_name)) == target:
+            return row
+    return None
+
+
 def _build_items(
     policies: list[dict[str, Any]],
     doc_ids: list[str],
     profile: dict[str, Any],
     coverages: list[dict[str, Any]] | None = None,
+    observed_coverages: list[dict[str, Any]] | None = None,
     *,
     customer_id: str = "unknown",
     progress_callback: ProgressCallback | None = None,
@@ -709,17 +832,49 @@ def _build_items(
     build_started = time.perf_counter()
     total = len(_COVERAGE_CATALOG)
     for idx, item in enumerate(_COVERAGE_CATALOG, start=1):
-        current, matched_policy_ids = _extract_current_amount(item, policies, coverages)
+        matched_policy_coverage_ids: list[str] = []
+        if coverages:
+            calculated, matched_policy_ids, calculated_amount_status, matched_policy_coverage_ids = _extract_current_amount_from_coverages(item, coverages)
+            if calculated_amount_status == "no_evidence":
+                calculated, matched_policy_ids, calculated_amount_status = _extract_current_amount(item, policies, None)
+        else:
+            calculated, matched_policy_ids, calculated_amount_status = _extract_current_amount(item, policies, None)
+        observed = _observed_summary_for_item(item, observed_coverages or [])
+        if observed is not None:
+            observed_amount = observed.get("amount")
+            current = int(observed_amount or 0)
+            amount_status = str(observed.get("amount_status") or "no_evidence")
+            source_kind = "observed_summary"
+            observed_status = str(observed.get("source_status") or observed.get("status") or "").strip() or None
+            source_difference = None if current == calculated and amount_status == calculated_amount_status else f"원본 {current}원 / 자체계산 {calculated}원"
+        else:
+            current = calculated
+            amount_status = calculated_amount_status
+            source_kind = "calculated"
+            observed_status = None
+            source_difference = None
         key = f"{item['category_group']}::{item['coverage_name']}"
         evidence = evidence_by_key.get(key, [])
-        amount_failed = bool(evidence and matched_policy_ids and current == 0)
-        status, gap, coverage_ratio, gap_ratio = _compute_status(
-            int(item["recommended_amount"]), current, bool(evidence or matched_policy_ids), amount_failed
+        amount_failed = amount_status in {"unknown", "partial_unknown", "unknown_dash", "unknown_blank", "parse_failed"}
+        calculated_status, gap, coverage_ratio, gap_ratio = _compute_status(
+            int(item["recommended_amount"]), current, amount_status != "no_evidence" or bool(evidence or matched_policy_ids), amount_failed
         )
+        status = observed_status if observed_status in {"충분", "부족", "미가입", "확인필요"} else calculated_status
         items.append({
             **item,
             "status": status,
             "current_amount": current,
+            "amount_status": amount_status,
+            "source_kind": source_kind,
+            "observed_coverage_name": observed.get("source_coverage_name") if observed else None,
+            "observed_current_amount": observed.get("amount") if observed else None,
+            "observed_amount_text": observed.get("amount_text") if observed else None,
+            "observed_amount_status": observed.get("amount_status") if observed else None,
+            "observed_status": observed_status,
+            "observed_source_page": observed.get("source_page") if observed else None,
+            "calculated_current_amount": calculated,
+            "calculated_amount_status": calculated_amount_status,
+            "source_difference": source_difference,
             "gap_amount": gap,
             "coverage_ratio": round(coverage_ratio, 4),
             "gap_ratio": round(gap_ratio, 4),
@@ -727,6 +882,7 @@ def _build_items(
             "evidence_pages": _pages(evidence),
             "evidence": evidence,
             "matched_policy_ids": matched_policy_ids,
+            "matched_policy_coverage_ids": matched_policy_coverage_ids,
         })
         if idx == 1 or idx == total or idx % 10 == 0:
             _emit_progress(
@@ -769,7 +925,11 @@ def _build_items(
         ]
         source = "template"
     for row, explanation in zip(items, explanations):
-        row["customer_summary"] = explanation
+        row["customer_summary"] = (
+            "원문 가입금액이 미기재되어 확인이 필요합니다."
+            if row.get("amount_status") in {"unknown", "partial_unknown"}
+            else explanation
+        )
     _emit_progress(
         customer_id,
         progress_callback,
@@ -831,18 +991,25 @@ def _persist_run(
             """
             INSERT INTO coverage_analysis
             (id, run_id, customer_id, catalog_id, category_id, category_group, coverage_name, status,
-             recommended_amount, current_amount, gap_amount, coverage_ratio, gap_ratio,
-             priority_score, priority, customer_display, customer_summary, internal_memo,
-             evidence_confidence, evidence_pages_json, evidence_json, matched_policy_ids_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             recommended_amount, current_amount, amount_status, source_kind, observed_coverage_name,
+             observed_current_amount, observed_amount_text, observed_amount_status, observed_status,
+             observed_source_page, calculated_current_amount, calculated_amount_status, source_difference,
+             gap_amount, coverage_ratio, gap_ratio, priority_score, priority, customer_display,
+             customer_summary, internal_memo, evidence_confidence, evidence_pages_json, evidence_json,
+             matched_policy_ids_json, matched_policy_coverage_ids_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 coverage_id, run_id, customer_id, row["id"], row["category_id"], row["category_group"],
-                row["coverage_name"], row["status"], row["recommended_amount"], row["current_amount"],
-                row["gap_amount"], row["coverage_ratio"], row["gap_ratio"], row["priority_score"],
+                row["coverage_name"], row["status"], row["recommended_amount"], row["current_amount"], row["amount_status"],
+                row["source_kind"], row.get("observed_coverage_name"), row.get("observed_current_amount"),
+                row.get("observed_amount_text"), row.get("observed_amount_status"), row.get("observed_status"),
+                row.get("observed_source_page"), row["calculated_current_amount"], row["calculated_amount_status"],
+                row.get("source_difference"), row["gap_amount"], row["coverage_ratio"], row["gap_ratio"], row["priority_score"],
                 row["priority"], row["customer_display"], row["customer_summary"], row["internal_memo"],
                 row["evidence_confidence"], json.dumps(row["evidence_pages"], ensure_ascii=False),
                 json.dumps(row["evidence"], ensure_ascii=False), json.dumps(row["matched_policy_ids"], ensure_ascii=False),
+                json.dumps(row["matched_policy_coverage_ids"], ensure_ascii=False),
             ),
         )
     conn.commit()
@@ -860,7 +1027,9 @@ def analyze(
     catalog_path: str | None = None,
     profile: dict[str, Any] | None = None,
     mode: str = "full",
+    observed_coverages: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
+    schema_ready: bool = False,
 ) -> Optional[dict[str, Any]]:
     total_started = time.perf_counter()
     _emit_progress(customer_id, progress_callback, "analysis_start", "보장분석 시작", source="coverage.analyze")
@@ -868,14 +1037,19 @@ def analyze(
         _emit_progress(customer_id, progress_callback, "analysis_failed", "고객을 찾을 수 없습니다.", status="failed")
         return None
     step_started = time.perf_counter()
-    ensure_schema(conn)
+    # link-refresh의 compare-and-swap 경로는 BEGIN IMMEDIATE 잠금을 잡은 뒤
+    # 들어온다. executescript를 다시 실행하면 SQLite가 잠금을 커밋하므로 생략한다.
+    if not schema_ready:
+        ensure_schema(conn)
     _emit_progress(customer_id, progress_callback, "schema_ready", "보장분석 DB 스키마 확인 완료", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000))
     step_started = time.perf_counter()
     policies = repo.list_policies(conn, customer_id)
     _emit_progress(customer_id, progress_callback, "policies_loaded", f"계약 목록 로드 완료 ({len(policies)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_count=len(policies))
     step_started = time.perf_counter()
     coverages = _list_customer_policy_coverages(conn, customer_id)
-    _emit_progress(customer_id, progress_callback, "policy_coverages_loaded", f"담보 원장 로드 완료 ({len(coverages)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_coverage_count=len(coverages))
+    # 원본 요약표와 계약 원장은 서로 다른 계층이다. 요약 금액을 원장 목록에
+    # 섞어 키워드 합산하지 않고, _build_items에서 원본/자체계산을 별도 보존한다.
+    _emit_progress(customer_id, progress_callback, "policy_coverages_loaded", f"담보 원장/원본요약 로드 완료 ({len(coverages)}/{len(observed_coverages or [])}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_coverage_count=len(coverages), observed_summary_count=len(observed_coverages or []))
     step_started = time.perf_counter()
     doc_ids = repo.customer_document_ids(conn, customer_id)
     _emit_progress(customer_id, progress_callback, "documents_loaded", f"RAG 문서 목록 로드 완료 ({len(doc_ids)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), doc_count=len(doc_ids), doc_ids=doc_ids)
@@ -885,6 +1059,7 @@ def analyze(
         doc_ids,
         profile,
         coverages,
+        observed_coverages,
         customer_id=customer_id,
         progress_callback=progress_callback,
     )
@@ -943,15 +1118,17 @@ def _json_list(value: str | None) -> list[Any]:
 
 def _row_to_item(row: sqlite3.Row, *, audience: str) -> dict[str, Any]:
     item = dict(row)
+    item["amount_source_kind"] = item.pop("source_kind", "calculated")
     item["customer_display"] = bool(item.get("customer_display"))
     item["manual_override"] = bool(item.get("manual_override"))
     item["evidence_pages"] = _json_list(item.pop("evidence_pages_json", "[]"))
     evidence = _json_list(item.pop("evidence_json", "[]"))
     matched_policy_ids = _json_list(item.pop("matched_policy_ids_json", "[]"))
-    # 상품 상세 트리를 구성하는 데 필요한 연결 ID는 고객 화면에도 포함한다.
-    # 내부 근거(evidence)와 달리 로컬 policy ID 자체는 고객 데이터 API에서 이미
-    # 노출되는 식별자이며, 이를 제거하면 가입금액은 보이지만 상세 담보를 찾을 수 없다.
+    matched_policy_coverage_ids = _json_list(item.pop("matched_policy_coverage_ids_json", "[]"))
+    # 분석 revision에 저장된 연결만 반환한다. GET에서 현재 원장으로 재분류해
+    # 과거 revision을 조용히 바꾸지 않는다.
     item["matched_policy_ids"] = matched_policy_ids
+    item["matched_policy_coverage_ids"] = matched_policy_coverage_ids
     if audience == "internal":
         item["evidence"] = evidence
     else:
@@ -989,7 +1166,7 @@ def _sync_run_matched_policy_ids(conn: sqlite3.Connection, customer_id: str, run
                 "keywords": [row["coverage_name"]],
                 "exclude_keywords": [],
             }
-        _, matched_policy_ids = _extract_current_amount_from_coverages(item, coverages)
+        _, matched_policy_ids, _, _matched_coverage_ids = _extract_current_amount_from_coverages(item, coverages)
         serialized = json.dumps(matched_policy_ids, ensure_ascii=False)
         if serialized == (row["matched_policy_ids_json"] or "[]"):
             continue
@@ -1015,8 +1192,11 @@ def get_analysis_response(
     priority: str | None = None,
     run_id: str | None = None,
 ) -> Optional[dict[str, Any]]:
-    ensure_schema(conn)
     if repo.get_customer(conn, customer_id) is None:
+        return None
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_analysis_runs'"
+    ).fetchone() is None:
         return None
     if run_id:
         run = conn.execute(
@@ -1027,37 +1207,35 @@ def get_analysis_response(
             """
             SELECT * FROM coverage_analysis_runs
             WHERE customer_id = ? AND status = 'completed'
-            ORDER BY completed_at DESC, created_at DESC LIMIT 1
+            ORDER BY completed_at DESC, created_at DESC, rowid DESC LIMIT 1
             """,
             (customer_id,),
         ).fetchone()
     if run is None:
         return None
-    _sync_run_matched_policy_ids(conn, customer_id, run["id"])
     rows = conn.execute(
         "SELECT * FROM coverage_analysis WHERE run_id = ? AND customer_id = ? ORDER BY priority_score DESC, category_group, coverage_name",
         (run["id"], customer_id),
     ).fetchall()
     all_rows = [_row_to_item(r, audience="internal") for r in rows]
     items = [_row_to_item(r, audience=audience) for r in rows]
-    # matched_policy_ids는 계약(policy) ID다. 프론트엔드가 3단에서 실제 담보
-    # (policy_coverages) 행을 정확히 찾을 수 있도록 담보 행 ID도 별도로 제공한다.
     coverages = _list_customer_policy_coverages(conn, customer_id)
-    # matched_policy_ids_json에서 policy_id를 읽어 해당하는 policy_coverages.id를 찾는다
-    coverage_ids_by_row_id = {}
-    for row in rows:
-        row_id = row["id"]
-        matched_policy_ids = row.get("matched_policy_ids_json") or "[]"
-        import json
-        policy_ids = json.loads(matched_policy_ids) if isinstance(matched_policy_ids, str) else matched_policy_ids
-        coverage_ids_by_row_id[row_id] = [
-            str(cov["id"])
-            for cov in coverages
-            if cov.get("policy_id") in policy_ids
-        ]
-    
-    for item in [*all_rows, *items]:
-        item["matched_policy_coverage_ids"] = coverage_ids_by_row_id.get(item["id"], [])
+    linked_coverage_ids = {
+        str(coverage_id)
+        for item in all_rows
+        for coverage_id in item.get("matched_policy_coverage_ids", [])
+    }
+    unlinked_coverages = [row for row in coverages if str(row.get("id")) not in linked_coverage_ids]
+    review_required_coverages = [
+        row for row in coverages
+        if (
+            str(row.get("source_link_status") or "") == "needs_review"
+            or str(row.get("review_status") or "") == "needs_review"
+            or str(row.get("standard_name_verification") or "") == "needs_review"
+            or str(row.get("amount_status") or "") in {"unknown_dash", "unknown_blank", "parse_failed", "partial_unknown"}
+        )
+    ]
+    source_occurrences = _list_source_occurrences(conn, customer_id)
     if audience == "customer":
         items = [i for i in items if i["customer_display"]]
     if not include_sufficient:
@@ -1072,6 +1250,16 @@ def get_analysis_response(
         "catalog_version": run["catalog_version"],
         "summary": _response_summary(run, all_rows, items, audience),
         "categories": _group_response_items(items),
+        "unclassified_policy_coverages": unlinked_coverages,
+        "unlinked_policy_coverages": unlinked_coverages,
+        "review_required_policy_coverages": review_required_coverages,
+        "source_link_occurrences": source_occurrences,
+        "unresolved_source_link_occurrences": [
+            row for row in source_occurrences if row.get("resolution_status") == "unresolved"
+        ],
+        "held_source_link_occurrences": [
+            row for row in source_occurrences if row.get("resolution_status") == "held"
+        ],
     }
 
 
@@ -1157,16 +1345,76 @@ def _group_response_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_observed_summary(value: Any) -> list[dict[str, Any]]:
+    """검수된 PDF 표준항목 집계를 일회성 분석 입력으로 정규화한다."""
+    if not isinstance(value, list):
+        return []
+    from .policy_coverages import infer_amount_status, parse_amount
+
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, int | None, int | None, str]] = set()
+    for index, raw in enumerate(value[:500]):
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("standard_name") or raw.get("coverage_name") or raw.get("name") or "").strip()
+        source_name = str(raw.get("source_coverage_name") or raw.get("name") or name).strip()
+        if not name:
+            continue
+        amount_raw = raw.get("amount", raw.get("current_amount", raw.get("current")))
+        amount_text = str(raw.get("amount_text") if raw.get("amount_text") is not None else amount_raw if amount_raw is not None else "")
+        if isinstance(amount_raw, (int, float)) and not isinstance(amount_raw, bool):
+            amount = max(0, int(amount_raw))
+        else:
+            amount = parse_amount(str(amount_raw or ""))
+        amount_status = infer_amount_status(amount, amount_text, raw.get("amount_status"))
+        if amount_status in {"unknown_dash", "unknown_blank", "parse_failed"}:
+            amount = None
+        page_raw = raw.get("source_page")
+        try:
+            page = int(page_raw) if page_raw is not None else None
+        except (TypeError, ValueError):
+            page = None
+        semantic_key = (_compact(name), page, amount, amount_status)
+        if semantic_key in seen:
+            continue
+        seen.add(semantic_key)
+        out.append({
+            "id": f"observed-summary:{index}:{page or 0}:{_compact(name)}",
+            "policy_id": None,
+            "insurer": "통합보장분석",
+            "standard_name": name,
+            "source_coverage_name": source_name,
+            "source_status": str(raw.get("source_status") or raw.get("status") or "").strip() or None,
+            "recommended_amount": raw.get("recommended_amount"),
+            "recommended_amount_text": raw.get("recommended_amount_text"),
+            "rider_name": source_name,
+            "amount": amount,
+            "amount_text": amount_text,
+            "amount_status": amount_status,
+            "raw_text": str(raw.get("raw_text") or ""),
+            "source_page": page,
+        })
+    return out
+
+
 def recalculate(conn: sqlite3.Connection, customer_id: str, body: dict[str, Any] | None = None) -> Optional[dict[str, Any]]:
     body = body or {}
+    observed_coverages = _normalize_observed_summary(body.get("observed_summary"))
+    profile = dict(body.get("profile") or {})
+    if body.get("source"):
+        profile["source"] = str(body["source"])
+    if body.get("source_hash"):
+        profile["source_hash"] = str(body["source_hash"])
     result = analyze(
         conn,
         customer_id,
         audience=body.get("audience") or "internal",
         persist=bool(body.get("persist", True)),
         force_recalculate=bool(body.get("force", True)),
-        profile=body.get("profile") or {},
+        profile=profile,
         mode=body.get("mode") or "full",
+        observed_coverages=observed_coverages,
+        schema_ready=bool(body.get("_schema_ready", False)),
     )
     if result is None:
         return None
@@ -1178,6 +1426,7 @@ def recalculate(conn: sqlite3.Connection, customer_id: str, body: dict[str, Any]
         "started_at": _now(),
         "completed_at": _now(),
         "items_count": len(result["coverage_items"]),
+        "observed_summary_count": len(observed_coverages),
         "links": {"result": f"/customers/{customer_id}/coverage-analysis?run_id={result['run_id']}"},
     }
 

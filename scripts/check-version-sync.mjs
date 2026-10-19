@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 4개 파일의 앱 버전이 일치하는지 검사. 불일치·파싱실패·형식이상이면 exit 1. CI(ci.yml)에서 실행.
+// 5개 파일의 앱 버전이 일치하는지 검사. 불일치·파싱실패·형식이상이면 exit 1. CI(ci.yml)에서 실행.
 // 정본: desktop/package.json. 나머지는 scripts/sync-version.mjs 로 맞춘다.
 
 import { readFileSync } from "node:fs";
@@ -17,12 +17,16 @@ function cargoTomlVersion(text) {
 }
 
 function cargoLockVersion(text) {
-  const m = [...text.matchAll(/name = "desktop-scaffold"\nversion = "([^"]*)"/g)];
+  const m = [...text.matchAll(/name = "desktop-scaffold"\r?\nversion = "([^"]*)"/g)];
   return m.length === 1 ? m[0][1] : undefined;
 }
 
 const found = {
   "desktop/package.json": JSON.parse(read("desktop/package.json")).version,
+  "desktop/package-lock.json": (() => {
+    const lock = JSON.parse(read("desktop/package-lock.json"));
+    return lock.version === lock.packages?.[""]?.version ? lock.version : undefined;
+  })(),
   "desktop/src-tauri/tauri.conf.json": JSON.parse(
     read("desktop/src-tauri/tauri.conf.json"),
   ).version,
@@ -49,4 +53,4 @@ if (mismatched.length) {
 }
 
 if (fail) process.exit(1);
-console.log(`\n✓ 4파일 모두 ${canonical}`);
+console.log(`\n✓ 5파일 모두 ${canonical}`);

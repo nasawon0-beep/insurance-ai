@@ -131,15 +131,16 @@ test("license diagnostics distinguish online refresh failures and offline grace 
   assert.doesNotMatch(auth, /console\.warn\([\s\S]{0,240}getToken\(\)/);
 });
 
-test("offline license banner does not block local-engine analysis screens", () => {
+test("offline license no longer leaves a persistent banner or blocks analysis screens", () => {
   const app = read("desktop/src/App.tsx");
   const customers = read("desktop/src/Customers.tsx");
 
-  assert.match(app, /오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다/);
-  assert.match(app, /view === "home" && <HomeScreen/);
-  assert.match(app, /view === "newcustomer" && \([\s\S]*<CustomersScreen/);
+  assert.doesNotMatch(app, /오프라인 모드 — 서버에 연결되면 라이선스가 갱신됩니다/);
+  assert.match(app, /display: view === "home" \? "block" : "none"[\s\S]*<HomeScreen/);
+  assert.match(app, /display: view === "coverage" \? "block" : "none"[\s\S]*<CoverageAnalysisScreen/);
   assert.doesNotMatch(app, /offline[\s\S]{0,120}disabled=/);
   assert.doesNotMatch(app, /licenseErr[\s\S]{0,120}disabled=/);
+  assert.match(app, /setLic\(r \? \{ \.\.\.r\.state, offline: r\.offline \} : null\)/);
 
   assert.match(app, /api\("\/capture", \{ method: "POST", body: fd \}\)/);
   assert.match(customers, /api\("\/customers\/intake\/bulk", \{/);
