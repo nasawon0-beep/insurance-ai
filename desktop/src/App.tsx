@@ -1411,7 +1411,7 @@ function HomeScreen({
   };
 
   return (
-    <div style={{ maxWidth: 620, margin: "24px auto", padding: "0 16px" }}>
+    <div className="home-screen">
       <h2 style={{ marginTop: 0, fontSize: "1.5rem" }}>홈</h2>
       <EngineStrip />
       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.875rem", margin: "8px 0" }} title="계약 수·만기 임박을 내가 직접 가입시킨 계약으로만">
@@ -1437,30 +1437,30 @@ function HomeScreen({
       ) : (
         <>
           {/* 2x2 통계 카드 그리드 - 반응형 */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" style={{ marginBottom: 24 }}>
+          <div className="home-stats" style={{ marginBottom: 24 }}>
             <StatCard
               title="고객 수"
               value={data.counts.customers}
               subtitle="전체 고객"
-              icon="👥"
+
             />
             <StatCard
               title="보험계약"
               value={data.counts.active_policies}
               subtitle={`전체 ${data.counts.policies}건`}
-              icon="📋"
+
             />
             <StatCard
               title="상담 건수"
               value={data.counts.consultations}
               subtitle="누적 상담"
-              icon="💬"
+
             />
             <StatCard
               title="이번 달 신규"
               value={data.follow_ups.length + data.recent_consultations.slice(0, 5).length}
               subtitle="후속 연락 · 최근 상담"
-              icon="📈"
+
             />
           </div>
 
@@ -2280,6 +2280,8 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
   return (
     <button
       onClick={() => setView("assistant")}
+      className="app-nav-button"
+      aria-current={view === "assistant" ? "page" : undefined}
       style={{
         padding: "8px 16px",
         border: "1px solid transparent",
@@ -2812,6 +2814,8 @@ function App() {
       <button
         key={key}
         onClick={() => guardedSetView(key)}
+        className="app-nav-button"
+        aria-current={view === key ? "page" : undefined}
         style={{
           padding: "8px 16px",
           border: "1px solid transparent",
@@ -2831,7 +2835,8 @@ function App() {
 
   return (
     <AssistantProvider>
-      <div>
+      <div className="app-shell">
+        <a className="skip-link" href="#app-content">본문으로 이동</a>
         {showUpdateDialog && updateAvailable && (
           <div className="update-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
             <div className="update-dialog">
@@ -2875,21 +2880,27 @@ function App() {
             {engineNotice.status === "error" && <button onClick={() => void relaunchApp()} style={{ fontSize: 12 }}>앱 재시작</button>}
           </div>
         )}
-        <nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--color-border-default)", padding: "8px 12px 0", alignItems: "center", position: "sticky", top: 0, background: "var(--color-bg-surface)", zIndex: 20 }}>
+        <aside className="app-sidebar">
+          <div className="app-brand">Insurance <span>AI</span></div>
+        <nav className="app-navigation" aria-label="주요 메뉴">
           {tab("home", "홈")}
           {tab("customers", "고객")}
           {tab("data", "자료분석")}
           {tab("coverage", "보장분석")}
           {tab("assistant", "AI 문의")}
           {tab("diagnostics", "설정·진단")}
-          <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 8 }}>
+        </nav>
+          <div className="app-account">
+            <span className="app-account-email">{getUser()?.email}</span>
+            <div className="app-account-actions">
             <ThemeToggle />
-            {getUser()?.email}{" "}
             <button onClick={doLogout} style={{ fontSize: 12 }}>
               로그아웃
             </button>
-          </span>
-        </nav>
+            </div>
+          </div>
+        </aside>
+        <main id="app-content" className="app-content" tabIndex={-1}>
         <AssistantBackgroundBanner />
         {backgroundJobs.length > 0 && (
           <div style={{ background: "var(--color-bg-surface)", color: "var(--color-info)", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid var(--color-border-default)" }} role="status" aria-live="polite">
@@ -2964,6 +2975,7 @@ function App() {
             }}
           />
         </div>
+        </main>
       </div>
     </AssistantProvider>
   );

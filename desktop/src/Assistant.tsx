@@ -28,7 +28,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
   };
 
   return (
-    <div style={{ maxWidth: 800, margin: "0 auto", padding: 20, display: "flex", flexDirection: "column", height: "calc(100vh - 110px)" }}>
+    <div className="assistant-screen">
       <div style={{ display: "flex", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #e5e5e5" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600, color: "var(--color-text-primary)" }}>AI 문의</h2>
@@ -224,6 +224,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
           placeholder="예: 이영희 보험료 얼마 내? (Enter 전송, Shift+Enter 줄바꿈)"
           rows={2}
           className="assistant-input"
+          aria-label="AI 문의 내용"
           style={{ 
             flex: 1, 
             padding: 10, 
@@ -232,7 +233,7 @@ export default function AssistantScreen({ onOpenCustomer }: { onOpenCustomer: (i
             fontFamily: "inherit", 
             fontSize: "1rem",
             border: "1px solid var(--color-border-default)",
-            outline: "none",
+
             background: "transparent"
           }}
         />

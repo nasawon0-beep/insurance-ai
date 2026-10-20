@@ -1,7 +1,14 @@
 // control-server 연동: 로그인 / 라이선스 / 기기 등록 + 오프라인 유예.
 // 아키텍처 3번: 시계 되돌리기 방지용 단조 타임스탬프를 로컬에 별도 저장.
 
-import { CONTROL_URL } from "./config";
+import {
+  CONTROL_URL,
+  IS_NATIVE_RUNTIME,
+  QA_INSTANCE_ID,
+  QA_MODE,
+  QA_PROFILE_FINGERPRINT,
+} from "./config";
+import { invoke } from "@tauri-apps/api/core";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
@@ -10,6 +17,12 @@ import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature
 export { CONTROL_URL };
 
 const GRACE_DAYS = 5; // 오프라인 유예 (문서: 3~7일)
+
+type NativeControlResponse = {
+  status: number;
+  body: number[];
+  headers: [string, string][];
+};
 
 type User = { id: string; email: string };
 type LicenseState = {
@@ -56,16 +69,37 @@ export function deviceId(): string {
   return d;
 }
 
+async function nativeControlFetch(path: string, init: RequestInit): Promise<Response> {
+  if (init.body != null && typeof init.body !== "string") {
+    throw new Error("control-server native request는 문자열 본문만 지원합니다");
+  }
+  const result = await invoke<NativeControlResponse>("control_server_request", {
+    request: {
+      method: init.method || "GET",
+      path,
+      headers: Array.from(new Headers(init.headers).entries()),
+      body: typeof init.body === "string" ? { type: "text", text: init.body } : null,
+    },
+  });
+  return new Response(new Uint8Array(result.body), {
+    status: result.status,
+    headers: result.headers,
+  });
+}
+
 async function call(path: string, init?: RequestInit) {
   let res: Response;
+  const requestInit: RequestInit = {
+    headers: {
+      "Content-Type": "application/json",
+      ...(getToken() ? { Authorization: "Bearer " + getToken() } : {}),
+    },
+    ...init,
+  };
   try {
-    res = await fetch(`${CONTROL_URL}${path}`, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
-      },
-      ...init,
-    });
+    res = QA_MODE && IS_NATIVE_RUNTIME
+      ? await nativeControlFetch(path, requestInit)
+      : await fetch(`${CONTROL_URL}${path}`, requestInit);
   } catch (e) {
     if (isFetchNetworkError(e)) {
       console.warn("control-server network request failed", {
@@ -154,8 +188,18 @@ async function waitForControlServer(maxMs = 5000, intervalMs = 500): Promise<boo
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${CONTROL_URL}/health`, { method: "GET" });
-      if (res.ok) return true;
+      const res = QA_MODE && IS_NATIVE_RUNTIME
+        ? await nativeControlFetch("/health", { method: "GET" })
+        : await fetch(`${CONTROL_URL}/health`, { method: "GET" });
+      if (res.ok) {
+        if (!QA_MODE) return true;
+        const body = await res.json().catch(() => null);
+        if (
+          body?.control_server === "ok" &&
+          body?.instance_id === QA_INSTANCE_ID &&
+          body?.profile_fingerprint === QA_PROFILE_FINGERPRINT
+        ) return true;
+      }
     } catch {
       // 아직 안 뜸
     }

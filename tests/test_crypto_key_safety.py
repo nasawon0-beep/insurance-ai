@@ -1,7 +1,48 @@
 """암호화 키 소실 시 기존 고객 DB를 새 키로 덮지 않는 회귀 테스트."""
 import sqlite3
+import sys
+import importlib.util
+import ipaddress
+from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
+
+def test_qa_keyfile_only_never_reads_or_writes_os_keyring(monkeypatch):
+    from database import crypto
+
+    class ForbiddenKeyring:
+        def get_password(self, *_args):
+            pytest.fail("QA keyfile-only mode must not read the production keyring")
+
+        def set_password(self, *_args):
+            pytest.fail("QA keyfile-only mode must not write the production keyring")
+
+    monkeypatch.setenv("CUSTOMER_DB_KEYFILE_ONLY", "1")
+    monkeypatch.setitem(sys.modules, "keyring", ForbiddenKeyring())
+    assert crypto._keyring_get() is None
+    assert crypto._keyring_set(b"x" * 32) is False
+
+
+def test_qa_profile_generator_creates_matching_pinned_localhost_tls_identity(tmp_path):
+    script = Path(__file__).parents[1] / "scripts" / "create_qa_profile.py"
+    spec = importlib.util.spec_from_file_location("qa_profile_generator", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    config = tmp_path / "config"
+    module.create_pinned_tls_identity(config, "12345678-1234-1234-1234-123456789abc")
+    certificate = x509.load_pem_x509_certificate((config / module.TLS_CERT_NAME).read_bytes())
+    private_key = serialization.load_pem_private_key(
+        (config / module.TLS_KEY_NAME).read_bytes(), password=None
+    )
+    san = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert san.get_values_for_type(x509.IPAddress) == [ipaddress.ip_address("127.0.0.1")]
+    assert certificate.public_key().public_numbers() == private_key.public_key().public_numbers()
+    assert certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is True
 
 
 def test_encrypted_db_without_key_refuses_new_key(tmp_path, monkeypatch):

@@ -76,7 +76,7 @@ test("local-engine requests fall back to native bridge without breaking uploads"
   assert.match(rust, /reqwest::multipart::Form/);
   assert.match(rust, /\.bytes\(\)[\s\S]*bytes\.to_vec\(\)/);
   assert.match(rust, /tauri::generate_handler!\[[\s\S]*local_engine_request/);
-  assert.match(cargo, /reqwest = \{ version = "0\.11", features = \["stream", "multipart"\] \}/);
+  assert.match(cargo, /reqwest = \{ version = "0\.11", features = \["stream", "multipart", "blocking"\] \}/);
 });
 
 test("local-engine startup race waits for health and retries safe initial GET requests only", () => {

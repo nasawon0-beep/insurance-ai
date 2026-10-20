@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { groupByCategory } from "./coverageCategories";
 import { normalizeCoverageRows, parseCoverageJson, type CoverageRow } from "./coverageRows";
 
@@ -97,6 +97,33 @@ export function PolicyList({
   const [expandedCoverageIndex, setExpandedCoverageIndex] = useState<number | null>(null);
   const [coverageViewMode, setCoverageViewMode] = useState<"cards" | "modal">("cards");
   const [modalCoverageIndex, setModalCoverageIndex] = useState<number | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (modalCoverageIndex == null) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = modalRef.current;
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]'));
+    focusable()[0]?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setModalCoverageIndex(null);
+      }
+      if (event.key === "Tab") {
+        const items = focusable();
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); first?.focus();
+        }
+      }
+    };
+    dialog.addEventListener("keydown", onKey);
+    return () => { dialog.removeEventListener("keydown", onKey); previous?.focus(); };
+  }, [modalCoverageIndex]);
   if (!policies.length) return null;
   const label = docType === "보장분석" ? "보유 보험계약" : "보험계약";
   const modalPolicy = modalCoverageIndex == null ? null : policies[modalCoverageIndex];
@@ -121,6 +148,7 @@ export function PolicyList({
       {modalPolicy && modalCoverages.length > 0 && (
         <div
           role="dialog"
+          ref={modalRef}
           aria-modal="true"
           aria-label="계약별 담보 목록"
           style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}

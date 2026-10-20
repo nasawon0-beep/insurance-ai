@@ -3,7 +3,10 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { track } from "./usage";
 import { ThemeProvider } from "./ThemeContext";
+import { initializeRuntimeProfile } from "./config";
 import "./styles/index.css";
+import "./styles/navy.css";
+import "./styles/legacy-surfaces.css";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -38,12 +41,26 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ThemeProvider>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </ThemeProvider>
-  </React.StrictMode>,
-);
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+
+void initializeRuntimeProfile()
+  .then(() => {
+    root.render(
+      <React.StrictMode>
+        <ThemeProvider>
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
+        </ThemeProvider>
+      </React.StrictMode>,
+    );
+  })
+  .catch((error) => {
+    console.error("runtime profile 검증 실패:", error);
+    root.render(
+      <div style={{ maxWidth: 560, margin: "80px auto", textAlign: "center", color: "#444" }}>
+        <h3>안전한 실행 환경을 확인할 수 없습니다</h3>
+        <p style={{ fontSize: 13, color: "#888" }}>운영 데이터로 전환하지 않고 앱 시작을 중단했습니다.</p>
+      </div>,
+    );
+  });

@@ -1,3 +1,4 @@
+use crate::RuntimeProfile;
 use futures_util::StreamExt;
 use regex::Regex;
 use serde::Serialize;
@@ -100,7 +101,12 @@ impl OllamaInstallError {
 }
 
 #[tauri::command]
-pub async fn check_ollama_installed() -> Result<bool, String> {
+pub async fn check_ollama_installed(
+    profile: tauri::State<'_, RuntimeProfile>,
+) -> Result<bool, String> {
+    if profile.qa {
+        return Ok(false);
+    }
     #[cfg(windows)]
     {
         return Ok(resolve_ollama_executable().is_some());
@@ -126,7 +132,12 @@ pub async fn check_ollama_installed() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn check_models_installed() -> Result<Vec<String>, String> {
+pub async fn check_models_installed(
+    profile: tauri::State<'_, RuntimeProfile>,
+) -> Result<Vec<String>, String> {
+    if profile.qa {
+        return Ok(Vec::new());
+    }
     let output = ensure_ollama_ready().await?;
 
     if !output.status.success() {
@@ -139,7 +150,14 @@ pub async fn check_models_installed() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub async fn download_model(model_name: String, window: Window) -> Result<(), String> {
+pub async fn download_model(
+    model_name: String,
+    window: Window,
+    profile: tauri::State<'_, RuntimeProfile>,
+) -> Result<(), String> {
+    if profile.qa {
+        return Err("QA 모드에서는 운영 Ollama 모델을 변경할 수 없습니다".to_owned());
+    }
     ensure_ollama_ready().await?;
 
     emit_model_progress(
@@ -219,7 +237,13 @@ pub async fn download_model(model_name: String, window: Window) -> Result<(), St
 }
 
 #[tauri::command]
-pub async fn install_ollama(window: Window) -> Result<(), String> {
+pub async fn install_ollama(
+    window: Window,
+    profile: tauri::State<'_, RuntimeProfile>,
+) -> Result<(), String> {
+    if profile.qa {
+        return Err("QA 모드에서는 Ollama 자동 설치가 비활성화됩니다".to_owned());
+    }
     let install_window = window.clone();
     let install_result = tokio::spawn(async move { install_ollama_inner(&install_window).await })
         .await
@@ -603,9 +627,10 @@ fn resolve_ollama_executable() -> Option<PathBuf> {
     {
         let localappdata = std::env::var("LOCALAPPDATA").ok();
         let userprofile = std::env::var("USERPROFILE").ok();
-        if let Some(path) = windows_ollama_path_candidates(localappdata.as_deref(), userprofile.as_deref())
-            .into_iter()
-            .find(|path| path.exists())
+        if let Some(path) =
+            windows_ollama_path_candidates(localappdata.as_deref(), userprofile.as_deref())
+                .into_iter()
+                .find(|path| path.exists())
         {
             return Some(path);
         }
@@ -650,7 +675,10 @@ fn map_ollama_error_message(stderr: &str, default_message: &str) -> String {
 }
 
 #[cfg(any(windows, test))]
-fn windows_ollama_path_candidates(localappdata: Option<&str>, userprofile: Option<&str>) -> Vec<PathBuf> {
+fn windows_ollama_path_candidates(
+    localappdata: Option<&str>,
+    userprofile: Option<&str>,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(localappdata) = localappdata.filter(|value| !value.trim().is_empty()) {
         push_unique_path(
@@ -766,10 +794,8 @@ bge-m3:latest    def456      1.2 GB  1 day ago\n";
 
     #[test]
     fn windows_ollama_path_candidates_include_real_installer_locations_before_legacy_path() {
-        let paths = windows_ollama_path_candidates(
-            Some("D:\\OllamaLocal"),
-            Some("C:\\Users\\tester"),
-        );
+        let paths =
+            windows_ollama_path_candidates(Some("D:\\OllamaLocal"), Some("C:\\Users\\tester"));
 
         assert_eq!(
             paths,

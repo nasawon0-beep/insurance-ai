@@ -50,6 +50,51 @@ def _loopback_client(app, server=("127.0.0.1", 8790)):
     return TestClient(loopback_app)
 
 
+def test_health_reports_qa_instance_identity(client, monkeypatch):
+    instance_id = "12345678-1234-1234-1234-123456789abc"
+    fingerprint = "b" * 64
+    monkeypatch.setenv("INSURANCE_AI_INSTANCE_ID", instance_id)
+    monkeypatch.setenv("INSURANCE_AI_PROFILE_FINGERPRINT", fingerprint)
+    assert client.get("/health").json() == {
+        "control_server": "ok",
+        "instance_id": instance_id,
+        "profile_fingerprint": fingerprint,
+    }
+
+
+def test_qa_request_binding_rejects_port_swap_before_auth_mutation(client, tmp_path, monkeypatch):
+    import main
+
+    db_path = tmp_path / "qa-control.sqlite3"
+    instance_id = "12345678-1234-1234-1234-123456789abc"
+    fingerprint = "b" * 64
+    monkeypatch.setenv("CONTROL_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSURANCE_AI_QA_MODE", "1")
+    monkeypatch.setenv("INSURANCE_AI_INSTANCE_ID", instance_id)
+    monkeypatch.setenv("INSURANCE_AI_PROFILE_FINGERPRINT", fingerprint)
+    qa_client = client
+    headers = {
+        "X-Insurance-AI-QA-Instance": instance_id,
+        "X-Insurance-AI-QA-Binding": "c" * 64,
+    }
+    rejected = qa_client.post(
+        "/auth/register",
+        json={"email": "synthetic@example.test", "password": "secret1"},
+        headers=headers,
+    )
+    assert rejected.status_code == 403
+    assert not db_path.exists()
+
+    headers["X-Insurance-AI-QA-Binding"] = fingerprint
+    accepted = qa_client.post(
+        "/auth/register",
+        json={"email": "synthetic@example.test", "password": "secret1"},
+        headers=headers,
+    )
+    assert accepted.status_code == 200
+    assert db_path.exists()
+
+
 def test_register_login_me(client):
     tok, uid = _auth(client)
     assert client.post("/auth/register", json={"email": "a@b.com", "password": "secret1"}).status_code == 409

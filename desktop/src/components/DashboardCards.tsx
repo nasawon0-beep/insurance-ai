@@ -13,8 +13,8 @@ interface StatCardProps {
 
 export function StatCard({ title, value, subtitle, icon, trend }: StatCardProps) {
   return (
-    <div className="card card-hover animate-fade-in">
-      <div className="card-body" style={{ textAlign: "center", padding: "var(--space-6)" }}>
+    <div className="card stat-card">
+      <div className="card-body" style={{ textAlign: "left", padding: "var(--space-6)" }}>
         {icon && (
           <div style={{ fontSize: "2rem", marginBottom: "8px" }}>
             {icon}

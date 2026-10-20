@@ -1,4 +1,10 @@
-import { LOCAL_ENGINE_URL } from "./config";
+import {
+  IS_NATIVE_RUNTIME,
+  LOCAL_ENGINE_URL,
+  QA_INSTANCE_ID,
+  QA_MODE,
+  QA_PROFILE_FINGERPRINT,
+} from "./config";
 import { invoke } from "@tauri-apps/api/core";
 
 export { LOCAL_ENGINE_URL };
@@ -70,6 +76,18 @@ function canRetryEngineStartupRequest(path: string, init: RequestInit = {}): boo
 function isLocalEngineStartupError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /connect|connection|refused|ECONNREFUSED|Failed to fetch|NetworkError|Load failed|AbortError|timed out|api-secret|인증 파일|시간|거부|연결/i.test(message);
+}
+
+function assertEngineIdentity(body: Record<string, unknown> | null): void {
+  if (body?.local_engine !== "ok") {
+    throw new Error(`local-engine 상태: ${String(body?.local_engine ?? "unknown")}`);
+  }
+  if (
+    QA_MODE &&
+    (body.instance_id !== QA_INSTANCE_ID || body.profile_fingerprint !== QA_PROFILE_FINGERPRINT)
+  ) {
+    throw new Error("QA local-engine instance identity가 일치하지 않습니다.");
+  }
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = ENGINE_TIMEOUT_MS): Promise<Response> {
@@ -157,8 +175,8 @@ async function waitForLocalEngineReady(): Promise<void> {
           const response = await browserThenNativeEngineFetch("/health", {});
           if (response.ok) {
             const body = await response.json().catch(() => null);
-            if (body?.local_engine === "ok") return;
-            lastError = new Error(`local-engine 상태: ${body?.local_engine ?? "unknown"}`);
+            assertEngineIdentity(body);
+            return;
           } else {
             lastError = new Error(`local-engine health HTTP ${response.status}`);
           }
@@ -177,24 +195,19 @@ async function waitForLocalEngineReady(): Promise<void> {
 
 async function getApiSecret(): Promise<string> {
   if (!secretPromise) {
-    secretPromise = fetchWithTimeout(`${LOCAL_ENGINE_URL}/api-secret`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`Engine authentication failed: HTTP ${res.status}`);
-        const body = await res.json();
-        if (typeof body.secret !== "string" || !body.secret)
-          throw new Error("Engine authentication failed: missing secret");
-        return body.secret;
-      })
-      .catch(async (error) => {
-        console.warn("local-engine /api-secret fetch failed; trying Tauri secret bridge", error);
-        const bridged = await invoke<string>("local_engine_api_secret");
-        if (!bridged) throw new Error("Engine authentication failed: missing bridged secret");
-        return bridged;
-      })
-      .catch((error) => {
-        secretPromise = null;
-        throw error;
-      });
+    const loadSecret = IS_NATIVE_RUNTIME
+      ? invoke<string>("local_engine_api_secret")
+      : fetchWithTimeout(`${LOCAL_ENGINE_URL}/api-secret`).then(async (res) => {
+          if (!res.ok) throw new Error(`Engine authentication failed: HTTP ${res.status}`);
+          const body = await res.json();
+          if (typeof body.secret !== "string" || !body.secret)
+            throw new Error("Engine authentication failed: missing secret");
+          return body.secret;
+        });
+    secretPromise = loadSecret.catch((error) => {
+      secretPromise = null;
+      throw error;
+    });
   }
   return secretPromise;
 }
@@ -215,6 +228,7 @@ async function browserEngineFetch(path: string, init: RequestInit = {}): Promise
 }
 
 async function browserThenNativeEngineFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  if (IS_NATIVE_RUNTIME) return nativeEngineFetch(path, init);
   try {
     return await browserEngineFetch(path, init);
   } catch (error) {
@@ -225,12 +239,11 @@ async function browserThenNativeEngineFetch(path: string, init: RequestInit = {}
 
 async function engineFetchOnce(path: string, init: RequestInit = {}, retryWithFreshSecret = true): Promise<Response> {
   if (path === "/health") {
-    try {
-      return await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 1000);
-    } catch (error) {
-      console.warn("local-engine /health browser fetch failed; trying Tauri native bridge", error);
-      return nativeEngineFetch(path, init);
-    }
+    const response = IS_NATIVE_RUNTIME
+      ? await nativeEngineFetch(path, init)
+      : await fetchWithTimeout(`${LOCAL_ENGINE_URL}${path}`, init, 1000);
+    if (response.ok) assertEngineIdentity(await response.clone().json().catch(() => null));
+    return response;
   }
 
   const headers = new Headers(init.headers);

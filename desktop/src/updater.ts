@@ -1,4 +1,5 @@
 import type { Update } from "@tauri-apps/plugin-updater";
+import { QA_MODE } from "./config";
 
 // 결과를 alert/confirm 으로 띄우지 않는다 — 패키지된 Tauri 앱에서 window.confirm 이
 // 조용히 falsy 를 반환해 아무 일도 안 일어나던 버그(설정·진단 "업데이트 확인" 무반응)를
@@ -11,6 +12,7 @@ export type UpdateCheck =
   | { kind: "error"; message: string };
 
 export async function checkForUpdate(): Promise<UpdateCheck> {
+  if (QA_MODE) return { kind: "unsupported" };
   if (!("__TAURI_INTERNALS__" in window)) return { kind: "unsupported" };
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
@@ -25,6 +27,7 @@ export async function checkForUpdate(): Promise<UpdateCheck> {
 
 // 성공하면 앱을 재시작한다. 실패하면 throw.
 export async function installUpdate(update: Update, onEvent?: (event: any) => void): Promise<void> {
+  if (QA_MODE) throw new Error("QA 모드에서는 업데이트 설치가 비활성화됩니다.");
   await update.downloadAndInstall(onEvent);
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();

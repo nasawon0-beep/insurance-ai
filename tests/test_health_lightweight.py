@@ -26,6 +26,21 @@ def test_health_is_lightweight_and_does_not_call_heavy_diagnostics(monkeypatch):
     assert elapsed < 0.1
 
 
+def test_health_reports_qa_instance_identity(monkeypatch):
+    import main
+
+    instance_id = "12345678-1234-1234-1234-123456789abc"
+    fingerprint = "a" * 64
+    monkeypatch.setenv("INSURANCE_AI_INSTANCE_ID", instance_id)
+    monkeypatch.setenv("INSURANCE_AI_PROFILE_FINGERPRINT", fingerprint)
+    body = TestClient(main.app).get("/health").json()
+    assert body == {
+        "local_engine": "ok",
+        "instance_id": instance_id,
+        "profile_fingerprint": fingerprint,
+    }
+
+
 def test_health_details_degrades_when_diagnostics_fail(monkeypatch):
     import main
 

@@ -1,4 +1,5 @@
 """엔진 인증 테스트"""
+import base64
 import os
 
 # 이 테스트는 인증을 확인하므로 DEV_SKIP_AUTH를 비활성화
@@ -13,6 +14,37 @@ def test_api_requires_secret_header():
     del client.headers[main.API_SECRET_HEADER]
     response = client.get("/settings")
     assert response.status_code == 401
+
+
+def test_qa_request_binding_rejects_port_swap_before_customer_mutation(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from database import crypto
+    import main
+
+    db_path = tmp_path / "customers.sqlite3"
+    instance_id = "12345678-1234-1234-1234-123456789abc"
+    fingerprint = "a" * 64
+    monkeypatch.setenv("CUSTOMER_DB_PATH", str(db_path))
+    monkeypatch.setenv("CUSTOMER_DB_KEY_B64", base64.b64encode(b"q" * 32).decode())
+    monkeypatch.setenv("INSURANCE_AI_QA_MODE", "1")
+    monkeypatch.setenv("INSURANCE_AI_INSTANCE_ID", instance_id)
+    monkeypatch.setenv("INSURANCE_AI_PROFILE_FINGERPRINT", fingerprint)
+    crypto.reset_cache()
+    client = TestClient(main.app)
+    headers = {
+        main.API_SECRET_HEADER: main.API_SECRET,
+        "X-Insurance-AI-QA-Instance": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "X-Insurance-AI-QA-Binding": fingerprint,
+    }
+    rejected = client.post("/customers", json={"name": "synthetic"}, headers=headers)
+    assert rejected.status_code == 403
+    assert not db_path.exists()
+
+    headers["X-Insurance-AI-QA-Instance"] = instance_id
+    accepted = client.post("/customers", json={"name": "synthetic"}, headers=headers)
+    assert accepted.status_code == 201
+    assert db_path.exists()
+    crypto.reset_cache()
 
 
 def test_health_remains_available_without_secret(monkeypatch):

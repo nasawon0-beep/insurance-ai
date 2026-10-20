@@ -19,7 +19,7 @@ export function ThemeToggle() {
       aria-label={`현재 ${actualTheme === "dark" ? "다크" : "라이트"} 모드, 클릭하여 전환`}
       title={`${actualTheme === "dark" ? "라이트" : "다크"} 모드로 전환`}
     >
-      {actualTheme === "dark" ? "☀️" : "🌙"}
+      {actualTheme === "dark" ? "라이트 모드" : "다크 모드"}
     </button>
   );
 }

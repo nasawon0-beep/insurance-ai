@@ -39,6 +39,8 @@ from ollama_diagnostics import ollama_runtime_status, optimization_recommendatio
 
 
 API_SECRET_HEADER = "X-Insurance-AI-Secret"
+QA_INSTANCE_HEADER = "X-Insurance-AI-QA-Instance"
+QA_BINDING_HEADER = "X-Insurance-AI-QA-Binding"
 logger = logging.getLogger(__name__)
 
 
@@ -357,6 +359,18 @@ def _allow_private_network_preflight(request: Request, response):
 
 @app.middleware("http")
 async def require_api_secret(request: Request, call_next):
+    if os.environ.get("INSURANCE_AI_QA_MODE") == "1" and request.url.path != "/health" and request.method != "OPTIONS":
+        expected_instance = os.environ.get("INSURANCE_AI_INSTANCE_ID", "")
+        expected_binding = os.environ.get("INSURANCE_AI_PROFILE_FINGERPRINT", "")
+        supplied_instance = request.headers.get(QA_INSTANCE_HEADER, "")
+        supplied_binding = request.headers.get(QA_BINDING_HEADER, "")
+        if not (
+            expected_instance
+            and expected_binding
+            and secrets.compare_digest(supplied_instance, expected_instance)
+            and secrets.compare_digest(supplied_binding, expected_binding)
+        ):
+            return JSONResponse(status_code=403, content={"detail": "QA request binding rejected"})
     if request.method == "OPTIONS" or request.url.path in {"/health", "/health/details", "/api-secret"}:
         response = await call_next(request)
         _allow_private_network_preflight(request, response)
@@ -577,7 +591,13 @@ def _diagnostic_status() -> dict[str, object]:
 @app.get("/health")
 def health():
     """Liveness 전용: 무거운 Ollama/DB/backup 진단 없이 즉시 응답."""
-    return {"local_engine": "ok"}
+    payload = {"local_engine": "ok"}
+    instance_id = os.environ.get("INSURANCE_AI_INSTANCE_ID", "").strip()
+    fingerprint = os.environ.get("INSURANCE_AI_PROFILE_FINGERPRINT", "").strip()
+    if instance_id and fingerprint:
+        payload["instance_id"] = instance_id
+        payload["profile_fingerprint"] = fingerprint
+    return payload
 
 
 @app.get("/health/details")
@@ -619,6 +639,9 @@ if __name__ == "__main__":
 
     # 이미 정상 인스턴스가 점유 중이면 재사용(개발 스크립트 중복 기동·재시작 충돌 방지).
     if _port_taken(host, port):
+        if os.environ.get("INSURANCE_AI_QA_MODE") == "1":
+            print(f"local-engine: QA :{port} occupied — refusing reuse/kill", file=sys.stderr)
+            sys.exit(1)
         if _healthy(host, port):
             print(f"local-engine: :{port} already serving — reusing", file=sys.stderr)
             sys.exit(0)
@@ -626,4 +649,12 @@ if __name__ == "__main__":
         sys.exit(1)
     # APP_LOCK_FILE 감시는 _lifespan 의 asyncio 태스크에서 (onefile 스레드 이슈 회피)
 
-    uvicorn.run(app, host=host, port=port)
+    if os.environ.get("INSURANCE_AI_QA_MODE") == "1":
+        cert_file = os.environ.get("INSURANCE_AI_TLS_CERT_FILE", "")
+        key_file = os.environ.get("INSURANCE_AI_TLS_KEY_FILE", "")
+        if not cert_file or not key_file:
+            print("local-engine: QA TLS identity missing", file=sys.stderr)
+            sys.exit(1)
+        uvicorn.run(app, host=host, port=port, ssl_certfile=cert_file, ssl_keyfile=key_file)
+    else:
+        uvicorn.run(app, host=host, port=port)

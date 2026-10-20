@@ -774,6 +774,16 @@ export default function CustomersScreen({
     return (
       <div
         key={c.id}
+        role="button"
+        tabIndex={0}
+        aria-label={`${c.name} 고객 상세 열기`}
+        aria-pressed={c.id === selectedId}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.currentTarget.click();
+          }
+        }}
         onClick={() => {
           if (!canOpenCustomer(c.id)) return;
           setMode("edit");
@@ -1298,16 +1308,17 @@ export default function CustomersScreen({
   } : null;
 
   return (
-    <div style={{ display: "flex", gap: 20, padding: 16, maxWidth: 1180, margin: "0 auto" }}>
+    <div className="customers-workspace">
       {/* 왼쪽: 고객 목록 (고객 목록 탭에서만) */}
       {screen === "list" && (
-      <div style={{ width: 300, flexShrink: 0 }}>
+      <div className="customers-list-panel">
         <button onClick={() => startNew()} style={{ width: "100%", marginBottom: 6, padding: "10px 16px", fontWeight: 700, fontSize: 14, background: "var(--primary-600)", color: "#fff", border: "2px solid var(--primary-500)", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.2)" }}>
           새 고객
         </button>
         <input
           style={{ ...inputStyle, marginBottom: 6 }}
           placeholder="이름 / 전화 검색"
+          aria-label="이름 또는 전화로 고객 검색"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -2170,7 +2181,7 @@ function PoliciesSection({
     textOverflow: "ellipsis",
     borderRight: "1px solid var(--color-border-default)",
   };
-  const policyLastCellStyle = { ...policyCellStyle, borderRight: "none" };
+  const policyLastCellStyle = { ...policyCellStyle, borderRight: "none", whiteSpace: "normal" as const, overflow: "visible" };
   const policyBadgeStyle = { marginLeft: 6, fontSize: 11, borderRadius: 4, padding: "1px 5px" };
 
   return (
@@ -2182,8 +2193,8 @@ function PoliciesSection({
           {detail.policies.length === 0 && " (계약을 추가하면 '가입'으로 자동 변경)"}
         </span>
       </h3>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", fontSize: 13, width: "100%", minWidth: 700 }}>
+      <div role="region" aria-label="계약 목록 · 가로로 스크롤하여 관리 버튼 확인" tabIndex={0} style={{ overflowX: "auto" }}>
+        <table className="contract-policy-table" style={{ borderCollapse: "collapse", tableLayout: "fixed", fontSize: 13, width: "100%", minWidth: 700 }}>
           <colgroup>
             <col style={{ width: 130 }} />
             <col style={{ minWidth: 140 }} />
@@ -2286,6 +2297,7 @@ function PoliciesSection({
                       type="button"
                       disabled={(p.coverage_count ?? p.coverages?.length ?? 0) === 0}
                       onClick={() => togglePolicyCoverages(p)}
+                      aria-expanded={expandedCoveragePolicyId === p.id}
                       style={{ border: 0, background: "transparent", padding: 0, color: "#2563eb", textDecoration: "underline", cursor: "pointer", font: "inherit" }}
                     >
                       {p.product_name || "-"}

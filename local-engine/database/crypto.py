@@ -41,6 +41,8 @@ def is_encrypted(value: Optional[str]) -> bool:
 
 
 def _keyring_get() -> Optional[bytes]:
+    if os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
+        return None
     try:
         import keyring
 
@@ -51,6 +53,8 @@ def _keyring_get() -> Optional[bytes]:
 
 
 def _keyring_set(key: bytes) -> bool:
+    if os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
+        return False
     try:
         import keyring
 
