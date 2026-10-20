@@ -11,7 +11,7 @@ import re
 import sqlite3
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from . import expiry
 from . import rrn as rrn_util
@@ -32,6 +32,7 @@ _CUSTOMER_ENC = set(_CUSTOMER_FIELDS)  # rrn/customer_status 포함 전부 암�
 _POLICY_FIELDS = [
     "insurer", "product_name", "policy_number", "plan_type", "premium",
     "payment_cycle", "start_date", "end_date", "status", "memo", "document_id",
+    "document_status", "source_hash", "source_document_type",
     "insured_period", "payment_period", "payment_end_date",
     # 계약자(피보험자와 다를 때). customer_id 는 피보험자다. policyholder_name 이
     # 비어있으면 본인계약(계약자=피보험자), 값이 있으면 그 사람이 계약자.
@@ -84,6 +85,12 @@ def _now() -> str:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _invalidate_statistics(conn: sqlite3.Connection) -> None:
+    # 순환 import를 피하면서 성공적으로 commit된 통계 입력 변경만 알린다.
+    from . import statistics
+    statistics.invalidate_cache(conn)
 
 
 def log_audit(conn, *, actor, action, entity, entity_id, customer_id=None, fields=None):
@@ -322,11 +329,11 @@ def _enrich_customer(conn: sqlite3.Connection, pub: dict) -> dict:
     """목록 표시용 파생 정보: 계약 수 / 임박 만기 / 다음 후속 연락 / 최근 상담일."""
     cid = pub["id"]
     prows = conn.execute(
-        "SELECT id, status, end_date, is_own FROM policies WHERE customer_id = ?", (cid,)
+        "SELECT id, status, document_status, end_date, is_own FROM policies WHERE customer_id = ?", (cid,)
     ).fetchall()
     active_ends = []
     for r in prows:
-        if r["status"] == "ACTIVE" and r["end_date"]:
+        if r["status"] == "ACTIVE" and r["document_status"] == "CONFIRMED" and r["end_date"]:
             raw_end = r["end_date"]
             if not is_encrypted(raw_end):  # 평문 end_date 는 그 자리에서 재암호화 (CAS)
                 conn.execute(
@@ -337,9 +344,10 @@ def _enrich_customer(conn: sqlite3.Connection, pub: dict) -> dict:
             dec = get_cipher().decrypt(raw_end)
             if dec and dec.strip():
                 active_ends.append(dec.strip())
-    pub["policy_count"] = len(prows)
-    pub["active_policy_count"] = sum(1 for r in prows if r["status"] == "ACTIVE")
-    pub["own_policy_count"] = sum(1 for r in prows if r["is_own"])  # "내가 가입시킴" 계약 수
+    confirmed = [r for r in prows if r["document_status"] == "CONFIRMED"]
+    pub["policy_count"] = len(confirmed)
+    pub["active_policy_count"] = sum(1 for r in confirmed if r["status"] == "ACTIVE")
+    pub["own_policy_count"] = sum(1 for r in confirmed if r["is_own"])
     pub["soonest_expiry"] = min(active_ends) if active_ends else None
 
     krows = conn.execute(
@@ -478,6 +486,7 @@ def create_customer(conn: sqlite3.Connection, data: dict) -> dict:
             raise DuplicateRRNError from exc
         raise
     conn.commit()
+    _invalidate_statistics(conn)
     return get_customer(conn, cid)  # type: ignore[return-value]
 
 
@@ -592,6 +601,8 @@ def update_customer(conn: sqlite3.Connection, cid: str, patch: dict) -> Optional
         conn.commit()
     if "birth_date" in fields:  # 생년월일 바뀌면 N세형·자동계산 계약 만기 재산출
         _recompute_customer_policy_expiry(conn, cid)
+    if enc:
+        _invalidate_statistics(conn)
     return get_customer(conn, cid)
 
 
@@ -599,6 +610,8 @@ def delete_customer(conn: sqlite3.Connection, cid: str) -> bool:
     cur = conn.execute("DELETE FROM customers WHERE id = ?", (cid,))
     conn.execute("DELETE FROM rrn_access_log WHERE customer_id = ?", (cid,))
     conn.commit()
+    if cur.rowcount > 0:
+        _invalidate_statistics(conn)
     return cur.rowcount > 0
 
 
@@ -608,8 +621,9 @@ def customer_detail(conn: sqlite3.Connection, cid: str) -> Optional[dict]:
         return None
     c["policies"] = list_policies(conn, cid)
     c["consultations"] = list_consultations(conn, cid)
-    active = sum(1 for p in c["policies"] if p.get("status") == "ACTIVE")
-    c["policy_count"] = len(c["policies"])
+    confirmed = [p for p in c["policies"] if p.get("document_status", "CONFIRMED") == "CONFIRMED"]
+    active = sum(1 for p in confirmed if p.get("status") == "ACTIVE")
+    c["policy_count"] = len(confirmed)
     c["active_policy_count"] = active
     c["effective_status"] = c.get("customer_status") or "미가입"
     return c
@@ -735,11 +749,12 @@ def create_policy(
     # "내가 가입시킴" 플래그: 호출자가 안 주면 기본 1(ON) — 상담자가 입력하는 계약 대부분이 본인 판매분.
     is_own_val = 1 if data.get("is_own") is None else int(bool(data["is_own"]))
 
-    values = {c: None for c in _POLICY_COLS}
+    values: dict[str, Any] = {c: None for c in _POLICY_COLS}
     for f in _POLICY_FIELDS:
         values[f] = _encrypt(data.get(f), f, _POLICY_ENC)
     values["end_date_derived"] = end_derived
     values["is_own"] = is_own_val
+    values["document_status"] = data.get("document_status") or "CONFIRMED"
     values.update(
         id=pid,
         customer_id=customer_id,
@@ -754,7 +769,7 @@ def create_policy(
     )
     conn.commit()
     # ACTIVE 계약을 새로 넣으면 고객을 '가입'으로 올린다 (이미 '가입'이면 그대로).
-    if (data.get("status") or "ACTIVE") == "ACTIVE":
+    if (data.get("status") or "ACTIVE") == "ACTIVE" and (data.get("document_status") or "CONFIRMED") == "CONFIRMED":
         raw = _get_customer_raw(conn, customer_id)
         if raw and (raw.get("customer_status") or "") != "가입":
             conn.execute(
@@ -762,6 +777,7 @@ def create_policy(
                 (get_cipher().encrypt("가입"), _now(), customer_id),
             )
             conn.commit()
+    _invalidate_statistics(conn)
     return get_policy(conn, pid)
 
 
@@ -783,6 +799,8 @@ def update_policy(conn: sqlite3.Connection, pid: str, patch: dict) -> Optional[d
     if cur is None:
         return None
     fields = {k: v for k, v in patch.items() if k in _POLICY_FIELDS}
+    confirmed_coverages = patch.get("confirmed_coverages")
+    selection_mode = patch.get("coverage_selection_mode")
     birth = _customer_birth(conn, cur["customer_id"])
     cur_derived = cur.get("end_date_derived")
 
@@ -827,13 +845,89 @@ def update_policy(conn: sqlite3.Connection, pid: str, patch: dict) -> Optional[d
             new_payment, birth, new_start, eff_end
         )
 
+    confirming = (
+        fields.get("document_status") == "CONFIRMED"
+        and cur.get("document_status", "CONFIRMED") != "CONFIRMED"
+    )
+    selection_requested = confirmed_coverages is not None or selection_mode is not None
+    target_document_status = fields.get("document_status", cur.get("document_status", "CONFIRMED"))
+    selected_ids: list[str] = []
+    if selection_requested:
+        if target_document_status != "CONFIRMED":
+            raise ValueError("가입담보 선택 변경은 계약 문서상태가 CONFIRMED일 때만 가능합니다.")
+        if cur.get("document_status", "CONFIRMED") == "CONFIRMED" and selection_mode != "REPLACE":
+            raise ValueError("확정 계약의 담보 선택 변경은 coverage_selection_mode=REPLACE를 명시해야 합니다.")
+        if not confirmed_coverages:
+            raise ValueError("가입확정에는 한 건 이상의 실제 가입담보 선택이 필요합니다. 전체 취소는 계약 문서상태를 참고/제안/확인대기로 변경하세요.")
+        seen: set[str] = set()
+        for selected in confirmed_coverages:
+            coverage_id = str(selected.get("id") or "")
+            if not coverage_id or coverage_id in seen:
+                raise ValueError("가입담보 선택이 비어 있거나 중복되었습니다.")
+            row = conn.execute(
+                "SELECT id, source_page, source_table, source_row FROM policy_coverages "
+                "WHERE id = ? AND policy_id = ? AND customer_id = ?",
+                (coverage_id, pid, cur["customer_id"]),
+            ).fetchone()
+            if row is None or any(
+                row[key] != selected.get(key)
+                for key in ("source_page", "source_table", "source_row")
+            ):
+                raise ValueError("가입담보와 원본 근거 좌표가 일치하지 않습니다.")
+            seen.add(coverage_id)
+            selected_ids.append(coverage_id)
+    elif confirming:
+        raise ValueError("가입확정에는 원본 좌표를 대조한 실제 가입담보 선택이 필요합니다.")
+    elif (
+        cur.get("document_status", "CONFIRMED") == "CONFIRMED"
+        and fields == {"document_status": "CONFIRMED"}
+    ):
+        raise ValueError("이미 확정된 계약입니다. 담보 선택 변경은 REPLACE 방식과 원본 좌표를 함께 보내야 합니다.")
+
     if fields or set_derived is not _KEEP or set_own is not _KEEP:
         _write_policy_fields(conn, pid, fields, set_derived, set_own)
+
+    document_status_changed = (
+        "document_status" in fields
+        and fields["document_status"] != cur.get("document_status", "CONFIRMED")
+    )
+    if selection_requested:
+        fallback_status = {
+            "product_description": "REFERENCE",
+            "proposal": "PROPOSED",
+        }.get(str(cur.get("source_document_type") or "").lower(), "PENDING_REVIEW")
+        placeholders = ",".join("?" for _ in selected_ids)
+        conn.execute(
+            f"UPDATE policy_coverages SET document_status = ?, updated_at = ? "
+            f"WHERE policy_id = ? AND document_status = 'CONFIRMED' AND id NOT IN ({placeholders})",
+            (fallback_status, _now(), pid, *selected_ids),
+        )
+        conn.execute(
+            f"UPDATE policy_coverages SET document_status = 'CONFIRMED', updated_at = ? "
+            f"WHERE policy_id = ? AND id IN ({placeholders})",
+            (_now(), pid, *selected_ids),
+        )
+    elif document_status_changed:
+        conn.execute(
+            "UPDATE policy_coverages SET document_status = ?, updated_at = ? WHERE policy_id = ?",
+            (fields["document_status"], _now(), pid),
+        )
+    if document_status_changed or selection_requested:
+        if target_document_status == "CONFIRMED" and fields.get("status", cur.get("status")) == "ACTIVE":
+            raw = _get_customer_raw(conn, cur["customer_id"])
+            if raw and (raw.get("customer_status") or "") != "가입":
+                conn.execute(
+                    "UPDATE customers SET customer_status = ?, updated_at = ? WHERE id = ?",
+                    (get_cipher().encrypt("가입"), _now(), cur["customer_id"]),
+                )
+        conn.commit()
 
     # 계약 상태가 ACTIVE → 비활성으로 바뀌면 고객 상태(해지) 재평가
     if "status" in fields and cur["status"] == "ACTIVE" and fields["status"] != "ACTIVE":
         _recompute_customer_status(conn, cur["customer_id"], from_status_change=True)
 
+    if fields or set_derived is not _KEEP or set_own is not _KEEP or selection_requested:
+        _invalidate_statistics(conn)
     return get_policy(conn, pid)
 
 
@@ -876,6 +970,7 @@ def delete_policy(conn: sqlite3.Connection, pid: str) -> bool:
     conn.commit()
     if cur.rowcount > 0 and row:
         _revert_status_after_delete(conn, row["customer_id"])
+        _invalidate_statistics(conn)
     return cur.rowcount > 0
 
 
@@ -905,7 +1000,7 @@ def _recompute_customer_status(
     if not from_status_change:
         return
     rows = conn.execute(
-        "SELECT status FROM policies WHERE customer_id = ?", (customer_id,)
+        "SELECT status FROM policies WHERE customer_id = ? AND document_status = 'CONFIRMED'", (customer_id,)
     ).fetchall()
     active = sum(1 for r in rows if r["status"] == "ACTIVE")
     if active == 0:
@@ -996,7 +1091,7 @@ def recompute_all_expiry(conn: sqlite3.Connection) -> dict:
         raw = _get_customer_raw(conn, r["id"])
         if raw and (raw.get("customer_status") or "") == "":
             act = conn.execute(
-                "SELECT COUNT(*) FROM policies WHERE customer_id = ? AND status = 'ACTIVE'",
+                "SELECT COUNT(*) FROM policies WHERE customer_id = ? AND status = 'ACTIVE' AND document_status = 'CONFIRMED'",
                 (r["id"],),
             ).fetchone()[0]
             if act > 0:
@@ -1008,6 +1103,8 @@ def recompute_all_expiry(conn: sqlite3.Connection) -> dict:
     if status_fixed:
         conn.commit()
 
+    if updated or status_fixed:
+        _invalidate_statistics(conn)
     return {
         "scanned": scanned,
         "filled_from_memo": filled_from_memo,
@@ -1039,6 +1136,7 @@ def create_consultation(
         [values[c] for c in _CONSULT_COLS],
     )
     conn.commit()
+    _invalidate_statistics(conn)
     return get_consultation(conn, kid)
 
 
@@ -1073,6 +1171,7 @@ def update_consultation(
             f"UPDATE consultations SET {sets} WHERE id = ?", [*enc.values(), kid]
         )
         conn.commit()
+        _invalidate_statistics(conn)
     return get_consultation(conn, kid)
 
 
@@ -1089,6 +1188,7 @@ def complete_follow_up(conn: sqlite3.Connection, kid: str) -> Optional[dict]:
         (today, _now(), kid),
     )
     conn.commit()
+    _invalidate_statistics(conn)
     return get_consultation(conn, kid)
 
 
@@ -1116,12 +1216,15 @@ def reopen_follow_up(conn: sqlite3.Connection, kid: str) -> Optional[dict]:
             (_now(), kid),
         )
     conn.commit()
+    _invalidate_statistics(conn)
     return get_consultation(conn, kid)
 
 
 def delete_consultation(conn: sqlite3.Connection, kid: str) -> bool:
     cur = conn.execute("DELETE FROM consultations WHERE id = ?", (kid,))
     conn.commit()
+    if cur.rowcount > 0:
+        _invalidate_statistics(conn)
     return cur.rowcount > 0
 
 
@@ -1192,7 +1295,7 @@ def expiring_policies(
     """만기일(end_date)이 until 이하인 ACTIVE 계약. end_date 가 암호화라 파이썬에서 필터.
     각 항목에 insured_period / end_date_derived / days(오늘까지 남은 일수) 포함.
     own == 1 이면 is_own(내가 가입시킴) 계약만."""
-    rows = conn.execute("SELECT * FROM policies WHERE status = 'ACTIVE'").fetchall()
+    rows = conn.execute("SELECT * FROM policies WHERE status = 'ACTIVE' AND document_status = 'CONFIRMED'").fetchall()
     out = []
     today = date.today()
     for r in rows:
@@ -1210,7 +1313,7 @@ def expiring_policies(
 
 def payment_ending_policies(conn: sqlite3.Connection, until: str) -> list[dict]:
     """납입종료일(payment_end_date)이 until 이하인 ACTIVE 계약."""
-    rows = conn.execute("SELECT * FROM policies WHERE status = 'ACTIVE'").fetchall()
+    rows = conn.execute("SELECT * FROM policies WHERE status = 'ACTIVE' AND document_status = 'CONFIRMED'").fetchall()
     out = []
     today = date.today()
     for r in rows:
@@ -1267,14 +1370,14 @@ def dashboard_counts(conn: sqlite3.Connection, own: Optional[int] = None) -> dic
     c = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
     if own == 1:
         # 계약 수만 "내가 가입시킴"으로 좁힌다. 고객 수·상담 수는 전역 유지.
-        p = conn.execute("SELECT COUNT(*) FROM policies WHERE is_own = 1").fetchone()[0]
+        p = conn.execute("SELECT COUNT(*) FROM policies WHERE is_own = 1 AND document_status = 'CONFIRMED'").fetchone()[0]
         ap = conn.execute(
-            "SELECT COUNT(*) FROM policies WHERE status = 'ACTIVE' AND is_own = 1"
+            "SELECT COUNT(*) FROM policies WHERE status = 'ACTIVE' AND is_own = 1 AND document_status = 'CONFIRMED'"
         ).fetchone()[0]
     else:
-        p = conn.execute("SELECT COUNT(*) FROM policies").fetchone()[0]
+        p = conn.execute("SELECT COUNT(*) FROM policies WHERE document_status = 'CONFIRMED'").fetchone()[0]
         ap = conn.execute(
-            "SELECT COUNT(*) FROM policies WHERE status = 'ACTIVE'"
+            "SELECT COUNT(*) FROM policies WHERE status = 'ACTIVE' AND document_status = 'CONFIRMED'"
         ).fetchone()[0]
     k = conn.execute("SELECT COUNT(*) FROM consultations").fetchone()[0]
     return {"customers": c, "policies": p, "active_policies": ap, "consultations": k}

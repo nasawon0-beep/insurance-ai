@@ -737,6 +737,7 @@ def test_capture_bojang_analysis_customer_info_from_page3(client, monkeypatch):
     ]
     monkeypatch.setattr(_router_mod, "_pdf_extract_text_pages", lambda data: pages)
     monkeypatch.setattr(_router_mod.policy_coverages, "parse_policy_coverages_from_pages", lambda *a, **k: [])
+    _mock_single(monkeypatch, {"name": "최지환", "birth_date": "2004-10-22", "gender": "M"})
 
     b = client.post(
         "/capture",

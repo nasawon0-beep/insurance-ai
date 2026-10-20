@@ -1,5 +1,9 @@
-export type PremiumPolicy = { premium: number | null; payment_cycle: string | null; status: string };
-export type ExpiryPolicy = { end_date: string | null; status: string };
+export type PremiumPolicy = { premium: number | null; payment_cycle: string | null; status: string; document_status?: string | null };
+export type ExpiryPolicy = { end_date: string | null; status: string; document_status?: string | null };
+
+function isConfirmed(policy: { document_status?: string | null }): boolean {
+  return !policy.document_status || policy.document_status === "CONFIRMED";
+}
 
 export function isYearly(cycle: string | null | undefined): boolean {
   const c = String(cycle ?? "").trim().toUpperCase();
@@ -14,7 +18,7 @@ export function isLumpSum(cycle: string | null | undefined): boolean {
 export function totalMonthlyPremium(policies: PremiumPolicy[]): { total: number; lumpSumCount: number } {
   let total = 0, lumpSumCount = 0;
   for (const p of policies) {
-    if (p.status !== "ACTIVE") continue;
+    if (p.status !== "ACTIVE" || !isConfirmed(p)) continue;
     if (isLumpSum(p.payment_cycle)) { lumpSumCount++; continue; }
     const prem = typeof p.premium === "number" && Number.isFinite(p.premium) ? p.premium : 0;
     if (prem <= 0) continue;
@@ -37,7 +41,7 @@ export function daysUntil(endDate: string, today: Date): number | null {
 export function expiringCount(policies: ExpiryPolicy[], days = 30, today: Date = new Date()): number {
   let n = 0;
   for (const p of policies) {
-    if (p.status !== "ACTIVE") continue;
+    if (p.status !== "ACTIVE" || !isConfirmed(p)) continue;
     if (!p.end_date) continue;
     const d = daysUntil(p.end_date, today);
     if (d == null) continue;

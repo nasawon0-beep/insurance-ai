@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("httpx")
 
 _KEY = base64.b64encode(b"0" * 32).decode("ascii")
+_SYNTHETIC_RRN_A = "900101" + "1234567"
+_SYNTHETIC_RRN_B = "900102" + "2234567"
 
 
 @pytest.fixture
@@ -69,59 +71,75 @@ def test_zip_has_three_csvs_and_readme(client):
     assert "주민등록번호 포함 여부: 제외" in files["README.txt"].decode("utf-8-sig")
 
 
-def test_rrn_omitted_when_flag_off(client):
+def test_rrn_column_is_omitted_from_default_export(client):
     client.post("/customers", json={"name": "무주민"})
     files = _open_zip(client.get("/export").json()["path"])
     assert "rrn" not in _rows(files["고객.csv"])[0]
 
 
-def test_rrn_included_when_flag_on(client, monkeypatch):
+def test_legacy_env_on_does_not_expose_rrn_in_export(client, monkeypatch):
     monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
-    client.post("/customers", json={"name": "주민있음", "rrn": "900101-1234567"})
-    files = _open_zip(client.get("/export").json()["path"])
-    header = _rows(files["고객.csv"])[0]
-    assert "rrn" in header
-    idx = header.index("rrn")
-    body = _rows(files["고객.csv"])[1:]
-    assert any(row[idx] == "9001011234567" for row in body)
+    client.post("/customers", json={"name": "합성주민A", "rrn": _SYNTHETIC_RRN_A})
+    response = client.get("/export")
+    assert response.status_code == 200 and response.json()["include_rrn"] is False
+    files = _open_zip(response.json()["path"])
+    assert "rrn" not in _rows(files["고객.csv"])[0]
 
 
-def test_rrn_export_logs_each_included_customer(client, env, monkeypatch):
-    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
-    first = client.post("/customers", json={"name": "주민1", "rrn": "9001011234567"}).json()
-    second = client.post("/customers", json={"name": "주민2", "rrn": "9001022234567"}).json()
+def test_explicit_internal_rrn_export_requires_and_runs_audit_callback(client, env):
+    from database import export_data, repo
+    from database.db import connect, init_schema
+
+    first = client.post("/customers", json={"name": "합성주민A", "rrn": _SYNTHETIC_RRN_A}).json()
+    second = client.post("/customers", json={"name": "합성주민B", "rrn": _SYNTHETIC_RRN_B}).json()
     client.post("/customers", json={"name": "주민없음"})
 
-    r = client.get("/export", headers={"X-Actor-Id": "exporter-1"})
-    assert r.status_code == 200 and r.json()["include_rrn"] is True
+    conn = connect(env / "data" / "customers.sqlite3")
+    init_schema(conn)
+    try:
+        result = export_data.build_export(
+            conn,
+            include_rrn=True,
+            rrn_audit=lambda customer_ids: repo.log_rrn_access_many(
+                conn, customer_ids, "승인된 내부 내보내기", "exporter-1", "export"
+            ),
+        )
+    finally:
+        conn.close()
+    assert result["include_rrn"] is True
     with sqlite3.connect(env / "data" / "customers.sqlite3") as conn:
         rows = conn.execute(
             "SELECT customer_id, purpose, actor FROM rrn_access_log "
             "WHERE access_type = 'export' ORDER BY customer_id"
         ).fetchall()
     assert {row[0] for row in rows} == {first["id"], second["id"]}
-    assert all(row[1] == "데이터 내보내기(고객.csv)" for row in rows)
+    assert all(row[1] == "승인된 내부 내보내기" for row in rows)
     assert all(row[2] == "exporter-1" for row in rows)
 
 
-def test_rrn_export_does_not_log_when_flag_off_or_no_rrn(client, env, monkeypatch):
+def test_default_export_never_logs_or_exposes_rrn(client, env, monkeypatch):
     monkeypatch.setenv("RRN_INPUT_ENABLED", "0")
-    client.post("/customers", json={"name": "토글꺼짐", "rrn": "9001011234567"})
-    assert client.get("/export").status_code == 200
-    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
-    assert client.get("/export").status_code == 200
+    customer = client.post(
+        "/customers", json={"name": "합성항상저장", "rrn": _SYNTHETIC_RRN_A}
+    ).json()
+    exported = client.get("/export", headers={"X-Actor-Id": "exporter-off-env"})
+    assert exported.status_code == 200 and exported.json()["include_rrn"] is False
 
+    files = _open_zip(exported.json()["path"])
+    assert "rrn" not in _rows(files["고객.csv"])[0]
     with sqlite3.connect(env / "data" / "customers.sqlite3") as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM rrn_access_log WHERE access_type = 'export'"
-        ).fetchone()[0] == 0
+        count = conn.execute(
+            "SELECT COUNT(*) FROM rrn_access_log "
+            "WHERE customer_id = ? AND access_type = 'export'", (customer["id"],)
+        ).fetchone()[0]
+    assert count == 0
 
 
-def test_rrn_export_fails_before_file_when_audit_fails(client, env, monkeypatch):
-    from database import repo
+def test_explicit_rrn_export_fails_before_file_when_audit_fails(client, env, monkeypatch):
+    from database import export_data, repo
+    from database.db import connect, init_schema
 
-    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
-    client.post("/customers", json={"name": "감사실패", "rrn": "9001011234567"})
+    client.post("/customers", json={"name": "합성감사실패", "rrn": _SYNTHETIC_RRN_A})
     exports = env / "data" / "exports"
     before = set(exports.glob("export-*.zip")) if exports.exists() else set()
 
@@ -129,8 +147,19 @@ def test_rrn_export_fails_before_file_when_audit_fails(client, env, monkeypatch)
         raise sqlite3.OperationalError("audit unavailable")
 
     monkeypatch.setattr(repo, "log_rrn_access_many", fail_audit)
-    with pytest.raises(sqlite3.OperationalError, match="audit unavailable"):
-        client.get("/export")
+    conn = connect(env / "data" / "customers.sqlite3")
+    init_schema(conn)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="audit unavailable"):
+            export_data.build_export(
+                conn,
+                include_rrn=True,
+                rrn_audit=lambda customer_ids: repo.log_rrn_access_many(
+                    conn, customer_ids, "승인된 내부 내보내기", "tester", "export"
+                ),
+            )
+    finally:
+        conn.close()
     after = set(exports.glob("export-*.zip")) if exports.exists() else set()
     assert after == before
 

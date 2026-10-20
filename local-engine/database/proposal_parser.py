@@ -17,10 +17,14 @@ class ProposalRider:
     rider_name: str
     coverage_period: Optional[str]
     payment_period: Optional[str]
-    coverage_amount: int
+    coverage_amount: Optional[int]
     coverage_amount_text: str
     premium: Optional[int]
     premium_text: Optional[str]
+    renewal_status: Optional[str] = None
+    source_page: Optional[int] = None
+    source_table: Optional[int] = None
+    source_row: Optional[int] = None
 
 
 @dataclass
@@ -36,7 +40,7 @@ class ProposalInfo:
     riders: List[ProposalRider]
 
 
-def parse_proposal(pdf_path: str, candidate_pages: dict) -> ProposalInfo:
+def parse_proposal(pdf_path: str, candidate_pages: dict, *, reference_mode: bool = False) -> ProposalInfo:
     """
     가입제안서 파싱
 
@@ -71,29 +75,27 @@ def parse_proposal(pdf_path: str, candidate_pages: dict) -> ProposalInfo:
         for page_num in proposal_pages:
             if page_num <= len(pdf.pages):
                 page = pdf.pages[page_num - 1]
-                riders.extend(_extract_riders_from_page(page))
+                page_tables = page.extract_tables() or []
+                page_riders = _extract_riders_from_page(page, source_page=page_num, tables=page_tables)
+                if reference_mode:
+                    known = {(r.source_table, r.source_row) for r in page_riders}
+                    page_riders.extend(_extract_reference_rows_from_page(page, page_num, known, tables=page_tables))
+                riders.extend(page_riders)
                 page_contract_period, page_payment_method = _extract_contract_terms(page)
                 contract_period = contract_period or page_contract_period
                 payment_method = payment_method or page_payment_method
                 if not first_premium:
                     first_premium, first_premium_text = _extract_first_premium(page)
 
-        # 가입사항 요약표가 짧게 나온 암보험 제안서는 다음 보장내역 표의 세부 담보를
-        # 최소 검수 가능한 수준(8~10개)까지만 보강한다. 제안서는 보유담보 원장 저장용이
-        # 아니므로 상세 보장내역 전체를 중복 적재하지 않는다.
-        if len(riders) < 8:
+        # 문서 확정상태와 별개로 원본 표의 모든 담보행을 검수 대상으로 보존한다.
+        if not reference_mode:
             seen = {_rider_key(r) for r in riders}
-            for page in pdf.pages:
-                for rider in _extract_benefit_riders_from_page(page):
+            for page_no, page in enumerate(pdf.pages, 1):
+                for rider in _extract_benefit_riders_from_page(page, source_page=page_no):
                     key = _rider_key(rider)
-                    if key in seen:
-                        continue
-                    riders.append(rider)
-                    seen.add(key)
-                    if len(riders) >= 10:
-                        break
-                if len(riders) >= 10:
-                    break
+                    if key not in seen:
+                        riders.append(rider)
+                        seen.add(key)
 
     return ProposalInfo(
         insurer=insurer,
@@ -160,18 +162,14 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").replace("\n", " ")).strip()
 
 
-def _extract_riders_from_page(page) -> List[ProposalRider]:
-    """페이지에서 특약 추출 (가입사항 테이블 기반)"""
+def _extract_riders_from_page(page, source_page: Optional[int] = None, tables=None) -> List[ProposalRider]:
+    """페이지의 가입/상품 담보표를 행 단위 원본 좌표와 함께 추출한다."""
     riders: List[ProposalRider] = []
-    tables = page.extract_tables()
-    if not tables:
-        return riders
-
-    for table in tables:
+    for table_no, table in enumerate(tables if tables is not None else (page.extract_tables() or [])):
         header_row = None
         for i, row in enumerate(table):
-            if row and any(cell and ("특약명" in str(cell) or "담보명" in str(cell)) for cell in row):
-                if any(cell and "가입금액" in str(cell) for cell in row):
+            if row and any(cell and "가입금액" in str(cell).replace(" ", "") for cell in row):
+                if any(cell and any(k in str(cell).replace(" ", "") for k in ("특약명", "담보명", "보장명", "보험료")) for cell in row):
                     header_row = i
                     break
         if header_row is None:
@@ -180,53 +178,101 @@ def _extract_riders_from_page(page) -> List[ProposalRider]:
         header = table[header_row]
         type_col = _find_col_index(header, ["구분"])
         rider_name_col = _find_col_index(header, ["특약명", "담보명", "보장명"])
+        if rider_name_col is None:
+            rider_name_col = 1 if len(header) > 1 else 0
         coverage_amount_col = _find_col_index(header, ["가입금액", "보험가입금액", "보장금액"])
         premium_col = _find_col_index(header, ["보험료", "월보험료"])
         period_col = _find_col_index(header, ["보험기간", "보장기간"])
         payment_col = _find_col_index(header, ["납입기간"])
+        renewal_col = _find_col_index(header, ["갱신", "갱신형"])
 
         current_type = "특약"
-        for row in table[header_row + 1:]:
+        for row_no, row in enumerate(table[header_row + 1:], header_row + 1):
             if not row or all(not cell for cell in row):
                 continue
             row_text = " ".join(_clean_text(str(c)) for c in row if c)
             if "납입보험료" in row_text or "보험료소계" in row_text:
                 continue
-
             raw_type = _get_cell(row, type_col)
             if raw_type:
                 current_type = "기본계약" if "기본" in raw_type else "특약"
             rider_name = _clean_text(_get_cell(row, rider_name_col))
             if not rider_name or len(rider_name) < 2:
                 continue
-
             amount_text = _clean_text(_get_cell(row, coverage_amount_col))
-            amount = _parse_amount(amount_text)
-            if amount <= 0:
-                continue
-
+            parsed_amount = _parse_amount(amount_text)
             premium_text = _clean_text(_get_cell(row, premium_col))
-            premium = _parse_amount(premium_text) if premium_text else None
-            coverage_period = _clean_text(_get_cell(row, period_col)) or None
-            payment_period = _clean_text(_get_cell(row, payment_col)) or None
-
             riders.append(ProposalRider(
                 rider_type=current_type,
                 rider_name=rider_name,
-                coverage_period=coverage_period,
-                payment_period=payment_period,
-                coverage_amount=amount,
-                coverage_amount_text=amount_text or "",
-                premium=premium,
+                coverage_period=_clean_text(_get_cell(row, period_col)) or None,
+                payment_period=_clean_text(_get_cell(row, payment_col)) or None,
+                coverage_amount=parsed_amount if parsed_amount > 0 else None,
+                coverage_amount_text=amount_text,
+                premium=_parse_amount(premium_text) if premium_text and _parse_amount(premium_text) > 0 else None,
                 premium_text=premium_text or None,
+                renewal_status=_clean_text(_get_cell(row, renewal_col)) or None,
+                source_page=source_page,
+                source_table=table_no,
+                source_row=row_no,
             ))
     return riders
 
 
-def _extract_benefit_riders_from_page(page) -> List[ProposalRider]:
+_REFERENCE_LABELS = (
+    "구분", "특약명", "담보명", "보장명", "보장내용", "가입금액", "보험가입금액",
+    "보장금액", "지급금액", "보험료", "월보험료", "보험기간", "보장기간", "납입기간", "갱신",
+)
+
+
+def _extract_reference_rows_from_page(page, source_page: int, known: set[tuple], tables=None) -> List[ProposalRider]:
+    """상품설명서의 비정형 표 행을 누락 없이 참고 원장으로 보존한다.
+
+    이 행들은 REFERENCE 계약에만 저장되고 가입담보로 합산되지 않는다.
+    """
+    riders: List[ProposalRider] = []
+    for table_no, table in enumerate(tables if tables is not None else (page.extract_tables() or [])):
+        table_text = " ".join(_clean_text(cell) for row in table for cell in (row or []) if cell)
+        if not any(label in table_text for label in ("보장내용", "가입금액", "특약명", "담보명", "보험기간", "보험료")):
+            continue
+        for row_no, row in enumerate(table):
+            if (table_no, row_no) in known or not row:
+                continue
+            # pdfplumber의 빈 셀은 None이다. str(None)=="None"을 원문행으로
+            # 오인하면 존재하지 않는 source row가 만들어지므로 실제 셀만 정규화한다.
+            cells = [_clean_text(cell) for cell in row if _clean_text(cell)]
+            if not cells:
+                continue
+            original = next(
+                (cell for cell in cells if len(cell) >= 2 and not any(label == cell for label in _REFERENCE_LABELS)),
+                None,
+            )
+            if not original:
+                # 헤더/라벨 단독행도 좌표가 사라지지 않도록 원문 라벨을 보존한다.
+                original = cells[0]
+            money_text = next((cell for cell in cells if re.search(r"\d[\d,]*(?:\.\d+)?\s*(?:억|만|원)", cell)), "")
+            parsed = _parse_amount(money_text)
+            riders.append(ProposalRider(
+                rider_type="참고",
+                rider_name=original,
+                coverage_period=next((cell for cell in cells if re.search(r"\d+\s*(?:년|세|개월)", cell)), None),
+                payment_period=None,
+                coverage_amount=parsed if parsed > 0 else None,
+                coverage_amount_text=money_text,
+                premium=None,
+                premium_text=None,
+                renewal_status="갱신" if any("갱신" in cell for cell in cells) else None,
+                source_page=source_page,
+                source_table=table_no,
+                source_row=row_no,
+            ))
+    return riders
+
+
+def _extract_benefit_riders_from_page(page, source_page: Optional[int] = None) -> List[ProposalRider]:
     """보장내역 표에서 세부 담보를 보강 추출한다."""
     riders: List[ProposalRider] = []
-    for table in page.extract_tables() or []:
+    for table_no, table in enumerate(page.extract_tables() or []):
         header_row = None
         for i, row in enumerate(table):
             if row and any(cell and "특약명" in str(cell) for cell in row) and any(cell and "지급금액" in str(cell) for cell in row):
@@ -243,7 +289,7 @@ def _extract_benefit_riders_from_page(page) -> List[ProposalRider]:
         benefit_amount_col = _find_col_index(header, ["지급금액"])
         current_type = "특약"
         current_name = ""
-        for row in table[header_row + 1:]:
+        for row_no, row in enumerate(table[header_row + 1:], header_row + 1):
             if not row or all(not cell for cell in row):
                 continue
             raw_type = _get_cell(row, type_col)
@@ -271,6 +317,9 @@ def _extract_benefit_riders_from_page(page) -> List[ProposalRider]:
                 coverage_amount_text=amount_text,
                 premium=_parse_amount(premium_text) if premium_text else None,
                 premium_text=premium_text or None,
+                source_page=source_page,
+                source_table=table_no,
+                source_row=row_no,
             ))
     return riders
 
@@ -278,7 +327,8 @@ def _extract_benefit_riders_from_page(page) -> List[ProposalRider]:
 def _find_col_index(header: list, keywords: list) -> Optional[int]:
     """헤더에서 컬럼 인덱스 찾기"""
     for i, cell in enumerate(header):
-        if cell and any(kw in str(cell) for kw in keywords):
+        compact = re.sub(r"\s+", "", str(cell or ""))
+        if cell and any(re.sub(r"\s+", "", kw) in compact for kw in keywords):
             return i
     return None
 
@@ -339,7 +389,7 @@ def _extract_contract_terms(page) -> tuple[Optional[str], Optional[str]]:
     return contract_period, payment_method
 
 
-def _rider_key(rider: ProposalRider) -> tuple[str, int]:
+def _rider_key(rider: ProposalRider) -> tuple:
     name = re.sub(r"\s+", "", rider.rider_name)
     # 1~5종 수술처럼 같은 특약을 종별로 반복한 행은 제안서 검수에서는 하나로 묶는다.
     grouped = False
@@ -347,7 +397,7 @@ def _rider_key(rider: ProposalRider) -> tuple[str, int]:
         name = "상해1~5종수술보장"
         grouped = True
     name = re.sub(r"_?[1-5]종수술$", "종수술", name)
-    return (name, 0 if grouped else rider.coverage_amount)
+    return (name, 0 if grouped else rider.coverage_amount, rider.source_page, rider.source_table, rider.source_row)
 
 
 def _dedupe_riders(riders: List[ProposalRider]) -> List[ProposalRider]:

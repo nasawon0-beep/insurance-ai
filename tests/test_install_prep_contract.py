@@ -3,7 +3,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,8 +26,8 @@ def _app_versions():
     return package, package_lock["version"], tauri, cargo, lock
 
 
-def test_app_version_is_exactly_2_5_2_everywhere():
-    assert _app_versions() == ("2.5.2",) * 5
+def test_app_version_is_exactly_2_5_3_everywhere():
+    assert _app_versions() == ("2.5.3",) * 5
 
 
 def test_sync_version_handles_windows_cargo_lock_newlines_and_is_strict():
@@ -58,6 +61,7 @@ def test_windows_sidecar_build_is_pinned_to_python_311():
     assert '"control-server"' in source and '"local-engine"' in source
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell/Python installation contract")
 def test_powershell_51_native_argv_probes_three_interpreters(tmp_path):
     python311 = Path(os.environ["LOCALAPPDATA"]) / "Programs/Python/Python311/python.exe"
     interpreters = [

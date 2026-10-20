@@ -376,7 +376,7 @@ def test_classify_question_routes_flexible_db_keywords():
 
 
 def test_summarize_question_uses_light_model(client, monkeypatch):
-    _seed_customer(client, name="이영희")
+    _seed_customer(client, name="합성고객")
     captured: list[tuple[str, str]] = []
 
     def fake(prompt, model):
@@ -385,11 +385,12 @@ def test_summarize_question_uses_light_model(client, monkeypatch):
 
     from database import assistant
     monkeypatch.setattr(assistant, "_call_llm", fake)
+    monkeypatch.setattr(assistant, "_resolve_assistant_model", lambda *args, **kwargs: "synthetic-light-model")
 
     body = client.post("/assistant/ask", json={"question": "최근 상담 내용 요약해줘"}).json()
     assert body["routing_type"] == "summarize"
-    assert body["model"] == "qwen2.5:3b"
-    assert captured[0][1] == "qwen2.5:3b"
+    assert body["model"] == "synthetic-light-model"
+    assert captured[0][1] == "synthetic-light-model"
 
 
 def test_rag_question_routes_to_rag_answer(client, monkeypatch):

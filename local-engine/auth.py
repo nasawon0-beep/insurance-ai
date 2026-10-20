@@ -6,6 +6,7 @@ import hmac
 import os
 import secrets
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -71,25 +72,25 @@ def _verify_password(password: str, stored: str) -> bool:
 
 class PasswordManager:
     def is_initialized(self) -> bool:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             return conn.execute("SELECT 1 FROM password WHERE id = 1").fetchone() is not None
 
     def setup(self, password: str) -> None:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             if conn.execute("SELECT 1 FROM password WHERE id = 1").fetchone():
                 raise ValueError("마스터 비밀번호가 이미 설정되어 있습니다.")
             conn.execute("INSERT INTO password (id, hash) VALUES (1, ?)", (_hash_password(password),))
             conn.commit()
 
     def verify(self, password: str) -> bool:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             row = conn.execute("SELECT hash FROM password WHERE id = 1").fetchone()
         return bool(row and _verify_password(password, row["hash"]))
 
 
 class SessionManager:
     def cleanup_expired_sessions(self) -> int:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (_now_iso(),))
             conn.commit()
             return cur.rowcount
@@ -99,7 +100,7 @@ class SessionManager:
         sid = secrets.token_urlsafe(32)
         now = _now()
         expires = now + _SESSION_TTL
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, device_id, created_at, last_accessed_at, expires_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -113,7 +114,7 @@ class SessionManager:
         if not session_id:
             return False
         expires = (_now() + _SESSION_TTL).isoformat()
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             cur = conn.execute(
                 "UPDATE sessions SET last_accessed_at = ?, expires_at = ? WHERE id = ?",
                 (_now_iso(), expires, session_id),
@@ -122,12 +123,12 @@ class SessionManager:
             return cur.rowcount > 0
 
     def invalidate_session(self, session_id: str) -> None:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
 
     def invalidate_all_sessions(self) -> None:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             conn.execute("DELETE FROM sessions")
             conn.commit()
 
@@ -187,7 +188,7 @@ def change_password(body: dict, x_session_id: Optional[str] = Header(None)):
         raise HTTPException(status_code=400, detail="비밀번호는 8자 이상이어야 합니다.")
     if not _pwd_mgr().verify(current):
         raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다.")
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.execute("UPDATE password SET hash = ? WHERE id = 1", (_hash_password(new),))
         conn.commit()
     _session_mgr().invalidate_all_sessions()

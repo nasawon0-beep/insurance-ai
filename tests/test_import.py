@@ -150,15 +150,16 @@ def test_name_only_match_is_added_as_new(client):
     assert r.json()["created"] == 1 and r.json()["skipped"] == 0
 
 
-def test_rrn_column_ignored_when_flag_off(client):
+def test_rrn_column_imported_when_legacy_env_is_off(client, monkeypatch):
+    monkeypatch.setenv("RRN_INPUT_ENABLED", "0")
     csv_text = "이름,주민번호\n최주민,900101-1234567\n"
     r = _commit(client, csv_text, {"name": "이름", "rrn": "주민번호"})
     b = r.json()
     assert b["created"] == 1
-    assert b["ignored_rrn"] is True
-    assert any("주민번호 컬럼 무시" in w for w in b["warnings"])
+    assert b["ignored_rrn"] is False
+    assert not any("주민번호 컬럼 무시" in w for w in b["warnings"])
     c = client.get("/customers").json()["customers"][0]
-    assert c["has_rrn"] is False
+    assert c["has_rrn"] is True
 
 
 def test_rrn_imported_when_flag_on(client, monkeypatch):

@@ -47,6 +47,20 @@ test("totalMonthlyPremium applies monthly, yearly, status, and invalid-premium r
   assert.deepEqual(totalMonthlyPremium([]), { total: 0, lumpSumCount: 0 });
 });
 
+test("proposal and reference policies stay out of premium and expiry KPIs", () => {
+  assert.deepEqual(totalMonthlyPremium([
+    { premium: 10000, payment_cycle: "MONTHLY", status: "ACTIVE", document_status: "CONFIRMED" },
+    { premium: 90000, payment_cycle: "MONTHLY", status: "ACTIVE", document_status: "PROPOSED" },
+    { premium: 80000, payment_cycle: "MONTHLY", status: "ACTIVE", document_status: "REFERENCE" },
+  ]), { total: 10000, lumpSumCount: 0 });
+  const today = new Date(2026, 8, 4);
+  assert.equal(expiringCount([
+    { end_date: "2026-09-05", status: "ACTIVE", document_status: "CONFIRMED" },
+    { end_date: "2026-09-05", status: "ACTIVE", document_status: "PROPOSED" },
+    { end_date: "2026-09-05", status: "ACTIVE", document_status: "REFERENCE" },
+  ], 30, today), 1);
+});
+
 test("daysUntil calculates day boundaries and ignores invalid dates", () => {
   const today = new Date(2026, 8, 4, 15, 30);
   assert.equal(daysUntil("2026-09-04", today), 0);

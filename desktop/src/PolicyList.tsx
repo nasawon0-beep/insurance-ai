@@ -24,6 +24,16 @@ export type PolicyCoverageDraft = {
   end_date?: string | null;
   confidence?: number | null;
   raw_text?: string | null;
+  source_occurrence_key?: string | null;
+  source_table?: number | null;
+  source_row?: number | null;
+  amount_status?: string | null;
+  rider_premium?: number | null;
+  rider_premium_text?: string | null;
+  coverage_period_text?: string | null;
+  payment_period_text?: string | null;
+  renewal_status?: string | null;
+  document_status?: string | null;
 };
 export type PolicyDraft = Record<string, string | number | boolean | null | PolicyCoverageDraft[] | undefined>;
 
@@ -483,7 +493,7 @@ export async function savePolicies(
     const p = policies[i];
     const label = (`${p.insurer ?? ""} ${p.product_name ?? ""}`).trim() || `${i + 1}번째 계약`;
     if (!p.insurer && !p.product_name && !p.premium_won) continue;
-    const prem = Number(String(p.premium_won ?? "").replace(/[^\d]/g, ""));
+    const prem = Number(String(p.premium_won ?? p.premium ?? "").replace(/[^\d]/g, ""));
     const memo =
       [
         p.insured_period && `보험기간 ${p.insured_period}`,
@@ -492,12 +502,14 @@ export async function savePolicies(
         .filter(Boolean)
         .join(" · ") || null;
     try {
-      const existing = existingPolicies.find((item) =>
-        key(item.insurer) === key(p.insurer) &&
-        key(item.product_name) === key(p.product_name) &&
-        key(item.start_date) === key(p.issued_date) &&
-        (key(p.insurer) !== "" || key(p.product_name) !== ""),
-      );
+      const existing = existingPolicies.find((item) => (
+        (key(p.source_hash) !== "" && key(item.source_hash) === key(p.source_hash)) ||
+        (key(item.insurer) === key(p.insurer) &&
+          key(item.product_name) === key(p.product_name) &&
+          key(item.start_date) === key(p.issued_date) &&
+          key(item.document_status ?? "CONFIRMED") === key(p.document_status ?? "CONFIRMED") &&
+          (key(p.insurer) !== "" || key(p.product_name) !== ""))
+      ));
       const created = existing ?? await api(`/customers/${cid}/policies`, {
         method: "POST",
         body: JSON.stringify({
@@ -516,6 +528,9 @@ export async function savePolicies(
           policyholder_name: (p.policyholder_name as string) || null,
           policyholder_rel: (p.policyholder_rel as string) || null,
           status: "ACTIVE",
+          document_status: (p.document_status as string) || "CONFIRMED",
+          source_hash: (p.source_hash as string) || null,
+          source_document_type: (p.source_document_type as string) || null,
           memo,
         }),
       });

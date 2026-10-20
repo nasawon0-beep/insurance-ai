@@ -1403,7 +1403,7 @@ async def capture(
                     doc_type = _doc_type(doc_text, file.filename)
 
                 page_texts = [t for _, t in full_text_pages] or ([doc_text] if doc_text else [])
-                if doc_type_enum == DocumentType.PROPOSAL:
+                if doc_type_enum in {DocumentType.PROPOSAL, DocumentType.PRODUCT_DESCRIPTION}:
                     doc_text = "\n".join(page_texts).strip()
                 elif doc_type_enum == DocumentType.COVERAGE_ANALYSIS_SHORT:
                     doc_text = "\n".join(page_texts).strip()
@@ -1427,14 +1427,18 @@ async def capture(
                 raw_doc_text = doc_text
                 if ctx_prefix:
                     doc_text = ctx_prefix + doc_text
-                if doc_type_enum == DocumentType.PROPOSAL:
+                if doc_type_enum in {DocumentType.PROPOSAL, DocumentType.PRODUCT_DESCRIPTION}:
                     t0 = time.perf_counter()
                     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
                     try:
                         tmp_pdf.write(data)
                         tmp_pdf.close()
                         candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
-                        proposal_info = parse_proposal(tmp_pdf.name, candidate_pages)
+                        proposal_info = parse_proposal(
+                            tmp_pdf.name,
+                            candidate_pages,
+                            reference_mode=doc_type_enum == DocumentType.PRODUCT_DESCRIPTION,
+                        )
                     finally:
                         try:
                             os.unlink(tmp_pdf.name)
@@ -1466,27 +1470,77 @@ async def capture(
                                 "coverage_amount_text": r.coverage_amount_text,
                                 "premium": r.premium,
                                 "premium_text": r.premium_text,
+                                "renewal_status": r.renewal_status,
+                                "source_page": r.source_page,
+                                "source_table": r.source_table,
+                                "source_row": r.source_row,
                             }
                             for r in proposal_info.riders
                         ],
                         "page_count": _doc_type_metadata.get("page_count"),
                     }
-                    warns.append("가입제안서 검수 화면은 다음 PR에서 분리됩니다. 기존 보유담보로는 저장하지 않습니다.")
+                    document_status = "PROPOSED" if doc_type_enum == DocumentType.PROPOSAL else "REFERENCE"
+                    warns.append(
+                        "제안 계약/담보로 저장되며 가입확정 전에는 보유보장·보험료·AI문의 합산에서 제외됩니다."
+                        if document_status == "PROPOSED" else
+                        "상품설명서의 선택 가능한 담보입니다. 고객 가입담보로 추정하지 않고 참고 계약으로 저장합니다."
+                    )
+                    ledger_items = [
+                        {
+                            "source_hash": source_hash,
+                            "source_file_name": file.filename if file else None,
+                            "source_occurrence_key": f"{source_hash}:{r.source_page or 0}:{r.source_table or 0}:{r.source_row or 0}",
+                            "source_page": r.source_page,
+                            "source_table": r.source_table,
+                            "source_row": r.source_row,
+                            "insurer": proposal_info.insurer,
+                            "product_name": proposal_info.product_name,
+                            "coverage_type": r.rider_type,
+                            "rider_name": r.rider_name,
+                            "standard_name": _normalize_coverage_name(r.rider_name) or "기타",
+                            "amount": r.coverage_amount,
+                            "amount_text": r.coverage_amount_text,
+                            "amount_status": policy_coverages.infer_amount_status(r.coverage_amount, r.coverage_amount_text),
+                            "rider_premium": r.premium,
+                            "rider_premium_text": r.premium_text,
+                            "coverage_period_text": r.coverage_period,
+                            "payment_period_text": r.payment_period,
+                            "renewal_status": r.renewal_status,
+                            "document_status": document_status,
+                            "source_type": doc_type_enum.value,
+                            "raw_text": r.rider_name,
+                        }
+                        for r in proposal_info.riders
+                    ]
+                    draft_policy = {
+                        "insurer": proposal_info.insurer,
+                        "product_name": proposal_info.product_name or (file.filename if file else ""),
+                        "plan_type": proposal_info.plan_name,
+                        "premium": proposal_info.first_premium,
+                        "payment_cycle": proposal_info.payment_method,
+                        "status": "ACTIVE",
+                        "document_status": document_status,
+                        "source_hash": source_hash,
+                        "source_document_type": doc_type_enum.value,
+                        "insured_period": proposal_info.contract_period,
+                        "is_own": False,
+                        "policy_coverages": ledger_items,
+                    }
                     item = {
                         "fields": f,
                         "warnings": warns,
-                        "doc_type": "proposal",
+                        "doc_type": doc_type_enum.value,
                         "proposal_review": review,
                         "consultation": None,
-                        "policies": [],
+                        "policies": [draft_policy],
                         "coverage_status": [],
                         "policy_coverages": [],
                         "source_link_occurrences": [],
                         "coverage_review": review,
                         "coverages_text": "",
-                        "analysis_status": "proposal_review_ready",
+                        "analysis_status": "proposal_review_ready" if document_status == "PROPOSED" else "reference_review_ready",
                         "quick_contracts": [],
-                        "quick_coverages": review["riders"][:10],
+                        "quick_coverages": review["riders"],
                         "perf": {k: round(v, 3) for k, v in perf.items()},
                     }
                     mr = repo.match_customer(conn, f.get("phone"), f.get("name"), f.get("birth_date"))
@@ -2684,7 +2738,11 @@ def review_coverage_source_occurrence(
 @router.patch("/policies/{pid}")
 def patch_policy(pid: str, body: PolicyPatch, request: Request, conn=Depends(get_conn)):
     changed = body.model_dump(exclude_unset=True)
-    p = repo.update_policy(conn, pid, changed)
+    try:
+        p = repo.update_policy(conn, pid, changed)
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
     if p is None:
         raise HTTPException(status_code=404, detail="보험계약을 찾을 수 없습니다.")
     if changed:

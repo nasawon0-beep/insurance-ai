@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import db, repo
+    from . import db, repo, statistics
 except ImportError:  # python database/dedupe_policies.py 직접 실행 지원
     import db  # type: ignore
     import repo  # type: ignore
+    import statistics  # type: ignore
 
 DEFAULT_CUSTOMER_ID = "29c0c576fb204713974173d0cdc45649"
 
@@ -95,6 +96,8 @@ def apply_plan(conn: sqlite3.Connection, dedupe_plan: dict[str, Any]) -> dict[st
     except Exception:
         conn.rollback()
         raise
+    if deleted_policies:
+        statistics.invalidate_cache(conn)  # type: ignore[attr-defined]
     after = conn.execute("SELECT COUNT(*) AS c FROM policies WHERE customer_id = ?", (dedupe_plan["customer_id"],)).fetchone()["c"]
     return {"updated_coverages": updated_coverages, "deleted_policies": deleted_policies, "after_count": after}
 

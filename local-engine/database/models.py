@@ -114,6 +114,16 @@ def _check_policy_status(v):
     return v
 
 
+_DOCUMENT_STATUSES = {"CONFIRMED", "PROPOSED", "REFERENCE", "PENDING_REVIEW"}
+
+
+def _check_document_status(v):
+    value = str(v or "").strip().upper()
+    if value not in _DOCUMENT_STATUSES:
+        raise ValueError("문서 확정상태는 CONFIRMED/PROPOSED/REFERENCE/PENDING_REVIEW 중 하나여야 합니다.")
+    return value
+
+
 def _check_first_registered_ym(v):
     """최초 고객등록 년월. 비우면 서버가 현재 년월로 채운다. 'YYYY-MM' 또는 'YYYY-MM-DD' 만 허용."""
     if v is None or v == "":
@@ -253,6 +263,9 @@ class PolicyIn(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None        # 만기 (명시하면 자동계산 안 함)
     status: str = "ACTIVE"
+    document_status: str = "CONFIRMED"
+    source_hash: Optional[str] = None
+    source_document_type: Optional[str] = None
     memo: Optional[str] = None
     document_id: Optional[str] = None     # 연결된 약관 PDF의 RAG doc_id
     insured_period: Optional[str] = None  # 보험기간 원문 (예: '100세만기', '20년')
@@ -274,10 +287,23 @@ class PolicyIn(BaseModel):
     def _valid_status(cls, v):
         return _check_policy_status(v)
 
+    @field_validator("document_status")
+    @classmethod
+    def _valid_document_status(cls, v):
+        return _check_document_status(v) if v is not None else v
+
     @field_validator("policyholder_rel")
     @classmethod
     def _valid_ph_rel(cls, v):
         return _check_policyholder_rel(v)
+
+
+class CoverageConfirmation(BaseModel):
+    """검수자가 원본 좌표까지 대조해 실제 가입으로 선택한 담보 한 행."""
+    id: str = Field(..., min_length=1)
+    source_page: int = Field(..., ge=1)
+    source_table: int = Field(..., ge=0)
+    source_row: int = Field(..., ge=0)
 
 
 class PolicyPatch(BaseModel):
@@ -290,6 +316,9 @@ class PolicyPatch(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None        # "" 로 보내면 만기 없음으로 직접 확정
     status: Optional[str] = None
+    document_status: Optional[str] = None
+    source_hash: Optional[str] = None
+    source_document_type: Optional[str] = None
     memo: Optional[str] = None
     document_id: Optional[str] = None
     insured_period: Optional[str] = None
@@ -297,6 +326,8 @@ class PolicyPatch(BaseModel):
     is_own: Optional[bool] = None  # 보내면 갱신, 명시적 null 이면 '미지정'으로 되돌림
     policyholder_name: Optional[str] = None  # "" 로 보내면 본인계약으로 되돌림
     policyholder_rel: Optional[str] = None
+    confirmed_coverages: Optional[List[CoverageConfirmation]] = None
+    coverage_selection_mode: Optional[str] = None
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -307,6 +338,21 @@ class PolicyPatch(BaseModel):
     @classmethod
     def _valid_status(cls, v):
         return _check_policy_status(v)
+
+    @field_validator("document_status")
+    @classmethod
+    def _valid_document_status(cls, v):
+        return _check_document_status(v) if v is not None else v
+
+    @field_validator("coverage_selection_mode")
+    @classmethod
+    def _valid_coverage_selection_mode(cls, v):
+        if v is None:
+            return v
+        value = str(v).strip().upper()
+        if value != "REPLACE":
+            raise ValueError("담보 선택 변경 방식은 REPLACE만 지원합니다.")
+        return value
 
     @field_validator("policyholder_rel")
     @classmethod

@@ -43,14 +43,14 @@ def test_appendix_header_identity_is_structural_for_unseen_insurers_and_ambiguou
     for insurer in insurer_names:
         rows = [
             ["별첨", "상품별 보험가입현황", "1"], [], [insurer], ["새 상품 1종"],
-            ["계약자/피보험자", "홍*동"], ["보험기간", "2025.01.01~2035.01.01"],
+            ["계약자/피보험자", "합성고객"], ["보험기간", "2031.01.01~2041.01.01"],
             ["NO", "구분", "회사 담보명", "신정원 담보명", "가입금액"],
         ]
         state, identity = policy_coverages._appendix_header_policy(rows, 6)
         assert state == "explicit"
         assert identity == {
             "insurer": insurer, "product_name": "새 상품 1종",
-            "start_date": "2025-01-01", "end_date": "2035-01-01",
+            "start_date": "2031-01-01", "end_date": "2041-01-01",
         }
 
     ambiguous = [

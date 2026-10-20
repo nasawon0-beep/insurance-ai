@@ -60,6 +60,8 @@ type PolicyCoverage = {
   customer_id: string;
   policy_id: string | null;
   source_page: number | null;
+  source_table?: number | null;
+  source_row?: number | null;
   insurer: string | null;
   product_name: string | null;
   rider_name: string | null;
@@ -70,6 +72,12 @@ type PolicyCoverage = {
   end_date: string | null;
   coverage_type: string | null;
   link_status?: string | null;
+  rider_premium?: number | null;
+  rider_premium_text?: string | null;
+  coverage_period_text?: string | null;
+  payment_period_text?: string | null;
+  renewal_status?: string | null;
+  document_status?: string | null;
 };
 
 type Policy = {
@@ -84,6 +92,7 @@ type Policy = {
   start_date: string | null;
   end_date: string | null;
   status: string;
+  document_status?: string | null;
   memo: string | null;
   document_id: string | null;
   insured_period: string | null;
@@ -223,6 +232,7 @@ const EMPTY_POLICY = {
   insured_period: "",
   payment_period: "",
   status: "ACTIVE",
+  document_status: "CONFIRMED",
   memo: "",
   is_own: true, // "내 계약" — 기본 ON (상담자가 입력하는 계약 대부분이 본인 판매분)
   policyholder_name: "", // 계약자 (피보험자와 다를 때만). 비우면 본인계약.
@@ -1155,7 +1165,7 @@ export default function CustomersScreen({
       }
     };
     const saveExtractedAnalysis = async (cid: string, row: any) => {
-      if (Array.isArray(row.policies) && row.policies.length > 0 && !isProposalDocument(row.doc_type)) {
+      if (Array.isArray(row.policies) && row.policies.length > 0) {
         const pol = await savePolicies(api, cid, row.policies, row.policies.map(() => true));
         if (pol.failures.length > 0) throw new Error(`보험계약 저장 ${pol.failures.length}건 실패`);
       }
@@ -1977,8 +1987,19 @@ function PoliciesSection({
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<PolicyForm>(EMPTY_POLICY);
   const [editOrigEnd, setEditOrigEnd] = useState(""); // 편집 시작 시점의 만기일 (안 건드렸는지 판단용)
+
   const [dateHints, setDateHints] = useState<Record<string, boolean>>({});
   const [expandedCoveragePolicyId, setExpandedCoveragePolicyId] = useState<string | null>(null);
+  const [confirmedCoverageIds, setConfirmedCoverageIds] = useState<Record<string, string[]>>({});
+  const togglePolicyCoverages = (policy: Policy) => {
+    setExpandedCoveragePolicyId((current) => current === policy.id ? null : policy.id);
+    setConfirmedCoverageIds((current) => current[policy.id] ? current : {
+      ...current,
+      [policy.id]: (policy.coverages ?? [])
+        .filter((coverage) => coverage.document_status === "CONFIRMED")
+        .map((coverage) => coverage.id),
+    });
+  };
 
   const toBody = (f: PolicyForm) => ({
     ...Object.fromEntries(
@@ -2007,6 +2028,13 @@ function PoliciesSection({
   const startEdit = (p: Policy) => {
     setEditId(p.id);
     setEditOrigEnd(p.end_date ?? "");
+
+    setConfirmedCoverageIds((current) => current[p.id] ? current : {
+      ...current,
+      [p.id]: (p.coverages ?? [])
+        .filter((coverage) => coverage.document_status === "CONFIRMED")
+        .map((coverage) => coverage.id),
+    });
     setEditForm({
       insurer: p.insurer ?? "",
       product_name: p.product_name ?? "",
@@ -2019,6 +2047,7 @@ function PoliciesSection({
       insured_period: p.insured_period ?? "",
       payment_period: p.payment_period ?? "",
       status: p.status,
+      document_status: p.document_status ?? "CONFIRMED",
       memo: p.memo ?? "",
       is_own: p.is_own !== false,
       policyholder_name: p.policyholder_name ?? "",
@@ -2028,11 +2057,36 @@ function PoliciesSection({
 
   const saveEdit = wrap(async () => {
     if (editId) {
+      const policy = detail.policies.find((item) => item.id === editId);
+      const hasCoverageLedger = (policy?.coverages?.length ?? 0) > 0;
+      const selectedIds = (policy?.coverages ?? [])
+        .filter((coverage) => (confirmedCoverageIds[editId] ?? []).includes(coverage.id))
+        .map((coverage) => coverage.id);
+      if (editForm.document_status === "CONFIRMED" && hasCoverageLedger) {
+        if (!selectedIds.length) {
+          throw new Error("담보 원장을 펼쳐 원본 좌표를 확인한 뒤 실제 가입담보만 선택하세요.");
+        }
+      }
       const body: Record<string, unknown> = toBody(editForm);
+      if (editForm.document_status === "CONFIRMED" && hasCoverageLedger) {
+        body.coverage_selection_mode = "REPLACE";
+        body.confirmed_coverages = (policy?.coverages ?? [])
+          .filter((coverage) => (confirmedCoverageIds[editId] ?? []).includes(coverage.id))
+          .map((coverage) => ({
+            id: coverage.id,
+            source_page: coverage.source_page,
+            source_table: coverage.source_table,
+            source_row: coverage.source_row,
+          }));
+      }
       // 만기일을 건드리지 않았으면 아예 안 보낸다 → 보험기간 변경 시 서버가 자동 재계산할 수 있게.
       // (만기일을 직접 넣으면 end_date_derived=0 으로 고정되어 재계산이 막힘)
       if (editForm.end_date.trim() === editOrigEnd.trim()) delete body.end_date;
       await api(`/policies/${editId}`, { method: "PATCH", body: JSON.stringify(body) });
+      setConfirmedCoverageIds((current) => ({
+        ...current,
+        [editId]: editForm.document_status === "CONFIRMED" ? selectedIds : [],
+      }));
     }
     setEditId(null);
   });
@@ -2183,6 +2237,24 @@ function PoliciesSection({
                         내 계약
                       </label>
                       <label style={{ fontSize: 12 }}>
+                        문서 확정성
+                        <select
+                          style={{ ...inputStyle, width: 110 }}
+                          value={editForm.document_status}
+                          onChange={(e) => setEditForm({ ...editForm, document_status: e.target.value })}
+                        >
+                          <option value="PROPOSED">제안</option>
+                          <option value="REFERENCE">참고</option>
+                          <option value="PENDING_REVIEW">확인대기</option>
+                          <option value="CONFIRMED">가입확정</option>
+                        </select>
+                      </label>
+                      {editForm.document_status === "CONFIRMED" && (p.coverages?.length ?? 0) > 0 && (
+                        <span style={{ fontSize: 11, color: "#9a3412", maxWidth: 260 }}>
+                          아래 원장에서 원본 좌표를 확인한 실제 가입담보만 선택합니다. 선택을 모두 취소하려면 문서 확정성을 참고/제안/확인대기로 변경하세요.
+                        </span>
+                      )}
+                      <label style={{ fontSize: 12 }}>
                         상태
                         <select
                           style={{ ...inputStyle, width: 110 }}
@@ -2210,7 +2282,19 @@ function PoliciesSection({
                 <tr key={p.id} style={{ borderBottom: "1px solid #eee" }}>
                   <td style={policyCellStyle} title={p.insurer || undefined}>{p.insurer || "-"}</td>
                   <td style={policyCellStyle} title={p.product_name || undefined}>
-                    {p.product_name || "-"}
+                    <button
+                      type="button"
+                      disabled={(p.coverage_count ?? p.coverages?.length ?? 0) === 0}
+                      onClick={() => togglePolicyCoverages(p)}
+                      style={{ border: 0, background: "transparent", padding: 0, color: "#2563eb", textDecoration: "underline", cursor: "pointer", font: "inherit" }}
+                    >
+                      {p.product_name || "-"}
+                    </button>
+                    {p.document_status && p.document_status !== "CONFIRMED" ? (
+                      <span style={{ ...policyBadgeStyle, color: "#9a3412", background: "#fff7ed" }}>
+                        {p.document_status === "PROPOSED" ? "제안" : p.document_status === "REFERENCE" ? "참고" : "확인대기"}
+                      </span>
+                    ) : null}
                     {p.is_own ? (
                       <span style={{ ...policyBadgeStyle, color: "#1a7a2e", background: "#e7f6e9" }}>
                         내 계약
@@ -2276,7 +2360,7 @@ function PoliciesSection({
                     <button onClick={() => startEdit(p)}>수정</button>{" "}
                     <button
                       disabled={(p.coverage_count ?? p.coverages?.length ?? 0) === 0}
-                      onClick={() => setExpandedCoveragePolicyId(expandedCoveragePolicyId === p.id ? null : p.id)}
+                      onClick={() => togglePolicyCoverages(p)}
                     >
                       담보 보기 ({p.coverage_count ?? p.coverages?.length ?? 0})
                     </button>{" "}
@@ -2297,37 +2381,72 @@ function PoliciesSection({
                     )}
                   </td>
                 </tr>
-                {expandedCoveragePolicyId === p.id && (
-                  <tr key={`${p.id}-coverages`} style={{ background: "var(--color-bg-surface)" }}>
-                    <td colSpan={7} style={{ padding: 10 }}>
-                      <div style={{ fontWeight: 700, marginBottom: 6 }}>담보 원장 {p.coverages?.length ?? 0}건</div>
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-                          <thead>
-                            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
-                              <th style={{ padding: 5 }}>회사 담보명</th>
-                              <th style={{ padding: 5 }}>표준명/신정원 담보명</th>
-                              <th style={{ padding: 5 }}>가입금액</th>
-                              <th style={{ padding: 5 }}>보험기간</th>
-                              <th style={{ padding: 5 }}>출처</th>
+                {expandedCoveragePolicyId === p.id && (() => {
+                  const confirmedCoverages = (p.coverages ?? []).filter((coverage) => coverage.document_status === "CONFIRMED");
+                  const referenceCoverages = (p.coverages ?? []).filter((coverage) => coverage.document_status !== "CONFIRMED");
+                  const renderCoverageTable = (rows: PolicyCoverage[]) => (
+                    <div style={{ overflowX: "auto", marginBottom: 10 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
+                            <th style={{ padding: 5 }}>실제 가입 선택</th>
+                            <th style={{ padding: 5 }}>행 상태</th>
+                            <th style={{ padding: 5 }}>회사 담보명</th>
+                            <th style={{ padding: 5 }}>표준명/신정원 담보명</th>
+                            <th style={{ padding: 5 }}>가입금액</th>
+                            <th style={{ padding: 5 }}>담보보험료</th>
+                            <th style={{ padding: 5 }}>보험기간</th>
+                            <th style={{ padding: 5 }}>납입기간</th>
+                            <th style={{ padding: 5 }}>갱신</th>
+                            <th style={{ padding: 5 }}>출처</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((c) => (
+                            <tr key={c.id} style={{ borderBottom: "1px solid var(--color-border-default)" }}>
+                              <td style={{ padding: 5 }}>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`실제 가입담보 선택 ${c.rider_name || c.id}`}
+                                  checked={(confirmedCoverageIds[p.id] ?? []).includes(c.id)}
+                                  onChange={(event) => setConfirmedCoverageIds((current) => {
+                                    const selected = new Set(current[p.id] ?? []);
+                                    if (event.target.checked) selected.add(c.id); else selected.delete(c.id);
+                                    return { ...current, [p.id]: [...selected] };
+                                  })}
+                                />
+                              </td>
+                              <td style={{ padding: 5 }}>{c.document_status === "CONFIRMED" ? "가입확정" : c.document_status === "PROPOSED" ? "제안" : c.document_status === "PENDING_REVIEW" ? "확인대기" : "참고"}</td>
+                              <td style={{ padding: 5 }}>{c.rider_name || "-"}</td>
+                              <td style={{ padding: 5 }}>{c.standard_name || "-"}</td>
+                              <td style={{ padding: 5 }}>{c.amount_text || (c.amount != null ? c.amount.toLocaleString() : "-")}</td>
+                              <td style={{ padding: 5 }}>{c.rider_premium_text || (c.rider_premium != null ? c.rider_premium.toLocaleString() : "-")}</td>
+                              <td style={{ padding: 5 }}>{c.coverage_period_text || (c.start_date || c.end_date ? `${c.start_date || "-"} ~ ${c.end_date || "-"}` : "-")}</td>
+                              <td style={{ padding: 5 }}>{c.payment_period_text || "-"}</td>
+                              <td style={{ padding: 5 }}>{c.renewal_status || "-"}</td>
+                              <td style={{ padding: 5 }}>{c.source_page ? `p.${c.source_page} / t.${c.source_table ?? "-"} / r.${c.source_row ?? "-"}` : "-"}</td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {(p.coverages ?? []).map((c) => (
-                              <tr key={c.id} style={{ borderBottom: "1px solid var(--color-border-default)" }}>
-                                <td style={{ padding: 5 }}>{c.rider_name || "-"}</td>
-                                <td style={{ padding: 5 }}>{c.standard_name || "-"}</td>
-                                <td style={{ padding: 5 }}>{c.amount_text || (c.amount != null ? c.amount.toLocaleString() : "-")}</td>
-                                <td style={{ padding: 5 }}>{c.start_date || "-"} ~ {c.end_date || "-"}</td>
-                                <td style={{ padding: 5 }}>{c.source_page ? `p.${c.source_page}` : "-"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </td>
-                  </tr>
-                )}
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                  return (
+                    <tr key={`${p.id}-coverages`} style={{ background: "var(--color-bg-surface)" }}>
+                      <td colSpan={7} style={{ padding: 10 }}>
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>가입 담보 원장 {confirmedCoverages.length}건</div>
+                        {renderCoverageTable(confirmedCoverages)}
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                          문서 참고행 원장 {referenceCoverages.length}건
+                          <span style={{ fontWeight: 400, color: "#9a3412", marginLeft: 8 }}>
+                            설명·예시·선택특약이 섞일 수 있으며 자동으로 가입담보가 아닙니다.
+                          </span>
+                        </div>
+                        {renderCoverageTable(referenceCoverages)}
+                      </td>
+                    </tr>
+                  );
+                })()}
                 </>
               ),
             )}

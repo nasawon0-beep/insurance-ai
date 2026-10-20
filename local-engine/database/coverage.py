@@ -772,7 +772,10 @@ def _list_customer_policy_coverages(conn: sqlite3.Connection, customer_id: str) 
                source_page, source_type, source_link_status, review_status, insurer, product_name, start_date, end_date
         FROM policy_coverages
         WHERE customer_id = ?
-          AND (policy_id IS NULL OR policy_id IN (SELECT id FROM policies WHERE customer_id = ?))
+          AND document_status = 'CONFIRMED'
+          AND (policy_id IS NULL OR policy_id IN (
+                SELECT id FROM policies WHERE customer_id = ? AND document_status = 'CONFIRMED'
+          ))
         """,
         (customer_id, customer_id),
     ).fetchall()
@@ -1043,7 +1046,24 @@ def analyze(
         ensure_schema(conn)
     _emit_progress(customer_id, progress_callback, "schema_ready", "보장분석 DB 스키마 확인 완료", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000))
     step_started = time.perf_counter()
-    policies = repo.list_policies(conn, customer_id)
+    policies = [
+        policy for policy in repo.list_policies(conn, customer_id)
+        if str(policy.get("document_status") or "CONFIRMED").upper() == "CONFIRMED"
+    ]
+    # 행 원장이 있는 계약은 선택된 CONFIRMED 행만 근거로 쓴다. 그렇지 않으면
+    # 미선택 설명문구가 policy product_name 금액 fallback으로 되살아난다.
+    # 행 원장이 전혀 없는 기존 확정계약만 종전 policy-text fallback을 유지한다.
+    ledger_policy_ids = {
+        str(row["policy_id"])
+        for row in conn.execute(
+            "SELECT DISTINCT policy_id FROM policy_coverages "
+            "WHERE customer_id = ? AND policy_id IS NOT NULL",
+            (customer_id,),
+        ).fetchall()
+    }
+    fallback_policies = [
+        policy for policy in policies if str(policy.get("id") or "") not in ledger_policy_ids
+    ]
     _emit_progress(customer_id, progress_callback, "policies_loaded", f"계약 목록 로드 완료 ({len(policies)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), policy_count=len(policies))
     step_started = time.perf_counter()
     coverages = _list_customer_policy_coverages(conn, customer_id)
@@ -1055,7 +1075,7 @@ def analyze(
     _emit_progress(customer_id, progress_callback, "documents_loaded", f"RAG 문서 목록 로드 완료 ({len(doc_ids)}개)", status="completed", elapsed_ms=int((time.perf_counter() - step_started) * 1000), doc_count=len(doc_ids), doc_ids=doc_ids)
     profile = profile or {}
     items = _build_items(
-        policies,
+        fallback_policies,
         doc_ids,
         profile,
         coverages,

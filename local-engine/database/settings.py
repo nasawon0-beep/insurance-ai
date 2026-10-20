@@ -1,12 +1,9 @@
-"""
-로컬 앱 설정 (app_settings 테이블) + RRN 입력 토글의 유효값 계산.
+"""로컬 앱 설정.
 
-RRN 파일럿 토글:
-  - 환경변수 RRN_INPUT_ENABLED 이 "0" 또는 "1" 이면 그 값이 최우선 (source="env", 잠금).
-  - 아니면 app_settings 의 "rrn_input_enabled" ("1"/"0") 사용 (source="local").
-  - 둘 다 없으면 기본 False (source="default").
-
-control-server / 텔레메트리와 무관하다. 순수 로컬.
+주민등록번호 입력은 2026-10-01 제품 결정에 따라 항상 활성이다. 과거
+``RRN_INPUT_ENABLED`` 환경변수와 ``app_settings.rrn_input_enabled`` 값은 기존
+DB/실행 환경에 남아 있어도 기능을 끄지 않는다. 이 결정은 암호화, 목록·매칭
+응답 마스킹, 명시적 전체값 조회 사유 및 접근 로그를 제거하지 않는다.
 """
 from __future__ import annotations
 
@@ -44,23 +41,19 @@ def _env_forced() -> Optional[bool]:
 
 
 def rrn_setting(conn: sqlite3.Connection) -> Tuple[bool, str]:
-    """(유효값, source) — source ∈ {"env","local","default"}."""
-    forced = _env_forced()
-    if forced is not None:
-        return forced, "env"
-    local = get_setting(conn, _RRN_KEY)
-    if local in ("0", "1"):
-        return local == "1", "local"
-    return False, "default"
+    """항상 활성인 현재 제품 정책을 반환한다."""
+    return True, "hardcoded"
 
 
 def rrn_enabled(conn: sqlite3.Connection) -> bool:
-    return rrn_setting(conn)[0]
+    return True
 
 
 def rrn_locked_by_env() -> bool:
-    return _env_forced() is not None
+    """기능은 제품 정책으로 고정되어 설정 API에서 변경할 수 없다."""
+    return True
 
 
 def set_rrn_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
-    set_setting(conn, _RRN_KEY, "1" if enabled else "0")
+    """호환용 no-op. 과거 설정값이 현재 제품 정책을 덮어쓰지 못하게 한다."""
+    return None

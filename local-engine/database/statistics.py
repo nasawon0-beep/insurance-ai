@@ -13,6 +13,7 @@ EnhancedDashboard를 위한 통계 API 백엔드.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from threading import RLock
 from typing import Callable, Optional
 
 try:
@@ -74,10 +75,16 @@ def _customers(conn) -> list[dict]:
 
 
 def _policies(conn) -> list[dict]:
-    return _decrypt_fields(
+    policies = _decrypt_fields(
         _rowdicts(conn, "policies"),
         {"insurer", "payment_cycle", "start_date", "end_date"},
     )
+    # 마이그레이션 전 행/호출자는 document_status가 없으므로 기존 확정계약으로
+    # 호환한다. 명시적으로 제안/참고/확인대기인 문서만 집계에서 제외한다.
+    return [
+        policy for policy in policies
+        if str(policy.get("document_status") or "CONFIRMED").upper() == "CONFIRMED"
+    ]
 
 
 def _consultations(conn) -> list[dict]:
@@ -319,41 +326,77 @@ def get_premium_distribution(conn) -> dict:
 
 # 캐시 관리 (간단한 인메모리 캐시)
 _cache: dict[str, tuple[datetime, dict]] = {}
+_cache_generation: dict[str, int] = {}
+_cache_epoch = 0
+_cache_lock = RLock()
 _CACHE_TTL = timedelta(minutes=5)
 
 
 def _cache_identity(conn) -> str:
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
-        return str(row[2]) if row and len(row) > 2 else str(id(conn))
+        path = str(row[2]) if row and len(row) > 2 else ""
+        return path or str(id(conn))
     except Exception:
         return str(id(conn))
 
 
 def clear_cache() -> None:
     """테스트/수동 새로고침용 캐시 초기화."""
-    _cache.clear()
+    global _cache_epoch
+    with _cache_lock:
+        _cache.clear()
+        _cache_generation.clear()
+        _cache_epoch += 1
+
+
+def invalidate_cache(conn) -> None:
+    """커밋된 통계 입력 변경 뒤 해당 DB의 summary/chart 캐시만 무효화한다.
+
+    generation을 먼저 올려 무효화와 동시에 진행 중이던 계산이 완료되더라도
+    이전 스냅샷을 캐시에 다시 삽입하지 못하게 한다.
+    """
+    identity = _cache_identity(conn)
+    prefix = f"{identity}:"
+    with _cache_lock:
+        _cache_generation[identity] = _cache_generation.get(identity, 0) + 1
+        for key in [key for key in _cache if key.startswith(prefix)]:
+            del _cache[key]
+
+
+def _cache_generation_token(identity: str) -> tuple[int, int]:
+    return _cache_epoch, _cache_generation.get(identity, 0)
 
 
 def get_cached_summary(conn, period: str, year: int, month: Optional[int]) -> dict:
     """캐시된 통계 요약 반환 (5분 TTL)."""
-    cache_key = f"{_cache_identity(conn)}:summary:{period}:{year}:{month}"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if datetime.now() - cached_time < _CACHE_TTL:
-            return cached_data
+    identity = _cache_identity(conn)
+    cache_key = f"{identity}:summary:{period}:{year}:{month}"
+    with _cache_lock:
+        generation = _cache_generation_token(identity)
+        cached = _cache.get(cache_key)
+        if cached:
+            cached_time, cached_data = cached
+            if datetime.now() - cached_time < _CACHE_TTL:
+                return cached_data
     data = calculate_summary(conn, period, year, month)
-    _cache[cache_key] = (datetime.now(), data)
+    with _cache_lock:
+        if _cache_generation_token(identity) == generation:
+            _cache[cache_key] = (datetime.now(), data)
     return data
 
 
 def get_cached_charts(conn, chart_type: str, year: int) -> dict:
     """캐시된 차트 데이터 반환 (5분 TTL)."""
-    cache_key = f"{_cache_identity(conn)}:chart:{chart_type}:{year}"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if datetime.now() - cached_time < _CACHE_TTL:
-            return cached_data
+    identity = _cache_identity(conn)
+    cache_key = f"{identity}:chart:{chart_type}:{year}"
+    with _cache_lock:
+        generation = _cache_generation_token(identity)
+        cached = _cache.get(cache_key)
+        if cached:
+            cached_time, cached_data = cached
+            if datetime.now() - cached_time < _CACHE_TTL:
+                return cached_data
 
     if chart_type == "monthly_trend":
         data = get_monthly_trend(conn, year)
@@ -367,5 +410,7 @@ def get_cached_charts(conn, chart_type: str, year: int) -> dict:
         data = {"labels": [], "data": []}
 
     result = {"chart_type": chart_type, "data": data}
-    _cache[cache_key] = (datetime.now(), result)
+    with _cache_lock:
+        if _cache_generation_token(identity) == generation:
+            _cache[cache_key] = (datetime.now(), result)
     return result

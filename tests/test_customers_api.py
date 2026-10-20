@@ -760,19 +760,18 @@ def test_rrn_customer_detail_writes_access_log(client, rrn_on):
     assert detail_log[0]["accessed_at"]
 
 
-def test_rrn_customer_detail_does_not_log_when_toggle_off(client, db_path, monkeypatch):
-    monkeypatch.setenv("RRN_INPUT_ENABLED", "1")
-    cid = client.post("/customers", json={"name": "토글대상", "rrn": RRN}).json()["id"]
+def test_rrn_detail_stays_enabled_and_logs_when_legacy_env_is_off(client, db_path, monkeypatch):
     monkeypatch.setenv("RRN_INPUT_ENABLED", "0")
+    cid = client.post("/customers", json={"name": "항상활성", "rrn": RRN}).json()["id"]
 
     detail = client.get(f"/customers/{cid}", headers={"X-Actor-Id": "advisor-2"})
     assert detail.status_code == 200
-    assert detail.json()["rrn"] is None
+    assert detail.json()["rrn"] == RRN
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM rrn_access_log "
             "WHERE customer_id = ? AND access_type = 'detail_open'", (cid,)
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 1
 
 
 def test_customer_detail_without_rrn_does_not_log(client, rrn_on):
@@ -816,20 +815,26 @@ def test_rrn_update_response_writes_access_log(client, rrn_on):
     assert log[0]["purpose"] == "고객 저장 응답에 주민등록번호 포함"
 
 
-def test_rrn_save_responses_do_not_log_without_exposed_rrn(client, db_path, monkeypatch):
+def test_rrn_save_responses_log_even_when_legacy_env_is_off(client, db_path, monkeypatch):
     monkeypatch.setenv("RRN_INPUT_ENABLED", "0")
     created = client.post(
-        "/customers", json={"name": "토글꺼짐", "rrn": RRN}
+        "/customers", json={"name": "항상활성", "rrn": RRN},
+        headers={"X-Actor-Id": "creator-off-env"},
     )
-    assert created.status_code == 201 and created.json()["rrn"] is None
+    assert created.status_code == 201 and created.json()["rrn"] == RRN
     cid = created.json()["id"]
 
-    patched = client.patch(f"/customers/{cid}", json={"memo": "전체값 없음"})
-    assert patched.status_code == 200 and patched.json()["rrn"] is None
+    patched = client.patch(
+        f"/customers/{cid}", json={"memo": "전체값 응답"},
+        headers={"X-Actor-Id": "updater-off-env"},
+    )
+    assert patched.status_code == 200 and patched.json()["rrn"] == RRN
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM rrn_access_log WHERE customer_id = ?", (cid,)
-        ).fetchone()[0] == 0
+        rows = conn.execute(
+            "SELECT actor, access_type FROM rrn_access_log WHERE customer_id = ?", (cid,)
+        ).fetchall()
+    assert ("creator-off-env", "create_response") in rows
+    assert ("updater-off-env", "update_response") in rows
 
 
 def test_focus_customer_uses_selected_id_detail_request_only():
@@ -900,47 +905,45 @@ def test_detach_document(client, build_pdf, rag_mocked):
 
 # ---------- 보장 분석 ----------
 
-def test_coverage_analysis_no_policies(client):
+def test_coverage_analysis_no_policies(client, monkeypatch):
+    from database import coverage
+
+    monkeypatch.setattr(coverage, "rag_search", lambda *a, **k: {"hits": []})
     cid = _make_customer(client)["id"]
-    r = client.get(f"/customers/{cid}/coverage-analysis")
-    assert r.status_code == 200
-    b = r.json()
-    assert b["analyzed_policies"] == 0
-    assert b["categories"] == [] and "보험계약이 없어" in b["overall"]
+    # 아직 실행된 전용 분석 run이 없으면 명시적으로 404다.
+    assert client.get(f"/customers/{cid}/coverage-analysis").status_code == 404
+    recalculated = client.post(
+        f"/customers/{cid}/coverage-analysis/recalculate",
+        json={"audience": "internal", "force": True},
+    )
+    assert recalculated.status_code == 200
+    b = client.get(f"/customers/{cid}/coverage-analysis", params={"audience": "internal"}).json()
+    assert b["run_id"] == recalculated.json()["run_id"]
+    assert b["summary"]["total_items"] == 50
+    assert sum(len(category["items"]) for category in b["categories"]) == 50
 
 
 def test_coverage_analysis_with_policies(client, monkeypatch):
     from database import coverage
 
     monkeypatch.setattr(coverage, "rag_search", lambda *a, **k: {"hits": []})
-    monkeypatch.setattr(
-        coverage,
-        "_call_llm",
-        lambda *a, **k: {
-            "overall": "암 보장은 있으나 실손이 없습니다.",
-            "categories": [
-                {"name": "암 진단", "status": "충분", "detail": "A생명 5천만원",
-                 "policies": ["건강보험"], "evidence_pages": [3]},
-                {"name": "실손의료", "status": "없음", "detail": "가입 없음",
-                 "policies": [], "evidence_pages": []},
-            ],
-            "gaps": ["실손의료보험 미가입"],
-            "overlaps": [],
-            "recommendations": ["실손 신규 가입 검토"],
-        },
-    )
-
     cid = _make_customer(client)["id"]
-    client.post(f"/customers/{cid}/policies", json={"insurer": "A생명", "product_name": "건강보험"})
-
-    r = client.get(f"/customers/{cid}/coverage-analysis")
+    client.post(
+        f"/customers/{cid}/policies",
+        json={"insurer": "A생명", "product_name": "건강보험 일반암 진단비 5,000만원"},
+    )
+    recalculated = client.post(
+        f"/customers/{cid}/coverage-analysis/recalculate",
+        json={"audience": "internal", "force": True},
+    )
+    assert recalculated.status_code == 200, recalculated.text
+    r = client.get(f"/customers/{cid}/coverage-analysis", params={"audience": "internal"})
     assert r.status_code == 200
     b = r.json()
-    assert b["analyzed_policies"] == 1
-    assert b["has_documents"] is False
-    assert [c["name"] for c in b["categories"]] == ["암 진단", "실손의료"]
-    assert b["gaps"] == ["실손의료보험 미가입"]
-    assert b["recommendations"] == ["실손 신규 가입 검토"]
+    assert b["run_id"] == recalculated.json()["run_id"]
+    items = {item["coverage_name"]: item for category in b["categories"] for item in category["items"]}
+    assert items["일반암 진단비"]["current_amount"] == 50_000_000
+    assert items["일반암 진단비"]["status"] == "충분"
 
 
 def test_coverage_analysis_404(client):

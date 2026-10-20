@@ -17,6 +17,7 @@ from typing import Optional
 
 class DocumentType(Enum):
     PROPOSAL = "proposal"  # 가입제안서
+    PRODUCT_DESCRIPTION = "product_description"  # 상품설명서/상품요약서(참고)
     COVERAGE_ANALYSIS_FULL = "coverage_analysis_full"  # M보장분석 전체
     COVERAGE_ANALYSIS_DETAIL_ONLY = "coverage_analysis_detail_only"  # 보장별 상세표만
     COVERAGE_ANALYSIS_SHORT = "coverage_analysis_short"  # 간편보장분석
@@ -50,11 +51,10 @@ def classify_document_type(pdf_path: str) -> tuple[DocumentType, dict]:
     with pdfplumber.open(pdf_path) as pdf:
         page_count = len(pdf.pages)
 
-        # 첫 3페이지 텍스트 추출 (빠른 분류)
-        head_text = ""
-        for i in range(min(3, page_count)):
-            page_text = pdf.pages[i].extract_text() or ""
-            head_text += page_text
+        # 가입담보 표가 후반부에 있는 실제 양식을 놓치지 않도록 전체 텍스트를 분류에 쓴다.
+        page_texts = [(page.extract_text() or "") for page in pdf.pages]
+        head_text = "\n".join(page_texts[:3])
+        all_text = "\n".join(page_texts)
 
         metadata = {
             "page_count": page_count,
@@ -66,9 +66,9 @@ def classify_document_type(pdf_path: str) -> tuple[DocumentType, dict]:
             "가입제안서", "가입설계서", "가입안내서", "보험료납입설계서",
             "계약전 알릴의무", "청약", "납입방법"
         ]
-        if any(kw in head_text for kw in proposal_keywords):
+        if any(kw in all_text for kw in proposal_keywords) or "가입사항" in all_text:
             # 가입사항 표가 있는지 확인
-            if "가입사항" in head_text and "특약명" in head_text:
+            if "가입사항" in all_text and "가입금액" in all_text and "보험료" in all_text:
                 metadata["has_proposal_table"] = True
                 return DocumentType.PROPOSAL, metadata
 
@@ -77,20 +77,26 @@ def classify_document_type(pdf_path: str) -> tuple[DocumentType, dict]:
             "보장분석", "보장현황", "간편보장분석",
             "보유계약", "가입담보상세"
         ]
-        if any(kw in head_text for kw in coverage_analysis_keywords):
+        if any(kw in all_text for kw in coverage_analysis_keywords):
             # 긴 양식 vs 짧은 양식 구분
             if page_count <= 10:
                 metadata["is_short_form"] = True
                 return DocumentType.COVERAGE_ANALYSIS_SHORT, metadata
-            elif "가입담보상세List" in head_text or "상품별가입담보상세" in head_text:
+            elif "가입담보상세List" in all_text or "상품별가입담보상세" in all_text:
                 metadata["is_full_form"] = True
                 return DocumentType.COVERAGE_ANALYSIS_FULL, metadata
-            elif "보장별상세표" in head_text:
+            elif "보장별상세표" in all_text:
                 metadata["is_detail_only"] = True
                 return DocumentType.COVERAGE_ANALYSIS_DETAIL_ONLY, metadata
             else:
                 # 기본값: 전체 양식
                 return DocumentType.COVERAGE_ANALYSIS_FULL, metadata
+
+        if any(marker in all_text for marker in ("상품설명서", "상품요약서", "보험상품")) and any(
+            marker in all_text for marker in ("보장내용", "가입금액", "보험료", "보험기간")
+        ):
+            metadata["reference_only"] = True
+            return DocumentType.PRODUCT_DESCRIPTION, metadata
 
         return DocumentType.UNKNOWN_INSURANCE_PDF, metadata
 
@@ -146,7 +152,9 @@ def detect_candidate_pages(pdf_path: str, doc_type: DocumentType) -> dict:
                 result["contract_ledger_pages"].append(page_num)
 
             # 가입사항 (가입제안서)
-            if "가입사항" in text and "특약명" in text and "가입금액" in text:
+            if ("가입금액" in text and "보험료" in text) or (
+                doc_type == DocumentType.PRODUCT_DESCRIPTION and any(k in text for k in ("보장내용", "보험기간", "가입금액"))
+            ):
                 result["proposal_table_pages"].append(page_num)
 
     return result
@@ -1060,6 +1068,8 @@ def _natural_existing(conn: sqlite3.Connection, customer_id: str, data: dict) ->
         WHERE customer_id = ?
           AND COALESCE(source_hash, '') = ?
           AND COALESCE(source_page, -1) = ?
+          AND COALESCE(source_table, -1) = ?
+          AND COALESCE(source_row, -1) = ?
           AND COALESCE(insurer, '') = ?
           AND COALESCE(product_name, '') = ?
           AND COALESCE(rider_no, '') = ?
@@ -1073,6 +1083,8 @@ def _natural_existing(conn: sqlite3.Connection, customer_id: str, data: dict) ->
             customer_id,
             str(data.get("source_hash") or ""),
             int(str(data.get("source_page"))) if data.get("source_page") is not None else -1,
+            int(str(data.get("source_table"))) if data.get("source_table") is not None else -1,
+            int(str(data.get("source_row"))) if data.get("source_row") is not None else -1,
             str(data.get("insurer") or ""),
             str(data.get("product_name") or ""),
             str(data.get("rider_no") or ""),
@@ -1100,6 +1112,7 @@ def _insert_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: di
         ),
         "source_link_status": data.get("source_link_status") or ("source_exact" if data.get("source_standard_name") else "unlinked"),
         "review_status": data.get("review_status") or "unreviewed",
+        "document_status": str(data.get("document_status") or "CONFIRMED").upper(),
         "amount_status": infer_amount_status(data.get("amount"), data.get("amount_text"), data.get("amount_status")),
     }
     if data.get("policy_id"):
@@ -1110,11 +1123,12 @@ def _insert_policy_coverage(conn: sqlite3.Connection, customer_id: str, data: di
         data = {**data, "policy_id": pid, "link_status": status}
     cid, now = _new_id(), _now()
     cols = [
-        "id", "customer_id", "policy_id", "source_document_id", "source_file_name", "source_hash", "source_occurrence_key", "source_page",
+        "id", "customer_id", "policy_id", "source_document_id", "source_file_name", "source_hash", "source_occurrence_key", "source_page", "source_table", "source_row",
         "insurer", "product_name", "rider_no", "coverage_type", "rider_name", "rider_name_raw",
         "standard_name", "standard_name_raw", "standard_name_extracted_raw", "standard_name_verification",
         "source_standard_name", "source_standard_names_json", "source_type", "source_link_status", "review_status",
-        "amount", "amount_text", "amount_status",
+        "amount", "amount_text", "amount_status", "rider_premium", "rider_premium_text",
+        "coverage_period_text", "payment_period_text", "renewal_status", "document_status",
         "start_date", "end_date", "confidence", "raw_text", "link_status", "created_at", "updated_at",
     ]
     vals = {c: data.get(c) for c in cols}

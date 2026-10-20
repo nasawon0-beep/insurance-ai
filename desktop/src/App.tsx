@@ -491,9 +491,9 @@ function CapturePanel({
     });
 
     const docType = String(row.doc_type ?? "");
-    if (isProposalDocument(docType)) {
-      console.log("[보장분석 재계산] SKIP - 가입제안서는 검토용이며 보유담보로 저장하지 않음");
-      setMsg("✅ 가입제안서 검토 완료 - 보유담보 저장 없이 고객 정보만 저장했습니다.");
+    if (isProposalDocument(docType) || docType === "product_description") {
+      console.log("[보장분석 재계산] SKIP - 제안/참고 계약은 보유담보 합산 대상이 아님");
+      setMsg("✅ 계약과 전체 담보를 검토 상태로 저장했습니다. 가입확정 전에는 보유보장에 합산되지 않습니다.");
       return false;
     }
     const extractedCoverageCount = Array.isArray(row.policy_coverages)
@@ -688,21 +688,14 @@ function CapturePanel({
           res.created++;
         }
         // 보험 문서에서 뽑은 계약(들)을 고객 가입목록에 추가
-        // 가입제안서(proposal)의 riders는 신규 제안 검토용이다.
-        // 보유담보(policy_coverages)에 저장하면 기존 가입 보장으로 오인되므로 저장/재계산 대상에서 제외한다.
+        // 제안/참고 문서도 계약 원장에는 보존하되 document_status로 보유보장과 분리한다.
         let savedCoverageCount = 0;
-        const isProposalReview = isProposalDocument(row.doc_type);
-        if (cid && row.policies?.length && !isProposalReview) {
+        if (cid && row.policies?.length) {
           const r = await savePolicies(api, cid, row.policies, row.policyChecked || []);
           res.policies += r.saved;
           savedCoverageCount = r.coverageSaved;
           res.policyCoverages += r.coverageSaved;
           policyFails.push(...r.failures.map(({ label, error }) => ({ label, error })));
-        } else if (isProposalReview) {
-          console.log("[저장 분기] 가입제안서 riders는 policy_coverages에 저장하지 않음", {
-            cid,
-            rider_count: row.proposal_review?.riders?.length ?? row.quick_coverages?.length ?? 0,
-          });
         }
 
         // 통합 보장분석 문서인 경우 최상위 row.policy_coverages 저장
@@ -1295,8 +1288,10 @@ function CapturePanel({
                   )}
                   <div style={{ color: "#9a3412", marginTop: 4 }}>
                     {row.doc_type === "proposal"
-                      ? "[고객 등록 및 저장] 버튼을 눌러도 가입제안서 riders는 저장하지 않고 검토 결과만 유지합니다."
-                      : "검수 내용을 확인한 뒤 위의 [고객 등록 및 저장] 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다."}
+                      ? "검수 후 제안상태 계약과 전체 담보를 저장합니다. 가입확정 전에는 보유보장에 합산되지 않습니다."
+                      : row.doc_type === "product_description"
+                        ? "상품설명서 담보는 참고상태로 저장하며 고객 가입담보로 간주하지 않습니다."
+                        : "검수 내용을 확인한 뒤 위의 [고객 등록 및 저장] 버튼을 누르면 고객 정보와 보장분석이 함께 저장됩니다."}
                   </div>
                 </div>
               )}

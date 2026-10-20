@@ -29,6 +29,14 @@ from utils.ollama_helper import get_configured_ollama_model, get_ollama_base_url
 
 logger = logging.getLogger(__name__)
 
+
+def _confirmed_policies(conn, customer_id: str) -> list[dict]:
+    """AI/집계에는 명시적으로 가입확정된 계약만 제공한다."""
+    return [
+        policy for policy in repo.list_policies(conn, customer_id)
+        if policy.get("document_status", "CONFIRMED") == "CONFIRMED"
+    ]
+
 OLLAMA_BASE = get_ollama_base_url()
 # 문의 답변은 조회·문장화라 작은 모델로. 없으면 인테이크와 같은 모델.
 LLM_MODEL = os.environ.get(
@@ -215,7 +223,7 @@ def _aggregate_hints(conn) -> str:
     contractor_lines: list[str] = []
     for c in customers:
         cname = c.get("name") or "?"
-        for p in repo.list_policies(conn, c["id"]):
+        for p in _confirmed_policies(conn, c["id"]):
             ins = (p.get("insurer") or "").strip()
             if ins:
                 insurer_map.setdefault(ins, set()).add(cname)
@@ -392,7 +400,7 @@ def _customer_summary(
         contact = f"주소: {c.get('address') or '없음'}  |  " if default_customers or with_contact_extra else ""
         out.append(f"  {contact}메모: {memo or '없음'}")
 
-        policies = repo.list_policies(conn, cid)
+        policies = _confirmed_policies(conn, cid)
         if own_only:
             policies = [p for p in policies if p.get("is_own")]
         # 만기일 오름차순으로 출력 — LLM 이 "만기 제일 빠른 계약" 을 바로 읽게. 만기 없는 건 뒤로.
@@ -462,7 +470,7 @@ def _customer_coverage_block(conn, customer_id: str) -> str:
     lines: list[str] = [f"[고객 보장 데이터] — {name}"]
 
     # 1. 계약 목록
-    policies = repo.list_policies(conn, customer_id)
+    policies = _confirmed_policies(conn, customer_id)
     if policies:
         lines.append("■ 계약 목록:")
         for p in policies:
@@ -706,7 +714,10 @@ def _policy_coverage_direct_answer(conn, customer_id: str, customer_name: str, q
     q = question or ""
     if not any(k in q for k in ("담보", "질병종수술", "유사암", "통합암", "전이암", "뇌혈관", "허혈성", "삼성화재", "메리츠")):
         return None
-    rows = policy_coverages.list_policy_coverages(conn, customer_id)
+    rows = [
+        row for row in policy_coverages.list_policy_coverages(conn, customer_id)
+        if row.get("document_status", "CONFIRMED") == "CONFIRMED"
+    ]
     if not rows:
         return None
     nq = policy_coverages.compact(q)
@@ -940,7 +951,7 @@ def _direct_db_answer(conn, question: str, history: Optional[list], customer_id:
     if not c:
         return None
     customer_name = c.get("name") or ""
-    policies = repo.list_policies(conn, customer_id)
+    policies = _confirmed_policies(conn, customer_id)
     if own_only:
         policies = [p for p in policies if p.get("is_own")]
     coverage_items = _latest_coverage_items(conn, customer_id)
@@ -1037,7 +1048,7 @@ def answer(
         # RRN 패턴이 들어있으면 제거 (안전장치)
         coverage_block = _RRN13_RE.sub("[주민번호 제외]", coverage_block)
         if coverage_block and customer_name and _has_any_keyword(question, _DB_QUESTION_KEYWORDS):
-            direct_policies = repo.list_policies(conn, customer_id)
+            direct_policies = _confirmed_policies(conn, customer_id)
             direct_coverage_items = _latest_coverage_items(conn, customer_id)
             direct_answer = _rule_based_coverage_answer(
                 question,
@@ -1096,7 +1107,7 @@ def answer(
                 question,
                 coverage_block,
                 customer_name,
-                direct_policies or (repo.list_policies(conn, customer_id) if customer_id else []),
+                direct_policies or (_confirmed_policies(conn, customer_id) if customer_id else []),
                 direct_coverage_items or (_latest_coverage_items(conn, customer_id) if customer_id else []),
             )
         if fallback_answer:

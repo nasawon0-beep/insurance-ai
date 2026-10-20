@@ -31,6 +31,104 @@ def _make_customer(client):
     return r.json()
 
 
+def test_analysis_excludes_unconfirmed_and_unselected_policy_text_fallback(client, monkeypatch):
+    from database import coverage
+
+    monkeypatch.setattr(coverage, "rag_search", lambda *args, **kwargs: {"hits": []})
+    customer = _make_customer(client)
+    policy = client.post(f"/customers/{customer['id']}/policies", json={
+        "product_name": "일반암 진단비 5,000만원 합성 참고문서",
+        "document_status": "REFERENCE",
+        "source_document_type": "product_description",
+        "source_hash": "analysis-confirmation-source",
+    }).json()
+    rows_payload = [{
+        "policy_id": policy["id"], "source_hash": "analysis-confirmation-source",
+        "source_page": 4, "source_table": 1, "source_row": row,
+        "rider_name": name, "standard_name": standard_name,
+        "amount": amount, "amount_text": amount_text, "amount_status": "known",
+        "document_status": "REFERENCE",
+    } for row, name, standard_name, amount, amount_text in [
+        (1, "일반암 진단비", "일반암 진단비", 50_000_000, "5,000만원"),
+        (2, "합성 비암 선택담보", "기타", 1_000_000, "100만원"),
+    ]]
+    saved = client.post(f"/customers/{customer['id']}/policy-coverages/bulk", json={
+        "review_confirmed": True, "items": rows_payload,
+    })
+    assert saved.status_code == 201, saved.text
+    rows = saved.json()["items"]
+
+    def cancer_item():
+        recalculated = client.post(
+            f"/customers/{customer['id']}/coverage-analysis/recalculate",
+            json={"audience": "internal", "force": True},
+        )
+        assert recalculated.status_code == 200, recalculated.text
+        body = client.get(
+            f"/customers/{customer['id']}/coverage-analysis",
+            params={"audience": "internal", "run_id": recalculated.json()["run_id"]},
+        ).json()
+        return next(
+            item for category in body["categories"] for item in category["items"]
+            if item["coverage_name"] == "일반암 진단비"
+        )
+
+    before = cancer_item()
+    assert before["current_amount"] == 0
+    assert policy["id"] not in before["matched_policy_ids"]
+
+    cancer = rows[0]
+    selected = client.patch(f"/policies/{policy['id']}", json={
+        "document_status": "CONFIRMED",
+        "confirmed_coverages": [{
+            "id": cancer["id"], "source_page": cancer["source_page"],
+            "source_table": cancer["source_table"], "source_row": cancer["source_row"],
+        }],
+    })
+    assert selected.status_code == 200, selected.text
+    after_selection = cancer_item()
+    assert after_selection["current_amount"] == 50_000_000
+    assert after_selection["matched_policy_ids"] == [policy["id"]]
+
+    non_cancer = rows[1]
+    partial = client.patch(f"/policies/{policy['id']}", json={
+        "document_status": "CONFIRMED", "coverage_selection_mode": "REPLACE",
+        "confirmed_coverages": [{
+            "id": non_cancer["id"], "source_page": non_cancer["source_page"],
+            "source_table": non_cancer["source_table"], "source_row": non_cancer["source_row"],
+        }],
+    })
+    assert partial.status_code == 200, partial.text
+    after_partial = cancer_item()
+    assert after_partial["current_amount"] == 0
+    assert policy["id"] not in after_partial["matched_policy_ids"]
+
+    cancelled = client.patch(f"/policies/{policy['id']}", json={"document_status": "REFERENCE"})
+    assert cancelled.status_code == 200, cancelled.text
+    after_cancel = cancer_item()
+    assert after_cancel["current_amount"] == 0
+    assert policy["id"] not in after_cancel["matched_policy_ids"]
+
+    legacy_customer = client.post("/customers", json={"name": "합성기존고객"}).json()
+    legacy_policy = client.post(f"/customers/{legacy_customer['id']}/policies", json={
+        "product_name": "일반암 진단비 5,000만원 기존 확정계약",
+    }).json()
+    legacy_run = client.post(
+        f"/customers/{legacy_customer['id']}/coverage-analysis/recalculate",
+        json={"audience": "internal", "force": True},
+    ).json()
+    legacy_body = client.get(
+        f"/customers/{legacy_customer['id']}/coverage-analysis",
+        params={"audience": "internal", "run_id": legacy_run["run_id"]},
+    ).json()
+    legacy_cancer = next(
+        item for category in legacy_body["categories"] for item in category["items"]
+        if item["coverage_name"] == "일반암 진단비"
+    )
+    assert legacy_cancer["current_amount"] == 50_000_000
+    assert legacy_cancer["matched_policy_ids"] == [legacy_policy["id"]]
+
+
 def test_observed_summary_is_preserved_separately_from_contract_calculation(client, monkeypatch):
     """원본 요약 0원은 원장 계산값으로 덮어쓰지 않고 차이를 함께 보존한다."""
     from database import coverage
