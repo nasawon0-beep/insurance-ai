@@ -4,11 +4,15 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.insuranceai.android.InsuranceAiApplication
+import com.insuranceai.android.data.CustomerEditableFields
 import com.insuranceai.android.data.local.ConsultationEntity
+import com.insuranceai.android.data.local.CoverageAnalysisEntity
 import com.insuranceai.android.data.local.CustomerEntity
 import com.insuranceai.android.data.local.PolicyEntity
+import com.insuranceai.android.data.local.SyncConflictEntity
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -17,30 +21,17 @@ class CustomersViewModel(application: Application) : AndroidViewModel(applicatio
     val customers: StateFlow<List<CustomerEntity>> = repository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun addCustomer(name: String, phone: String, rrn: String, address: String, memo: String) = viewModelScope.launch {
-        if (name.isNotBlank()) repository.saveCustomer(name = name, phone = phone, rrn = rrn, address = address, memo = memo)
-    }
+    fun editable(customer: CustomerEntity): CustomerEditableFields = repository.editableFields(customer)
 
-    fun deleteCustomer(customer: CustomerEntity) = viewModelScope.launch { repository.delete(customer) }
+    fun saveAllowedEdit(customer: CustomerEntity, phone: String, address: String, memo: String) = viewModelScope.launch {
+        repository.saveAllowedEdit(customer, phone, address, memo)
+    }
 }
 
 class PoliciesViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = (application as InsuranceAiApplication).container.policyRepository
     val policies: StateFlow<List<PolicyEntity>> = repository.observePolicies()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    fun addPolicy(customerId: String, insurer: String, productName: String, premium: String) = viewModelScope.launch {
-        if (customerId.isNotBlank()) repository.savePolicy(
-            PolicyEntity(
-                customerId = customerId,
-                insurer = insurer.ifBlank { null },
-                productName = productName.ifBlank { null },
-                premium = premium.toIntOrNull()
-            )
-        )
-    }
-
-    fun deletePolicy(policy: PolicyEntity) = viewModelScope.launch { repository.delete(policy) }
 }
 
 class ConsultationsViewModel(application: Application) : AndroidViewModel(application) {
@@ -51,6 +42,42 @@ class ConsultationsViewModel(application: Application) : AndroidViewModel(applic
     fun addConsultation(customerId: String, title: String, channel: String, content: String, followUpAt: String) = viewModelScope.launch {
         if (customerId.isNotBlank() && content.isNotBlank()) repository.saveConsultation(customerId, title, channel, content, followUpAt)
     }
+}
 
-    fun deleteConsultation(consultation: ConsultationEntity) = viewModelScope.launch { repository.delete(consultation) }
+class CoverageAnalysisViewModel(application: Application) : AndroidViewModel(application) {
+    private val repository = (application as InsuranceAiApplication).container.coverageAnalysisRepository
+    val results: StateFlow<List<CoverageAnalysisEntity>> = repository.observeResults()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun summary(item: CoverageAnalysisEntity): String = repository.decrypt(item).summaryJson
+}
+
+class SyncViewModel(application: Application) : AndroidViewModel(application) {
+    private val repository = (application as InsuranceAiApplication).container.syncRepository
+    val conflicts: StateFlow<List<SyncConflictEntity>> = repository.observeConflicts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val status = MutableStateFlow("페어링 필요 또는 동기화 대기")
+
+    fun pair(endpoint: String, pin: String, code: String) = viewModelScope.launch {
+        status.value = "페어링 중"
+        status.value = runCatching {
+            repository.pair(endpoint, pin, code, "모아둠 Android")
+            repository.syncOnce()
+            "페어링 및 동기화 완료"
+        }.getOrElse { "실패: ${it.message}" }
+    }
+
+    fun syncNow() = viewModelScope.launch {
+        status.value = "동기화 중"
+        status.value = runCatching {
+            if (repository.syncOnce()) "동기화 완료" else "페어링 필요"
+        }.getOrElse { "실패: ${it.message}" }
+    }
+
+    fun resolve(conflict: SyncConflictEntity, chooseLocal: Boolean) = viewModelScope.launch {
+        status.value = "충돌 적용 중"
+        status.value = runCatching {
+            repository.resolveConflict(conflict, chooseLocal)
+            "충돌 해결 및 동기화 완료"
+        }.getOrElse { "실패: ${it.message}" }
+    }
 }

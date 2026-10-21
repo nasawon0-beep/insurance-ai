@@ -20,7 +20,9 @@ private sealed class Route(val value: String, val label: String) {
     data object Login : Route("login", "로그인")
     data object Customers : Route("customers", "고객")
     data object Policies : Route("policies", "계약")
+    data object Coverage : Route("coverage", "분석")
     data object Consultations : Route("consultations", "상담")
+    data object Sync : Route("sync", "동기화")
 }
 
 @Composable
@@ -31,7 +33,7 @@ fun InsuranceAiApp(
 ) {
     val navController = rememberNavController()
     MaterialTheme(colorScheme = lightColorScheme()) {
-        val bottomRoutes = listOf(Route.Customers, Route.Policies, Route.Consultations)
+        val bottomRoutes = listOf(Route.Customers, Route.Policies, Route.Coverage, Route.Consultations, Route.Sync)
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = navBackStackEntry?.destination?.route
         Scaffold(
@@ -68,7 +70,9 @@ fun InsuranceAiApp(
                 }
                 composable(Route.Customers.value) { CustomersScreen() }
                 composable(Route.Policies.value) { PoliciesScreen() }
+                composable(Route.Coverage.value) { CoverageAnalysisScreen() }
                 composable(Route.Consultations.value) { ConsultationsScreen() }
+                composable(Route.Sync.value) { SyncScreen() }
             }
         }
     }

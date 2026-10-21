@@ -2,14 +2,23 @@ package com.insuranceai.android
 
 import android.app.Application
 import com.insuranceai.android.data.ConsultationRepository
+import com.insuranceai.android.data.CoverageAnalysisRepository
 import com.insuranceai.android.data.CustomerRepository
 import com.insuranceai.android.data.PolicyRepository
 import com.insuranceai.android.data.local.AppDatabase
 import com.insuranceai.android.security.EncryptionService
 import com.insuranceai.android.security.KeyStoreManager
+import com.insuranceai.android.sync.SyncRepository
+import com.insuranceai.android.sync.SyncSettings
+import com.insuranceai.android.sync.SyncWorker
 
 class InsuranceAiApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
+
+    override fun onCreate() {
+        super.onCreate()
+        SyncWorker.schedule(this)
+    }
 }
 
 class AppContainer(application: Application) {
@@ -19,12 +28,21 @@ class AppContainer(application: Application) {
         AppDatabase.create(application, keyStoreManager.getOrCreateDbPassphrase())
     }
     val customerRepository: CustomerRepository by lazy {
-        CustomerRepository(database.customerDao(), encryptionService)
+        CustomerRepository(database, encryptionService)
     }
     val policyRepository: PolicyRepository by lazy {
-        PolicyRepository(database.policyDao())
+        PolicyRepository(database)
     }
     val consultationRepository: ConsultationRepository by lazy {
-        ConsultationRepository(database.consultationDao(), encryptionService)
+        ConsultationRepository(database, encryptionService)
+    }
+    val coverageAnalysisRepository: CoverageAnalysisRepository by lazy {
+        CoverageAnalysisRepository(database, encryptionService)
+    }
+    val syncSettings: SyncSettings by lazy {
+        SyncSettings(application, encryptionService)
+    }
+    val syncRepository: SyncRepository by lazy {
+        SyncRepository(database, encryptionService, syncSettings)
     }
 }

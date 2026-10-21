@@ -12,6 +12,8 @@ desktop/src-tauri/target/
 logs/
 .build-tmp/
 .pytest_cache/
+**/__pycache__/
+*.pyc
 .DS_Store
 *.log
 *.tsbuildinfo

@@ -27,6 +27,9 @@ interface CustomerDao {
 
     @Delete
     suspend fun delete(customer: CustomerEntity)
+
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -51,6 +54,9 @@ interface PolicyDao {
 
     @Delete
     suspend fun delete(policy: PolicyEntity)
+
+    @Query("DELETE FROM policies WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -75,4 +81,22 @@ interface ConsultationDao {
 
     @Delete
     suspend fun delete(consultation: ConsultationEntity)
+
+    @Query("DELETE FROM consultations WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface CoverageAnalysisDao {
+    @Query("SELECT * FROM coverage_analysis_results ORDER BY generatedAt DESC")
+    fun observeAll(): Flow<List<CoverageAnalysisEntity>>
+
+    @Query("SELECT * FROM coverage_analysis_results WHERE customerId = :customerId ORDER BY generatedAt DESC")
+    fun observeForCustomer(customerId: String): Flow<List<CoverageAnalysisEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(item: CoverageAnalysisEntity)
+
+    @Query("DELETE FROM coverage_analysis_results WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
