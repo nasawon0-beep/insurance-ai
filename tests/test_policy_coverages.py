@@ -326,6 +326,34 @@ def test_policy_coverages_bulk_rejects_integrated_summary_as_contract_ledger(tmp
     assert policy_coverages.list_policy_coverages(conn, customer["id"]) == []
 
 
+def test_coverage_document_separates_summary_rows_from_real_policies(monkeypatch):
+    import importlib
+    from database import intake
+
+    router = importlib.import_module("database.router")
+
+    summary = {
+        "insurer": "통합보장분석", "product_name": "M·보장분석",
+        "rider_name": "질병사망", "source_type": "coverage_analysis_full",
+    }
+    actual = {
+        "insurer": "합성보험", "product_name": "합성건강보험",
+        "rider_name": "일반암 진단비", "source_type": "coverage_analysis_full",
+    }
+    assert router._coverage_document_policies([summary], "보장별 상세 내역") == ([], [])
+
+    mixed, warnings = router._coverage_document_policies([summary, actual], "보장별 상세 내역")
+    assert warnings == []
+    assert [(p["insurer"], p["product_name"]) for p in mixed] == [("합성보험", "합성건강보험")]
+
+    monkeypatch.setattr(intake, "extract_policies_list", lambda _text: {
+        "policies": [{"insurer": "목록보험", "product_name": "목록계약"}], "warnings": []
+    })
+    listed, warnings = router._coverage_document_policies([summary], "보유계약리스트\n목록보험 목록계약")
+    assert warnings == []
+    assert listed == [{"insurer": "목록보험", "product_name": "목록계약"}]
+
+
 class _FakeCrop:
     def __init__(self, words):
         self.words = words

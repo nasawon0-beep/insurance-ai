@@ -9,6 +9,7 @@ import {
   QA_PROFILE_FINGERPRINT,
 } from "./config";
 import { invoke } from "@tauri-apps/api/core";
+import { responseFromNativeResult } from "./nativeResponse";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
@@ -81,10 +82,7 @@ async function nativeControlFetch(path: string, init: RequestInit): Promise<Resp
       body: typeof init.body === "string" ? { type: "text", text: init.body } : null,
     },
   });
-  return new Response(new Uint8Array(result.body), {
-    status: result.status,
-    headers: result.headers,
-  });
+  return responseFromNativeResult(result);
 }
 
 async function call(path: string, init?: RequestInit) {

@@ -2371,7 +2371,7 @@ function StartupScreen({ state, onRetry, onRelaunch }: { state: StartupState; on
   return (
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--color-bg-page)", color: "var(--color-text-primary)" }}>
       <div style={{ width: "min(560px, calc(100vw - 32px))", padding: 28, border: "1px solid var(--color-border-default)", borderRadius: 16, background: "var(--color-bg-surface)", boxShadow: "0 18px 48px rgba(0,0,0,0.12)" }}>
-        <h1 style={{ margin: "0 0 8px", fontSize: 24 }}>Insurance AI 시작 중...</h1>
+        <h1 style={{ margin: "0 0 8px", fontSize: 24 }}>모아둠 시작 중...</h1>
         <p style={{ margin: "0 0 20px", color: state.status === "error" ? "#b91c1c" : "var(--color-text-secondary)" }}>{state.message}</p>
         <div style={{ display: "grid", gap: 10, marginBottom: 18 }}>
           {state.steps.map((step) => (
@@ -2881,7 +2881,7 @@ function App() {
           </div>
         )}
         <aside className="app-sidebar">
-          <div className="app-brand">Insurance <span>AI</span></div>
+          <div className="app-brand">모아<span>둠</span></div>
         <nav className="app-navigation" aria-label="주요 메뉴">
           {tab("home", "홈")}
           {tab("customers", "고객")}

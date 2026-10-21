@@ -1169,10 +1169,23 @@ def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optio
     return fields, warns
 
 
+def _is_aggregate_summary_row(row: dict) -> bool:
+    insurer = str(row.get("insurer") or "").strip()
+    product = re.sub(r"[\s·-]+", "", str(row.get("product_name") or "")).lower()
+    source_type = str(row.get("source_type") or "").strip().lower()
+    return (
+        insurer in {"통합보장분석", "알 수 없음"}
+        or product in {"m보장분석", "보장분석요약"}
+        or source_type in {"summary", "aggregate", "coverage_summary"}
+    )
+
+
 def _quick_policies_from_coverage_rows(rows: list[dict], limit: int = 50) -> list[dict]:
     """계약별 담보 원장 행을 계약 검수용 요약으로 묶는다. LLM 호출 없음."""
     grouped: dict[tuple[str, str], dict] = {}
     for r in rows:
+        if _is_aggregate_summary_row(r):
+            continue
         insurer = (r.get("insurer") or "알 수 없음").strip() or "알 수 없음"
         product = (r.get("product_name") or "보장분석 요약").strip() or "보장분석 요약"
         key = (insurer, product)
@@ -1190,6 +1203,19 @@ def _quick_policies_from_coverage_rows(rows: list[dict], limit: int = 50) -> lis
         if r.get("end_date") and not grouped[key].get("insured_period"):
             grouped[key]["insured_period"] = r.get("end_date")
     return list(grouped.values())[:limit]
+
+
+def _coverage_document_policies(rows: list[dict], doc_text: str) -> tuple[list[dict], list[str]]:
+    """집계표는 요약에만 남기고, 실제 계약 후보만 반환한다."""
+    from . import intake as _intake
+
+    policies = _quick_policies_from_coverage_rows(rows)
+    if policies:
+        return policies, []
+    if rows and all(_is_aggregate_summary_row(row) for row in rows) and "보유계약리스트" not in doc_text:
+        return [], []
+    parsed = _intake.extract_policies_list(_slice_section(doc_text, _PLIST_START, _PLIST_END, 4000))
+    return parsed["policies"], parsed["warnings"]
 
 
 def _doc_consultation(doc_type: str, policies: list, extra_text, filename: Optional[str], issued: Optional[str]) -> dict:
@@ -1670,20 +1696,12 @@ async def capture(
 
                 # 계약: 보장분석/보유계약리스트면 여러 건, 아니면 증권 헤더 1건
                 coverage_status: list = []
+                coverage_summary_issued: Optional[str] = None
                 if is_coverage_doc:
                     is_short_summary = _has_short_form_summary_coverages(policy_coverage_rows)
                     if is_short_summary:
-                        issued_date = _short_form_issued_date(doc_text)
-                        policies = [{
-                            "insurer": "알 수 없음",
-                            "product_name": "보장분석 요약",
-                            "plan_type": None,
-                            "premium_won": None,
-                            "payment_cycle": None,
-                            "payment_period": None,
-                            "insured_period": None,
-                            "issued_date": issued_date,
-                        }]
+                        coverage_summary_issued = _short_form_issued_date(doc_text)
+                        policies = []
                         t0 = time.perf_counter()
                         coverage_status = _parse_coverage_status_ga(doc_text)
                         perf["coverage_status"] = time.perf_counter() - t0
@@ -1691,20 +1709,8 @@ async def capture(
                         cov_raw = _slice_section(doc_text, ("전체 보장현황", "전체보장현황"), ("상품별 가입담보상세", "가입담보상세", "보유계약리스트"), 3500)
                     else:
                         t0 = time.perf_counter()
-                        policy_rows_are_only_analysis_detail = bool(policy_coverage_rows) and all(
-                            (r.get("insurer") or "") == "통합보장분석"
-                            and (r.get("product_name") or "") == "M·보장분석"
-                            for r in policy_coverage_rows
-                        )
-                        # 보유계약리스트가 따로 있는 보장분석서는 실제 계약 목록을 우선한다.
-                        # 계약 목록이 없는 M·보장분석 상세 단독 문서만 통합 분석 계약으로 표시한다.
-                        policies = [] if (policy_rows_are_only_analysis_detail and "보유계약리스트" in doc_text) else _quick_policies_from_coverage_rows(policy_coverage_rows)
-                        if not policies:
-                            plist = _intake.extract_policies_list(
-                                _slice_section(doc_text, _PLIST_START, _PLIST_END, 4000)
-                            )
-                            policies = plist["policies"]
-                            warns += plist["warnings"]
+                        policies, policy_warnings = _coverage_document_policies(policy_coverage_rows, doc_text)
+                        warns += policy_warnings
                         perf["policy_parse"] = time.perf_counter() - t0
                         t0 = time.perf_counter()
                         coverage_status = _parse_coverage_status(doc_text)
@@ -1791,6 +1797,8 @@ async def capture(
                     p_match_key = p_key.replace("무배당", "").replace("(무)", "").replace("메리츠", "")
                     matched_cov = []
                     for _c in policy_coverage_rows:
+                        if _is_aggregate_summary_row(_c):
+                            continue
                         c_prod = policy_coverages.compact(_c.get("product_name"))
                         c_ins = policy_coverages.compact(_c.get("insurer"))
                         c_match_key = c_prod.replace("무배당", "").replace("(무)", "").replace("메리츠", "")
@@ -1801,7 +1809,7 @@ async def capture(
                     if matched_cov:
                         _p["policy_coverages"] = matched_cov
 
-                issued = next((p.get("issued_date") for p in policies if p.get("issued_date")), None)
+                issued = next((p.get("issued_date") for p in policies if p.get("issued_date")), None) or coverage_summary_issued
                 est_warn = _estimate_birthdate_from_age(f, doc_text + extra, issued)
                 if est_warn:
                     warns.append(est_warn)

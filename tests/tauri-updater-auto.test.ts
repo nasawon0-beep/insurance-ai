@@ -68,7 +68,10 @@ test("local-engine requests fall back to native bridge without breaking uploads"
   assert.match(engine, /invoke<NativeEngineResponse>\("local_engine_request"/);
   assert.match(engine, /body instanceof FormData[\s\S]*type: "formData"/);
   assert.match(engine, /headers\.delete\("Content-Type"\)/);
-  assert.match(engine, /new Response\(new Uint8Array\(result\.body\)/);
+  assert.match(engine, /responseFromNativeResult\(result\)/);
+  const nativeResponse = read("desktop/src/nativeResponse.ts");
+  assert.match(nativeResponse, /NULL_BODY_STATUSES = new Set\(\[204, 205, 304\]\)/);
+  assert.match(nativeResponse, /NULL_BODY_STATUSES\.has\(result\.status\) \? null : new Uint8Array\(result\.body\)/);
   assert.match(engine, /LONG_RUNNING_PATH_PREFIXES[\s\S]*"\/capture"[\s\S]*"\/parse\/pdf"[\s\S]*"\/import\/preview"[\s\S]*"\/import\/commit"/);
   assert.doesNotMatch(engine, /ensureLocalEngineRecovered\(\)[\s\S]{0,160}catch/);
 

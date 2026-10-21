@@ -437,7 +437,7 @@ export default function OnboardingScreen({ onComplete, onOllamaInstalled }: Onbo
           <div className="onboarding-body onboarding-centered">
             <div className="onboarding-icon" aria-hidden="true">✅</div>
             <h2>설정 완료!</h2>
-            <p className="onboarding-lead">Insurance AI를 사용할 준비가 되었습니다</p>
+            <p className="onboarding-lead">모아둠을 사용할 준비가 되었습니다</p>
             <button className="onboarding-button onboarding-button-primary" type="button" onClick={completeOnboarding}>
               시작하기
             </button>
@@ -467,7 +467,7 @@ export default function OnboardingScreen({ onComplete, onOllamaInstalled }: Onbo
     <main className="onboarding-screen">
       <section className="onboarding-card" aria-labelledby="onboarding-title">
         <header className="onboarding-header">
-          <h1 id="onboarding-title">Insurance AI 초기 설정</h1>
+          <h1 id="onboarding-title">모아둠 초기 설정</h1>
         </header>
         {renderContent()}
       </section>

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  describePolicySaveFailure,
+  isAggregateSummaryPolicy,
   isCoverageAnalysisDocument,
   isProposalDocument,
   normalizeCoverageDocumentType,
@@ -26,4 +28,9 @@ assert.deepEqual(selectReviewedPolicyCoverages({
   ],
 }), [{ insurer: "원장보험", rider_name: "뇌혈관질환진단비", amount: 30_000_000 }]);
 assert.deepEqual(selectReviewedPolicyCoverages({ policy_coverages: [] }), []);
+assert.equal(isAggregateSummaryPolicy({ insurer: "통합보장분석", product_name: "M·보장분석" }), true);
+assert.equal(isAggregateSummaryPolicy({ insurer: "알 수 없음", product_name: "보장분석 요약" }), true);
+assert.equal(isAggregateSummaryPolicy({ insurer: "정상보험", product_name: "건강보험" }), false);
+assert.match(describePolicySaveFailure(new Error("원장 거부"), true, true), /계약은 생성됐지만 담보 저장 실패/);
+assert.equal(describePolicySaveFailure(new Error("계약 거부"), false, false), "계약 거부");
 console.log("coverageDocument regression PASS");

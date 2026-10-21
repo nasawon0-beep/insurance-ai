@@ -129,6 +129,8 @@ a { color: var(--color-accent-text); }
 .home-stats .text-3xl { font-size: 26px !important; font-weight: 600 !important; }
 .customers-workspace { display: flex; gap: 24px; max-width: 1360px; margin: 0 auto; min-width: 0; }
 .customers-list-panel { width: 250px; flex-shrink: 0; }
+.customer-detail-panel { min-width: 0; }
+.customer-detail-header { position: relative; z-index: 1; }
 .assistant-screen { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; height: calc(100vh - 64px); min-height: 550px; }
 .assistant-screen .example-button { border-radius: 5px !important; }
 .app-content [role="tablist"] { max-width: 100%; overflow-x: auto; }
@@ -146,6 +148,12 @@ a { color: var(--color-accent-text); }
 .coverage-shortage-text { color: var(--color-error); }
 .contract-policy-table { min-width: 1000px !important; }
 .contract-policy-table td:last-child button { margin: 3px 0; }
+.contract-policy-table th:nth-child(4),.contract-policy-table td:nth-child(4) { text-align: right; }
+.coverage-ledger-scroll { max-width: 100%; scrollbar-gutter: stable; }
+.coverage-ledger-table { min-width: 1380px; table-layout: fixed; }
+.coverage-ledger-table th,.coverage-ledger-table td { padding: 7px 8px !important; vertical-align: middle; }
+.coverage-ledger-status,.coverage-ledger-period { white-space: nowrap; }
+.coverage-ledger-amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 button { box-shadow: none !important; }
 button[style*="background: var(--primary-600)"] { border-color: var(--primary-600) !important; }
 button[style*="border: 2px solid rgb(59, 130, 246)"] { border-color: var(--primary-600) !important; }

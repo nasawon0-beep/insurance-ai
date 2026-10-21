@@ -92,7 +92,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     <div className="container" style={{ maxWidth: 420, paddingTop: "80px" }}>
       <div className="animate-fade-in" style={{ textAlign: "center", marginBottom: "var(--space-8)" }}>
         <h1 className="text-3xl font-bold" style={{ color: "var(--primary-600)", marginBottom: "var(--space-2)" }}>
-          Insurance AI
+          모아둠
         </h1>
         <p className="text-secondary" style={{ fontSize: "var(--text-base)" }}>
           보험 설계사를 위한 AI 고객 관리 시스템

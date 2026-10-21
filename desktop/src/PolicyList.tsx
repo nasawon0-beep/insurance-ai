@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { groupByCategory } from "./coverageCategories";
 import { normalizeCoverageRows, parseCoverageJson, type CoverageRow } from "./coverageRows";
+import { describePolicySaveFailure, isAggregateSummaryPolicy } from "./coverageDocument";
 
 export { normalizeCoverageRows } from "./coverageRows";
 export type { CoverageRow } from "./coverageRows";
@@ -519,6 +520,7 @@ export async function savePolicies(
   for (let i = 0; i < policies.length; i++) {
     if (checked[i] === false) continue;
     const p = policies[i];
+    if (isAggregateSummaryPolicy(p)) continue;
     const label = (`${p.insurer ?? ""} ${p.product_name ?? ""}`).trim() || `${i + 1}번째 계약`;
     if (!p.insurer && !p.product_name && !p.premium_won) continue;
     const prem = Number(String(p.premium_won ?? p.premium ?? "").replace(/[^\d]/g, ""));
@@ -529,6 +531,8 @@ export async function savePolicies(
       ]
         .filter(Boolean)
         .join(" · ") || null;
+    let createdPolicy = false;
+    let savingCoverages = false;
     try {
       const existing = existingPolicies.find((item) => (
         (key(p.source_hash) !== "" && key(item.source_hash) === key(p.source_hash)) ||
@@ -563,12 +567,13 @@ export async function savePolicies(
         }),
       });
       if (!existing) {
-        saved++;
+        createdPolicy = true;
         existingPolicies.push(created);
       }
       const policyId = typeof created === "object" && created && "id" in created ? String((created as { id: string }).id) : null;
       const coverages = Array.isArray(p.policy_coverages) ? p.policy_coverages : [];
       if (policyId && coverages.length > 0) {
+        savingCoverages = true;
         const coverageResult = await api(`/customers/${cid}/policy-coverages/bulk`, {
           method: "POST",
           body: JSON.stringify({
@@ -579,9 +584,10 @@ export async function savePolicies(
         coverageSaved += Number(coverageResult.created ?? 0) + Number(coverageResult.skipped_existing ?? 0);
         coverageLinkFailed += Number(coverageResult.policy_link_failed ?? 0);
       }
+      if (createdPolicy) saved++;
     } catch (e) {
-      err = e instanceof Error ? e.message : String(e);
-      failures.push({ index: i, label, error: e instanceof Error ? e.message : String(e) });
+      err = describePolicySaveFailure(e, createdPolicy, savingCoverages);
+      failures.push({ index: i, label, error: err });
     }
   }
   return { saved, err, failures, coverageSaved, coverageLinkFailed };

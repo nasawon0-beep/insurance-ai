@@ -1721,10 +1721,10 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("Insurance AI")
+            .title("모아둠")
             .inner_size(1000.0, 720.0);
             #[cfg(windows)]
-            let builder = builder.drag_and_drop(false);
+            let builder = builder.disable_drag_drop_handler();
             let builder = if let Some(webview_dir) = &profile.webview_dir {
                 builder.data_directory(webview_dir.clone())
             } else {

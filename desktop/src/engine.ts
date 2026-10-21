@@ -6,6 +6,7 @@ import {
   QA_PROFILE_FINGERPRINT,
 } from "./config";
 import { invoke } from "@tauri-apps/api/core";
+import { responseFromNativeResult } from "./nativeResponse";
 
 export { LOCAL_ENGINE_URL };
 
@@ -146,10 +147,7 @@ async function nativeEngineFetch(path: string, init: RequestInit = {}): Promise<
       body: await nativeBodyFromInit(init),
     },
   });
-  return new Response(new Uint8Array(result.body), {
-    status: result.status,
-    headers: result.headers,
-  });
+  return responseFromNativeResult(result);
 }
 
 export async function ensureLocalEngineRecovered(): Promise<void> {

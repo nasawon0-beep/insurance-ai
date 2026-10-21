@@ -25,6 +25,34 @@ export function isProposalDocument(value: unknown): boolean {
   return normalizeCoverageDocumentType(value) === "proposal";
 }
 
+export function isAggregateSummaryCoverage(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  const insurer = String(row.insurer ?? "").trim();
+  const sourceType = String(row.source_type ?? "").trim().toLowerCase();
+  return ["통합보장분석", "알 수 없음"].includes(insurer)
+    || ["summary", "aggregate", "coverage_summary"].includes(sourceType);
+}
+
+export function isAggregateSummaryPolicy(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const policy = value as Record<string, unknown>;
+  const insurer = String(policy.insurer ?? "").trim();
+  const product = String(policy.product_name ?? "").replace(/\s+/g, "").replace(/[·-]/g, "").toLowerCase();
+  if (insurer === "통합보장분석") return true;
+  if (["m보장분석", "보장분석요약"].includes(product) && (!insurer || insurer === "알 수 없음")) return true;
+  const coverages = Array.isArray(policy.policy_coverages) ? policy.policy_coverages : [];
+  return coverages.length > 0 && coverages.every(isAggregateSummaryCoverage)
+    && (!insurer || insurer === "알 수 없음");
+}
+
+export function describePolicySaveFailure(error: unknown, createdPolicy: boolean, savingCoverages: boolean): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return createdPolicy && savingCoverages
+    ? `계약은 생성됐지만 담보 저장 실패: ${detail}`
+    : detail;
+}
+
 export function selectReviewedPolicyCoverages(source: CaptureCoverageSource): Record<string, unknown>[] {
   const rows = Array.isArray(source.policy_coverages)
     ? source.policy_coverages
@@ -35,11 +63,9 @@ export function selectReviewedPolicyCoverages(source: CaptureCoverageSource): Re
     if (!item || typeof item !== "object") return false;
     const row = item as Record<string, unknown>;
     const insurer = String(row.insurer ?? "").trim();
-    const sourceType = String(row.source_type ?? "").trim().toLowerCase();
     const rider = String(row.rider_name ?? row.coverage_name ?? row.standard_name ?? "").trim();
     // 50개 표준항목 집계표는 계약 원장이 아니다. 회사/상품 담보 상세만 저장한다.
-    if (!insurer || ["통합보장분석", "알 수 없음"].includes(insurer)) return false;
-    if (["summary", "aggregate", "coverage_summary"].includes(sourceType)) return false;
+    if (!insurer || isAggregateSummaryCoverage(row)) return false;
     return rider.length > 0;
   });
 }

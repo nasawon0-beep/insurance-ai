@@ -13,6 +13,7 @@ import { track } from "./usage";
 import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
+import { withoutCustomerId } from "./customerListState";
 import { totalMonthlyPremium, expiringCount } from "./customerKpi";
 import { policyProgressPct } from "./policyProgress";
 import { computeMergeRows, memoAppend, type MergeRow } from "./mergeDiff";
@@ -279,7 +280,7 @@ async function api(path: string, init?: RequestInit) {
     const body = await res.json().catch(() => null);
     throw new Error(formatErrorDetail(body?.detail) ?? `HTTP ${res.status}`);
   }
-  return res.status === 204 ? null : res.json();
+  return res.status === 204 || res.status === 205 ? null : res.json();
 }
 
 const inputStyle: React.CSSProperties = {
@@ -401,6 +402,8 @@ export default function CustomersScreen({
   const detailGenRef = useRef(0);
   const listGenRef = useRef(0);
   const listAbortRef = useRef<AbortController | null>(null);
+  const deletedCustomerIdsRef = useRef(new Set<string>());
+  const deletingCustomerIdRef = useRef<string | null>(null);
   const [mode, setMode] = useState<"none" | "new" | "edit">(screen === "new" ? "new" : "none");
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [rrnInput, setRrnInput] = useState(""); // 편집할 주민번호 (편집 모드면 전체값이 채워짐)
@@ -597,7 +600,7 @@ export default function CustomersScreen({
       const qs = p.toString();
       const customers = await api(`/customers${qs ? "?" + qs : ""}`, { signal: ac.signal });
       if (gen !== listGenRef.current) return;
-      setList(customers.customers);
+      setList(customers.customers.filter((customer: Customer) => !deletedCustomerIdsRef.current.has(customer.id)));
       const tags = await api("/tags", { signal: ac.signal });
       if (gen !== listGenRef.current) return;
       setAllTags(tags.tags);
@@ -613,7 +616,10 @@ export default function CustomersScreen({
     if (listMode === "normal") return;
     try {
       const m = await api("/management");
-      setMgmt({ expiring_policies: m.expiring_policies ?? [], birthdays: m.birthdays ?? [] });
+      setMgmt({
+        expiring_policies: (m.expiring_policies ?? []).filter((row: any) => !deletedCustomerIdsRef.current.has(row.customer_id)),
+        birthdays: (m.birthdays ?? []).filter((row: any) => !deletedCustomerIdsRef.current.has(row.id)),
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -1263,20 +1269,34 @@ export default function CustomersScreen({
 
   const deleteCustomer = async () => {
     if (!selectedId) return;
+    const deletedId = selectedId;
+    if (deletingCustomerIdRef.current === deletedId) return;
+    deletingCustomerIdRef.current = deletedId;
     setError(null);
     try {
       await api(`/customers/${selectedId}`, { method: "DELETE" });
       track("customer_deleted", {});
+      deletedCustomerIdsRef.current.add(deletedId);
+      listAbortRef.current?.abort();
+      listGenRef.current++;
+      setList((current) => withoutCustomerId(current, deletedId));
       setPendingDelete(false);
-      detailGenRef.current++;
-      setSelectedId(null);
-      setForm(EMPTY_FORM);
-      setRrnInput("");
-      setMode(screen === "new" ? "new" : "none");
+      if (selectedIdRef.current === deletedId) {
+        detailGenRef.current++;
+        selectedIdRef.current = null;
+        setSelectedId(null);
+        setDetail(null);
+        setForm(EMPTY_FORM);
+        setRrnInput("");
+        setMode(screen === "new" ? "new" : "none");
+      }
       await refreshList();
+      if (listMode !== "normal") await refreshMgmt();
       setNotice("고객이 삭제되었습니다.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (deletingCustomerIdRef.current === deletedId) deletingCustomerIdRef.current = null;
     }
   };
 
@@ -1503,7 +1523,7 @@ export default function CustomersScreen({
       )}
 
       {/* 오른쪽 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="customer-detail-panel" style={{ flex: 1, minWidth: 0 }}>
         {error && <p style={{ color: "#b00", whiteSpace: "pre-line" }}>오류: {error}</p>}
         {notice && (
           <p style={{ background: "var(--color-bg-surface)", color: "#8a4b00", padding: "6px 10px", borderRadius: 6, fontSize: 13 }}>
@@ -1515,10 +1535,8 @@ export default function CustomersScreen({
         {(mode === "new" || mode === "edit") && (
           <>
             <div
+              className="customer-detail-header"
               style={{
-                position: "sticky",
-                top: 40,
-                zIndex: 5,
                 background: "var(--color-bg-surface)",
                 borderBottom: "1px solid var(--color-border-default)",
                 padding: mode === "edit" && detail ? "8px 0 0" : "8px 0",
@@ -2397,8 +2415,20 @@ function PoliciesSection({
                   const confirmedCoverages = (p.coverages ?? []).filter((coverage) => coverage.document_status === "CONFIRMED");
                   const referenceCoverages = (p.coverages ?? []).filter((coverage) => coverage.document_status !== "CONFIRMED");
                   const renderCoverageTable = (rows: PolicyCoverage[]) => (
-                    <div style={{ overflowX: "auto", marginBottom: 10 }}>
-                      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                    <div className="coverage-ledger-scroll" style={{ overflowX: "auto", marginBottom: 10 }}>
+                      <table className="coverage-ledger-table" style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                        <colgroup>
+                          <col style={{ width: 88 }} />
+                          <col style={{ width: 92 }} />
+                          <col style={{ width: 270 }} />
+                          <col style={{ width: 160 }} />
+                          <col style={{ width: 110 }} />
+                          <col style={{ width: 110 }} />
+                          <col style={{ width: 220 }} />
+                          <col style={{ width: 110 }} />
+                          <col style={{ width: 90 }} />
+                          <col style={{ width: 130 }} />
+                        </colgroup>
                         <thead>
                           <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-default)" }}>
                             <th style={{ padding: 5 }}>실제 가입 선택</th>
@@ -2428,12 +2458,12 @@ function PoliciesSection({
                                   })}
                                 />
                               </td>
-                              <td style={{ padding: 5 }}>{c.document_status === "CONFIRMED" ? "가입확정" : c.document_status === "PROPOSED" ? "제안" : c.document_status === "PENDING_REVIEW" ? "확인대기" : "참고"}</td>
+                              <td className="coverage-ledger-status" style={{ padding: 5 }}>{c.document_status === "CONFIRMED" ? "가입확정" : c.document_status === "PROPOSED" ? "제안" : c.document_status === "PENDING_REVIEW" ? "확인대기" : "참고"}</td>
                               <td style={{ padding: 5 }}>{c.rider_name || "-"}</td>
                               <td style={{ padding: 5 }}>{c.standard_name || "-"}</td>
-                              <td style={{ padding: 5 }}>{c.amount_text || (c.amount != null ? c.amount.toLocaleString() : "-")}</td>
-                              <td style={{ padding: 5 }}>{c.rider_premium_text || (c.rider_premium != null ? c.rider_premium.toLocaleString() : "-")}</td>
-                              <td style={{ padding: 5 }}>{c.coverage_period_text || (c.start_date || c.end_date ? `${c.start_date || "-"} ~ ${c.end_date || "-"}` : "-")}</td>
+                              <td className="coverage-ledger-amount" style={{ padding: 5 }}>{c.amount_text || (c.amount != null ? c.amount.toLocaleString() : "-")}</td>
+                              <td className="coverage-ledger-amount" style={{ padding: 5 }}>{c.rider_premium_text || (c.rider_premium != null ? c.rider_premium.toLocaleString() : "-")}</td>
+                              <td className="coverage-ledger-period" style={{ padding: 5 }}>{c.coverage_period_text || (c.start_date || c.end_date ? `${c.start_date || "-"} ~ ${c.end_date || "-"}` : "-")}</td>
                               <td style={{ padding: 5 }}>{c.payment_period_text || "-"}</td>
                               <td style={{ padding: 5 }}>{c.renewal_status || "-"}</td>
                               <td style={{ padding: 5 }}>{c.source_page ? `p.${c.source_page} / t.${c.source_table ?? "-"} / r.${c.source_row ?? "-"}` : "-"}</td>

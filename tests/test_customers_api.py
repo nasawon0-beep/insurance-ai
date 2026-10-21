@@ -465,8 +465,12 @@ def test_delete_customer_cascades_policies(client):
     cid = c["id"]
     p = client.post(f"/customers/{cid}/policies", json={"insurer": "X생명"}).json()
 
-    assert client.delete(f"/customers/{cid}").status_code == 204
+    deleted = client.delete(f"/customers/{cid}")
+    assert deleted.status_code == 204
+    assert deleted.content == b""
     assert client.get(f"/customers/{cid}").status_code == 404
+    assert cid not in {row["id"] for row in client.get("/customers").json()["customers"]}
+    assert client.delete(f"/customers/{cid}").status_code == 404
     assert client.patch(f"/policies/{p['id']}", json={"memo": "x"}).status_code == 404
 
 
