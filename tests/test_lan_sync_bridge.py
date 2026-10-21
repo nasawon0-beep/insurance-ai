@@ -53,7 +53,7 @@ class ProductionBridgeIntegrationTest(unittest.TestCase):
         self.bridge.initialize()
         self.bridge.refresh()
         code = self.store.create_pairing_code("synthetic-pc", 60)
-        paired = self.store.pair_device(code.code, "synthetic-android")
+        paired = self.store.pair_device(code.code, "synthetic-android", "192.0.2.20")
         self.auth = self.store.authenticate(paired.token)
 
     def tearDown(self):

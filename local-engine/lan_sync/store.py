@@ -11,6 +11,7 @@ import hmac
 import json
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -25,6 +26,12 @@ class AuthError(RuntimeError):
 
 class ValidationError(RuntimeError):
     pass
+
+
+class PairingRateLimitError(AuthError):
+    def __init__(self, retry_after: int):
+        super().__init__("pairing temporarily unavailable")
+        self.retry_after = max(1, int(retry_after))
 
 
 class ConflictKind(str, Enum):
@@ -72,11 +79,20 @@ WRITABLE_FIELDS: dict[str, frozenset[str]] = {
     }),
 }
 READ_ONLY_TYPES = frozenset({"policy", "coverage_analysis", "policy_coverage"})
+PAIRING_WINDOW_SECONDS = 60
+PAIRING_SOURCE_FAILURE_LIMIT = 5
+PAIRING_SOURCE_COOLDOWN_SECONDS = 30
+PAIRING_GLOBAL_FAILURE_LIMIT = 30
+PAIRING_GLOBAL_COOLDOWN_SECONDS = 60
+PAIRING_MAX_SOURCE_BUCKETS = 256
+PAIRING_BUCKET_RETENTION_SECONDS = 600
 
 
 class SyncStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, clock: Callable[[], float] = time.time):
         self.path = Path(path)
+        self._clock = clock
+        self._pairing_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -126,6 +142,13 @@ class SyncStore:
           FOREIGN KEY(device_id) REFERENCES sync_devices(id),
           FOREIGN KEY(cursor) REFERENCES sync_changes(cursor)
         );
+        CREATE TABLE IF NOT EXISTS sync_pairing_rate_limits(
+          bucket_type TEXT NOT NULL, bucket_key TEXT NOT NULL,
+          window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL,
+          failures INTEGER NOT NULL, blocked_until INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(bucket_type, bucket_key)
+        );
         """)
 
     @staticmethod
@@ -142,43 +165,144 @@ class SyncStore:
         code = f"{secrets.randbelow(1_000_000):06d}"
         salt = secrets.token_hex(16)
         digest = self._pair_digest(code, salt)
-        expires = int(time.time()) + ttl_seconds
+        expires = int(self._clock()) + ttl_seconds
         self.conn.execute(
             "INSERT INTO sync_pairing_codes(digest,salt,expires_at,pc_name) VALUES(?,?,?,?)",
             (digest, salt, expires, pc_name.strip()),
         )
         return PairingCode(code, expires)
 
-    def pair_device(self, code: str, device_name: str) -> PairedDevice:
-        now = int(time.time())
-        if not device_name.strip():
-            raise AuthError("device name required")
-        rows = self.conn.execute(
-            "SELECT digest,salt,expires_at,used_at FROM sync_pairing_codes WHERE used_at IS NULL AND expires_at>=?",
-            (now,),
-        ).fetchall()
-        match = None
-        for row in rows:
-            candidate = self._pair_digest(code, row["salt"])
-            if hmac.compare_digest(candidate, row["digest"]):
-                match = row
-                break
-        if match is None:
-            raise AuthError("invalid, expired, or already-used pairing code")
-        device_id = str(uuid.uuid4())
-        token = secrets.token_urlsafe(32)
-        with self.conn:
-            updated = self.conn.execute(
-                "UPDATE sync_pairing_codes SET used_at=? WHERE digest=? AND used_at IS NULL",
-                (now, match["digest"]),
-            ).rowcount
-            if updated != 1:
-                raise AuthError("pairing code already used")
-            self.conn.execute(
-                "INSERT INTO sync_devices(id,name,token_digest,created_at) VALUES(?,?,?,?)",
-                (device_id, device_name.strip(), self._token_digest(token), now),
-            )
+    def pair_device(self, code: str, device_name: str, source: str) -> PairedDevice:
+        source_bucket = self._begin_pairing_attempt(source)
+        now = int(self._clock())
+        try:
+            clean_name = device_name.strip()
+            if not clean_name or len(clean_name) > 128:
+                raise AuthError("invalid pairing request")
+            if len(code) != 6 or not code.isascii() or not code.isdigit():
+                raise AuthError("invalid, expired, or already-used pairing code")
+            rows = self.conn.execute(
+                "SELECT digest,salt,expires_at,used_at FROM sync_pairing_codes WHERE used_at IS NULL AND expires_at>=?",
+                (now,),
+            ).fetchall()
+            match = None
+            for row in rows:
+                candidate = self._pair_digest(code, row["salt"])
+                if hmac.compare_digest(candidate, row["digest"]):
+                    match = row
+                    break
+            if match is None:
+                raise AuthError("invalid, expired, or already-used pairing code")
+            device_id = str(uuid.uuid4())
+            token = secrets.token_urlsafe(32)
+            with self.conn:
+                updated = self.conn.execute(
+                    "UPDATE sync_pairing_codes SET used_at=? WHERE digest=? AND used_at IS NULL",
+                    (now, match["digest"]),
+                ).rowcount
+                if updated != 1:
+                    raise AuthError("pairing code already used")
+                self.conn.execute(
+                    "INSERT INTO sync_devices(id,name,token_digest,created_at) VALUES(?,?,?,?)",
+                    (device_id, clean_name, self._token_digest(token), now),
+                )
+        except Exception:
+            self._finish_pairing_attempt(source_bucket, succeeded=False)
+            raise
+        self._finish_pairing_attempt(source_bucket, succeeded=True)
         return PairedDevice(device_id, token)
+
+    @staticmethod
+    def _source_digest(source: str) -> str:
+        return hashlib.sha256(source.strip().encode("utf-8")).hexdigest()
+
+    def _begin_pairing_attempt(self, source: str) -> str:
+        now = int(self._clock())
+        source_digest = self._source_digest(source or "unknown")
+        retry_after = 0
+        with self._pairing_lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    "DELETE FROM sync_pairing_rate_limits WHERE bucket_type='source' AND updated_at<? AND blocked_until<=?",
+                    (now - PAIRING_BUCKET_RETENTION_SECONDS, now),
+                )
+                source_bucket = source_digest
+                exists = self.conn.execute(
+                    "SELECT 1 FROM sync_pairing_rate_limits WHERE bucket_type='source' AND bucket_key=?",
+                    (source_bucket,),
+                ).fetchone()
+                if exists is None:
+                    count = self.conn.execute(
+                        "SELECT COUNT(*) FROM sync_pairing_rate_limits WHERE bucket_type='source' AND bucket_key<>'overflow'"
+                    ).fetchone()[0]
+                    if count >= PAIRING_MAX_SOURCE_BUCKETS:
+                        source_bucket = "overflow"
+                buckets = [
+                    ("global", "all", PAIRING_GLOBAL_FAILURE_LIMIT, PAIRING_GLOBAL_COOLDOWN_SECONDS),
+                    ("source", source_bucket, PAIRING_SOURCE_FAILURE_LIMIT, PAIRING_SOURCE_COOLDOWN_SECONDS),
+                ]
+                loaded = []
+                for bucket_type, bucket_key, limit, cooldown in buckets:
+                    row = self.conn.execute(
+                        "SELECT window_started_at,attempts,failures,blocked_until FROM sync_pairing_rate_limits WHERE bucket_type=? AND bucket_key=?",
+                        (bucket_type, bucket_key),
+                    ).fetchone()
+                    if row is None or now >= int(row["window_started_at"]) + PAIRING_WINDOW_SECONDS or (
+                        int(row["blocked_until"]) and now >= int(row["blocked_until"])
+                    ):
+                        state = {"window_started_at": now, "attempts": 0, "failures": 0, "blocked_until": 0}
+                    else:
+                        state = dict(row)
+                    if int(state["blocked_until"]) > now:
+                        retry_after = max(retry_after, int(state["blocked_until"]) - now)
+                    elif int(state["attempts"]) >= limit:
+                        state["blocked_until"] = now + cooldown
+                        retry_after = max(retry_after, cooldown)
+                    loaded.append((bucket_type, bucket_key, state))
+                for bucket_type, bucket_key, state in loaded:
+                    attempts = int(state["attempts"]) + (0 if retry_after else 1)
+                    self.conn.execute(
+                        "INSERT INTO sync_pairing_rate_limits(bucket_type,bucket_key,window_started_at,attempts,failures,blocked_until,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?) ON CONFLICT(bucket_type,bucket_key) DO UPDATE SET "
+                        "window_started_at=excluded.window_started_at,attempts=excluded.attempts,failures=excluded.failures,"
+                        "blocked_until=excluded.blocked_until,updated_at=excluded.updated_at",
+                        (bucket_type, bucket_key, state["window_started_at"], attempts, state["failures"], state["blocked_until"], now),
+                    )
+                self.conn.execute("COMMIT")
+            except Exception:
+                if self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
+                raise
+        if retry_after:
+            raise PairingRateLimitError(retry_after)
+        return source_bucket
+
+    def _finish_pairing_attempt(self, source_bucket: str, *, succeeded: bool) -> None:
+        now = int(self._clock())
+        with self._pairing_lock, self.conn:
+            if succeeded and source_bucket != "overflow":
+                self.conn.execute(
+                    "DELETE FROM sync_pairing_rate_limits WHERE bucket_type='source' AND bucket_key=?",
+                    (source_bucket,),
+                )
+                return
+            for bucket_type, bucket_key, limit, cooldown in (
+                ("global", "all", PAIRING_GLOBAL_FAILURE_LIMIT, PAIRING_GLOBAL_COOLDOWN_SECONDS),
+                ("source", source_bucket, PAIRING_SOURCE_FAILURE_LIMIT, PAIRING_SOURCE_COOLDOWN_SECONDS),
+            ):
+                if succeeded:
+                    continue
+                row = self.conn.execute(
+                    "SELECT failures FROM sync_pairing_rate_limits WHERE bucket_type=? AND bucket_key=?",
+                    (bucket_type, bucket_key),
+                ).fetchone()
+                failures = (int(row["failures"]) if row else 0) + 1
+                blocked_until = now + cooldown if failures >= limit else 0
+                self.conn.execute(
+                    "UPDATE sync_pairing_rate_limits SET failures=?,blocked_until=?,updated_at=? WHERE bucket_type=? AND bucket_key=?",
+                    (failures, blocked_until, now, bucket_type, bucket_key),
+                )
 
     def authenticate(self, token: str) -> AuthContext:
         digest = self._token_digest(token)

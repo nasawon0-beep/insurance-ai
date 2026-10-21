@@ -49,6 +49,36 @@ class LanSyncApiTest(unittest.TestCase):
             revoked = client.post("/v1/sync", headers=headers, json={"cursor": 0, "operations": []})
             self.assertEqual(401, revoked.status_code)
 
+    def test_pairing_limit_returns_429_ignores_forwarded_header_and_does_not_affect_sync(self):
+        pair = self.store.create_pairing_code("synthetic-pc", 60)
+        with TestClient(self.app, base_url="https://testserver") as client:
+            paired = client.post("/v1/pair", json={"code": pair.code, "device_name": "synthetic-phone"})
+            self.assertEqual(200, paired.status_code)
+            token = paired.json()["token"]
+            for number in range(5):
+                rejected = client.post(
+                    "/v1/pair",
+                    headers={"X-Forwarded-For": f"198.51.100.{number}"},
+                    json={"code": "000000", "device_name": "attacker"},
+                )
+                self.assertEqual(401, rejected.status_code)
+
+            limited = client.post(
+                "/v1/pair",
+                headers={"X-Forwarded-For": "203.0.113.99"},
+                json={"code": "000000", "device_name": "attacker"},
+            )
+            self.assertEqual(429, limited.status_code)
+            self.assertEqual("30", limited.headers["Retry-After"])
+            self.assertEqual({"detail": "pairing temporarily unavailable"}, limited.json())
+
+            sync = client.post(
+                "/v1/sync",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"cursor": 0, "operations": []},
+            )
+            self.assertEqual(200, sync.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .bridge import ProductionBridge
-from .store import AuthError, SyncStore, ValidationError
+from .store import AuthError, PairingRateLimitError, SyncStore, ValidationError
 
 
 def create_app(db_path: str | Path, *, enable_production_bridge: bool = True) -> FastAPI:
@@ -40,9 +40,16 @@ def create_app(db_path: str | Path, *, enable_production_bridge: bool = True) ->
     @app.post("/v1/pair")
     async def pair(request: Request) -> dict[str, Any]:
         body = await request.json()
+        source = request.client.host if request.client is not None else "unknown"
         try:
-            paired = store.pair_device(str(body.get("code", "")), str(body.get("device_name", "")))
+            paired = store.pair_device(str(body.get("code", "")), str(body.get("device_name", "")), source)
             return asdict(paired)
+        except PairingRateLimitError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="pairing temporarily unavailable",
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
         except (AuthError, ValidationError) as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 

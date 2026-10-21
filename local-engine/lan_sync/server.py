@@ -31,7 +31,15 @@ def main() -> None:
     fingerprint = hashlib.sha256(der).hexdigest()
     print(f"certificate_sha256={fingerprint}")
     print(f"listen=https://{args.host}:{args.port}")
-    uvicorn.run(create_app(args.db), host=args.host, port=args.port, ssl_certfile=args.cert, ssl_keyfile=args.key)
+    uvicorn.run(
+        create_app(args.db),
+        host=args.host,
+        port=args.port,
+        ssl_certfile=args.cert,
+        ssl_keyfile=args.key,
+        proxy_headers=False,
+        forwarded_allow_ips="",
+    )
 
 
 if __name__ == "__main__":

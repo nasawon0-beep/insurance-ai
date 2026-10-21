@@ -16,7 +16,7 @@ class SyncStoreTest(unittest.TestCase):
         self.store = SyncStore(self.db)
         self.store.initialize()
         pair = self.store.create_pairing_code("test-pc", ttl_seconds=60)
-        self.device = self.store.pair_device(pair.code, "android-test")
+        self.device = self.store.pair_device(pair.code, "android-test", "192.0.2.1")
         self.auth = self.store.authenticate(self.device.token)
         self.store.seed_synthetic_customer(
             "c-1", {"name": "합성 고객", "phone": "010-0000-0000", "address": "기준 주소", "memo": "기준 메모"}
@@ -41,9 +41,9 @@ class SyncStoreTest(unittest.TestCase):
 
     def test_pairing_is_one_time_and_revocation_blocks_access(self):
         code = self.store.create_pairing_code("test-pc", ttl_seconds=60)
-        paired = self.store.pair_device(code.code, "phone-2")
+        paired = self.store.pair_device(code.code, "phone-2", "192.0.2.2")
         with self.assertRaises(AuthError):
-            self.store.pair_device(code.code, "phone-3")
+            self.store.pair_device(code.code, "phone-3", "192.0.2.3")
         self.store.revoke_device(paired.device_id)
         with self.assertRaises(AuthError):
             self.store.authenticate(paired.token)
