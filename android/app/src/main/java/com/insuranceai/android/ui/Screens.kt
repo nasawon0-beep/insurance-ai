@@ -179,9 +179,12 @@ private fun ConsultationCard(item: ConsultationEntity) {
             Text(item.title ?: "상담", fontWeight = FontWeight.Bold)
             Text("${item.channel ?: "채널 미지정"} · ${item.consultedAt}")
             Text("후속 연락: ${item.followUpAt ?: "없음"}")
+            Text(consultationSyncLabel(item.syncStatus))
         }
     }
 }
+
+fun consultationSyncLabel(syncStatus: Int): String = "동기화: $syncStatus"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

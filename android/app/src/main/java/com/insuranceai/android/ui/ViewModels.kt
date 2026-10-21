@@ -10,6 +10,7 @@ import com.insuranceai.android.data.local.CoverageAnalysisEntity
 import com.insuranceai.android.data.local.CustomerEntity
 import com.insuranceai.android.data.local.PolicyEntity
 import com.insuranceai.android.data.local.SyncConflictEntity
+import com.insuranceai.android.sync.requiresUserAuthentication
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,14 +72,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             repository.pair(endpoint, pin, code, "모아둠 Android")
             repository.syncOnce()
             "페어링 및 동기화 완료"
-        }.getOrElse { "실패: ${it.message}" }
+        }.getOrElse(::syncFailureStatus)
     }
 
     fun syncNow() = viewModelScope.launch {
         status.value = "동기화 중"
         status.value = runCatching {
             if (repository.syncOnce()) "동기화 완료" else "페어링 필요"
-        }.getOrElse { "실패: ${it.message}" }
+        }.getOrElse(::syncFailureStatus)
     }
 
     fun resolve(conflict: SyncConflictEntity, chooseLocal: Boolean) = viewModelScope.launch {
@@ -86,6 +87,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         status.value = runCatching {
             repository.resolveConflict(conflict, chooseLocal)
             "충돌 해결 및 동기화 완료"
-        }.getOrElse { "실패: ${it.message}" }
+        }.getOrElse(::syncFailureStatus)
     }
 }
+
+fun syncFailureStatus(error: Throwable): String =
+    if (error.requiresUserAuthentication()) {
+        "앱 잠금 해제 후 동기화를 다시 시도합니다"
+    } else {
+        "실패: ${error.message ?: error.javaClass.simpleName}"
+    }

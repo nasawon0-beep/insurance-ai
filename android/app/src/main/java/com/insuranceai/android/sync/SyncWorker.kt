@@ -16,13 +16,14 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
     override suspend fun doWork(): Result = try {
         val app = applicationContext as InsuranceAiApplication
         if (app.container.syncRepository.syncOnce()) Result.success() else Result.success()
-    } catch (_: SecurityException) {
-        val app = applicationContext as InsuranceAiApplication
-        runCatching { app.container.syncRepository.recordBlocked("앱 잠금 해제 후 동기화를 다시 시도합니다") }
-        Result.retry()
     } catch (error: Exception) {
         val app = applicationContext as InsuranceAiApplication
-        runCatching { app.container.syncRepository.recordBlocked("재연결 대기: ${error.javaClass.simpleName}") }
+        val message = if (error.requiresUserAuthentication()) {
+            "앱 잠금 해제 후 동기화를 다시 시도합니다"
+        } else {
+            "재연결 대기: ${error.javaClass.simpleName}"
+        }
+        runCatching { app.container.syncRepository.recordBlocked(message) }
         Result.retry()
     }
 
