@@ -8,14 +8,20 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .bridge import ProductionBridge
 from .store import AuthError, SyncStore, ValidationError
 
 
-def create_app(db_path: str | Path) -> FastAPI:
+def create_app(db_path: str | Path, *, enable_production_bridge: bool = True) -> FastAPI:
     store = SyncStore(db_path)
     store.initialize()
+    bridge = ProductionBridge(store) if enable_production_bridge else None
+    if bridge is not None:
+        bridge.initialize()
+        bridge.refresh()
     app = FastAPI(title="MoaDoom LAN Sync", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sync_store = store
+    app.state.production_bridge = bridge
 
     @app.middleware("http")
     async def require_tls(request: Request, call_next):
@@ -45,7 +51,15 @@ def create_app(db_path: str | Path) -> FastAPI:
         ctx = auth(authorization)
         body = await request.json()
         try:
-            results = store.push(ctx, body.get("operations", [])) if body.get("operations") else []
+            operations = body.get("operations", [])
+            if bridge is not None and not operations:
+                bridge.refresh()
+            results = store.push(
+                ctx,
+                operations,
+                apply_callback=bridge.apply_operation if bridge is not None else None,
+                refresh_callback=bridge.refresh if bridge is not None else None,
+            ) if operations else []
             pulled = store.pull(ctx, int(body.get("cursor", 0)), int(body.get("limit", 200)))
             if body.get("tombstone_acks"):
                 store.ack_tombstones(ctx, body["tombstone_acks"])
@@ -64,7 +78,14 @@ def create_app(db_path: str | Path) -> FastAPI:
         ctx = auth(authorization)
         body = await request.json()
         try:
-            return {"cursor": store.resolve_conflict(ctx, conflict_id, body.get("resolution", {}), bool(body.get("deleted", False)))}
+            return {"cursor": store.resolve_conflict(
+                ctx,
+                conflict_id,
+                body.get("resolution", {}),
+                bool(body.get("deleted", False)),
+                apply_callback=bridge.apply_operation if bridge is not None else None,
+                refresh_callback=bridge.refresh if bridge is not None else None,
+            )}
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

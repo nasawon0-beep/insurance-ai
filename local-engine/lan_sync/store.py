@@ -16,7 +16,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 class AuthError(RuntimeError):
@@ -229,6 +229,61 @@ class SyncStore:
                 (entity_type, entity_id, data, revision),
             )
 
+    def reconcile_snapshots(
+        self,
+        snapshots: dict[tuple[str, str], dict[str, Any]],
+        managed_types: frozenset[str],
+    ) -> None:
+        """Atomically mirror canonical rows and emit tombstones for missing rows."""
+        owns_transaction = not self.conn.in_transaction
+        try:
+            if owns_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            for (entity_type, entity_id), payload in snapshots.items():
+                data = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                current = self.conn.execute(
+                    "SELECT payload,deleted,revision FROM sync_entities WHERE entity_type=? AND entity_id=?",
+                    (entity_type, entity_id),
+                ).fetchone()
+                if current and current["payload"] == data and not current["deleted"]:
+                    continue
+                revision = (int(current["revision"]) if current else 0) + 1
+                self.conn.execute(
+                    "INSERT INTO sync_entities(entity_type,entity_id,payload,deleted,revision) VALUES(?,?,?,0,?) "
+                    "ON CONFLICT(entity_type,entity_id) DO UPDATE SET payload=excluded.payload,deleted=0,revision=excluded.revision",
+                    (entity_type, entity_id, data, revision),
+                )
+                self.conn.execute(
+                    "INSERT INTO sync_changes(entity_type,entity_id,payload,deleted,revision,source_device_id) VALUES(?,?,?,0,?,NULL)",
+                    (entity_type, entity_id, data, revision),
+                )
+            known = set(snapshots)
+            placeholders = ",".join("?" for _ in managed_types)
+            rows = self.conn.execute(
+                f"SELECT entity_type,entity_id,payload,revision FROM sync_entities "
+                f"WHERE entity_type IN ({placeholders}) AND deleted=0",
+                tuple(sorted(managed_types)),
+            ).fetchall()
+            for row in rows:
+                key = (row["entity_type"], row["entity_id"])
+                if key in known:
+                    continue
+                revision = int(row["revision"]) + 1
+                self.conn.execute(
+                    "UPDATE sync_entities SET deleted=1,revision=? WHERE entity_type=? AND entity_id=?",
+                    (revision, *key),
+                )
+                self.conn.execute(
+                    "INSERT INTO sync_changes(entity_type,entity_id,payload,deleted,revision,source_device_id) VALUES(?,?,?,1,?,NULL)",
+                    (row["entity_type"], row["entity_id"], row["payload"], revision),
+                )
+            if owns_transaction:
+                self.conn.execute("COMMIT")
+        except Exception:
+            if owns_transaction and self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+
     def get_entity(self, entity_type: str, entity_id: str) -> dict[str, Any]:
         row = self.conn.execute(
             "SELECT payload,deleted FROM sync_entities WHERE entity_type=? AND entity_id=?",
@@ -256,13 +311,21 @@ class SyncStore:
             if not customer_id or not self.get_entity("customer", customer_id):
                 raise ValidationError("consultation customer does not exist")
 
-    def push(self, auth: AuthContext, operations: Iterable[dict[str, Any]]) -> list[PushResult]:
+    def push(
+        self,
+        auth: AuthContext,
+        operations: Iterable[dict[str, Any]],
+        apply_callback: Callable[[dict[str, Any], dict[str, Any], bool], None] | None = None,
+        refresh_callback: Callable[[], None] | None = None,
+    ) -> list[PushResult]:
         self._ensure_active(auth)
         ops = list(operations)
         if not ops or len(ops) > 500:
             raise ValidationError("operation batch must contain 1..500 items")
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            if refresh_callback is not None:
+                refresh_callback()
             results: list[PushResult] = []
             for op in ops:
                 self._validate_operation(op)
@@ -274,6 +337,12 @@ class SyncStore:
                     results.append(PushResult(**json.loads(replay["response"])))
                     continue
                 result = self._apply(auth, op)
+                if result.status == "applied" and apply_callback is not None:
+                    applied = self.conn.execute(
+                        "SELECT payload,deleted FROM sync_entities WHERE entity_type=? AND entity_id=?",
+                        (op["entity_type"], op["entity_id"]),
+                    ).fetchone()
+                    apply_callback(op, json.loads(applied["payload"]), bool(applied["deleted"]))
                 self.conn.execute(
                     "INSERT INTO sync_operations(device_id,operation_id,response) VALUES(?,?,?)",
                     (auth.device_id, op["operation_id"], json.dumps(asdict(result), sort_keys=True)),
@@ -362,10 +431,20 @@ class SyncStore:
             result.append(item)
         return result
 
-    def resolve_conflict(self, auth: AuthContext, conflict_id: str, resolution: dict[str, Any], deleted: bool = False) -> int:
+    def resolve_conflict(
+        self,
+        auth: AuthContext,
+        conflict_id: str,
+        resolution: dict[str, Any],
+        deleted: bool = False,
+        apply_callback: Callable[[dict[str, Any], dict[str, Any], bool], None] | None = None,
+        refresh_callback: Callable[[], None] | None = None,
+    ) -> int:
         self._ensure_active(auth)
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            if refresh_callback is not None:
+                refresh_callback()
             row = self.conn.execute(
                 "SELECT * FROM sync_conflicts WHERE id=? AND device_id=? AND resolved_at IS NULL",
                 (conflict_id, auth.device_id),
@@ -376,6 +455,8 @@ class SyncStore:
             if set(resolution) - allowed:
                 raise ValidationError("resolution contains read-only fields")
             current = self.get_entity(row["entity_type"], row["entity_id"])
+            if not current and row["remote_deleted"]:
+                current = json.loads(row["remote"])
             current.update(resolution)
             revision_row = self.conn.execute(
                 "SELECT revision FROM sync_entities WHERE entity_type=? AND entity_id=?",
@@ -388,6 +469,19 @@ class SyncStore:
                 "ON CONFLICT(entity_type,entity_id) DO UPDATE SET payload=excluded.payload,deleted=excluded.deleted,revision=excluded.revision",
                 (row["entity_type"], row["entity_id"], payload, int(deleted), revision),
             )
+            if apply_callback is not None:
+                apply_callback(
+                    {
+                        "operation_id": f"resolve:{conflict_id}",
+                        "entity_type": row["entity_type"],
+                        "entity_id": row["entity_id"],
+                        "base": json.loads(row["base"]),
+                        "patch": resolution,
+                        "deleted": deleted,
+                    },
+                    current,
+                    deleted,
+                )
             cursor = self.conn.execute(
                 "INSERT INTO sync_changes(entity_type,entity_id,payload,deleted,revision,source_device_id) VALUES(?,?,?,?,?,?) RETURNING cursor",
                 (row["entity_type"], row["entity_id"], payload, int(deleted), revision, auth.device_id),

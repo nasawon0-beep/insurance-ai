@@ -13,7 +13,7 @@ from lan_sync.app import create_app
 class LanSyncApiTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.app = create_app(Path(self.tmp.name) / "api.sqlite3")
+        self.app = create_app(Path(self.tmp.name) / "api.sqlite3", enable_production_bridge=False)
         self.store = self.app.state.sync_store
         self.store.seed_synthetic_customer("c-1", {"name": "합성 고객", "phone": "010-0000"})
 

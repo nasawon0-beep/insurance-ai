@@ -1,7 +1,7 @@
 """Run the isolated TLS LAN sync adapter.
 
 Example (certificate/key are operator-managed; no key is generated here):
-  python -m lan_sync.server --db /path/to/sync.sqlite3 --cert cert.pem --key key.pem
+  python -m lan_sync.server --db /path/to/customers.sqlite3 --cert cert.pem --key key.pem
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .app import create_app
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db", required=True)
+    parser.add_argument("--db", required=True, help="existing production customer SQLite database")
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
     parser.add_argument("--host", required=True, help="explicit private LAN interface address")

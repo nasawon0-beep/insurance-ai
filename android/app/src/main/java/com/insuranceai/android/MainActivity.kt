@@ -12,6 +12,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.insuranceai.android.auth.BiometricAuthManager
 import com.insuranceai.android.auth.SessionManager
+import com.insuranceai.android.sync.SyncWorker
 import com.insuranceai.android.ui.InsuranceAiApp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -40,6 +41,7 @@ class MainActivity : FragmentActivity() {
                     biometricAuthManager.authenticate(
                         onSuccess = {
                             sessionManager.startSession(UUID.randomUUID().toString())
+                            SyncWorker.enqueueNow(this@MainActivity)
                             onSuccess()
                         },
                         onError = onError

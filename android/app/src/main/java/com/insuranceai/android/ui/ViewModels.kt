@@ -57,6 +57,14 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val status = MutableStateFlow("페어링 필요 또는 동기화 대기")
 
+    init {
+        viewModelScope.launch {
+            repository.observeState().collect { state ->
+                state?.lastError?.let { status.value = it }
+            }
+        }
+    }
+
     fun pair(endpoint: String, pin: String, code: String) = viewModelScope.launch {
         status.value = "페어링 중"
         status.value = runCatching {

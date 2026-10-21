@@ -35,6 +35,9 @@ interface SyncDao {
     @Query("SELECT * FROM sync_state WHERE singletonId = 1")
     suspend fun state(): SyncStateEntity?
 
+    @Query("SELECT * FROM sync_state WHERE singletonId = 1")
+    fun observeState(): Flow<SyncStateEntity?>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun saveTombstoneAck(ack: SyncTombstoneAckEntity)
 

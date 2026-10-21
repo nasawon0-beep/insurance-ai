@@ -25,6 +25,12 @@ class SyncRepository(
     private val syncDao = database.syncDao()
 
     fun observeConflicts(): Flow<List<SyncConflictEntity>> = syncDao.observeConflicts()
+    fun observeState(): Flow<SyncStateEntity?> = syncDao.observeState()
+
+    suspend fun recordBlocked(message: String) {
+        val state = syncDao.state() ?: SyncStateEntity()
+        syncDao.saveState(state.copy(lastError = message))
+    }
 
     suspend fun pair(endpoint: String, certificatePin: String, code: String, deviceName: String) {
         val provisional = SyncConnection(endpoint.trimEnd('/'), certificatePin, "")
@@ -203,7 +209,7 @@ class SyncRepository(
             "coverage_analysis" -> database.coverageAnalysisDao().insert(CoverageAnalysisEntity(
                 id = id,
                 customerId = payload.getString("customer_id"),
-                summaryJsonEncrypted = encryption.encrypt(payload.getJSONObject("summary").toString()),
+                summaryJsonEncrypted = encryption.encrypt(payload.get("summary").toString()),
                 generatedAt = payload.getString("generated_at"),
                 sourceHash = payload.nullable("source_hash"),
                 updatedAt = payload.nullable("updated_at") ?: nowIso()
