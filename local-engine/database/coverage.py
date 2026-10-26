@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rag import search as rag_search
+from runtime_paths import coverage_log_dir
 
 from . import repo
 from .coverage_catalog import COVERAGE_CATALOG as EMBEDDED_COVERAGE_CATALOG
@@ -35,20 +36,40 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 
 def _analysis_log_path(customer_id: str) -> Path:
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(customer_id or "unknown"))
-    path = Path(__file__).resolve().parents[1] / "logs" / f"coverage_analysis_{safe_id}.log"
+    path = coverage_log_dir() / f"coverage_analysis_{safe_id}.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
+_LOG_FIELD_ALLOWLIST = {
+    "status",
+    "current",
+    "total",
+    "elapsed_ms",
+    "policy_count",
+    "policy_coverage_count",
+    "observed_summary_count",
+    "doc_count",
+    "item_count",
+}
+
+
 def _append_analysis_log(customer_id: str, event: str, **fields: Any) -> None:
-    payload = {"ts": datetime.now().isoformat(timespec="milliseconds"), "event": event, **fields}
+    # Dedicated progress logs keep operational counters only. Customer/document/run
+    # identifiers and free-form text stay out of both this file and the sidecar log.
+    safe_fields = {key: value for key, value in fields.items() if key in _LOG_FIELD_ALLOWLIST}
+    payload = {"ts": datetime.now().isoformat(timespec="milliseconds"), "event": event, **safe_fields}
     line = json.dumps(payload, ensure_ascii=False, default=str)
     try:
         with _analysis_log_path(customer_id).open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
-        logger.exception("coverage analysis log write failed: customer_id=%s event=%s", customer_id, event)
-    logger.info("coverage_analysis %s", line)
+    except Exception as exc:
+        logger.warning(
+            "coverage analysis log write failed: event=%s error=%s",
+            event,
+            type(exc).__name__,
+        )
+    logger.info("coverage_analysis event=%s", event)
 
 
 def _emit_progress(

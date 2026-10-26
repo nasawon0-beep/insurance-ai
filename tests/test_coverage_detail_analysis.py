@@ -2,7 +2,7 @@ from collections import Counter
 
 from database.coverage_analysis_parser import parse_coverage_analysis
 from database.policy_coverages import DocumentType, detect_candidate_pages
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
 
 
 def test_private_real_pdf_detailed_analysis():

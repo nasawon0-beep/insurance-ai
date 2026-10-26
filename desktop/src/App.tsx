@@ -9,6 +9,7 @@ import { CoverageTable, PolicyList, savePolicies, type PolicyDraft } from "./Pol
 import { StatCard } from "./components/DashboardCards";
 import OnboardingScreen from "./components/OnboardingScreen";
 import { ThemeToggle, ThemeSelector } from "./components/ThemeToggle";
+import MobileConnectionPanel from "./components/MobileConnectionPanel";
 import {
   changePassword,
   fetchMe,
@@ -2122,6 +2123,8 @@ function DiagnosticsScreen({
             {kv("키 보관", d.customer_db?.key_source)}
           </div>
 
+          <MobileConnectionPanel />
+
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>음성 인식 (Whisper)</b></div>
             {kv("모델", d.whisper?.model)}
@@ -2708,6 +2711,15 @@ function App() {
         });
       });
   }, [auth, needsOnboarding, waitForEngineHealth]);
+
+  useEffect(() => {
+    if (auth !== "in" || needsOnboarding) return;
+    // This command is fail-closed unless the user explicitly enabled restoration.
+    // It runs only after login and the normal app context are ready.
+    void invoke("mobile_sync_restore_if_enabled").catch((error) => {
+      console.error("모바일 연결 자동 복원 실패:", error instanceof Error ? error.message : String(error));
+    });
+  }, [auth, needsOnboarding]);
 
   useEffect(() => {
     // 앱 실행(프로세스) 당 1회만. 앱 시작 3초 뒤 백그라운드에서 자동 확인한다.

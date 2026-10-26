@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/control-server",
+      "binaries/onedir/local-engine"
+    ],
+    "resources": {
+      "binaries/onedir/local-engine._internal/": "local-engine._internal/"
+    }
+  }
+}

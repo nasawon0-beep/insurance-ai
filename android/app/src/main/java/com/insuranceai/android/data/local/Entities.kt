@@ -59,12 +59,42 @@ data class PolicyEntity(
     val status: String = "ACTIVE",
     val memoEncrypted: String? = null,
     val documentId: String? = null,
+    val documentStatus: String? = null,
+    val sourceDocumentType: String? = null,
     val insuredPeriodEncrypted: String? = null,
     val paymentPeriodEncrypted: String? = null,
     val isOwn: Boolean? = null,
     val createdAt: String = nowIso(),
     val updatedAt: String = nowIso(),
     val syncStatus: Int = SYNC_PENDING
+)
+
+@Entity(
+    tableName = "policy_coverages",
+    foreignKeys = [ForeignKey(
+        entity = CustomerEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["customerId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("customerId"), Index("policyId")]
+)
+data class PolicyCoverageEntity(
+    @PrimaryKey val id: String,
+    val customerId: String,
+    val policyId: String? = null,
+    val insurer: String? = null,
+    val productName: String? = null,
+    val riderName: String? = null,
+    val standardName: String? = null,
+    val amount: Long? = null,
+    val amountText: String? = null,
+    val amountStatus: String? = null,
+    val documentStatus: String? = null,
+    val startDate: String? = null,
+    val endDate: String? = null,
+    val rawPayloadEncrypted: String,
+    val updatedAt: String,
 )
 
 @Entity(
@@ -90,4 +120,63 @@ data class ConsultationEntity(
     val createdAt: String = nowIso(),
     val updatedAt: String = nowIso(),
     val syncStatus: Int = SYNC_PENDING
+)
+
+@Entity(
+    tableName = "coverage_analysis_results",
+    foreignKeys = [ForeignKey(
+        entity = CustomerEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["customerId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("customerId")]
+)
+data class CoverageAnalysisEntity(
+    @PrimaryKey val id: String,
+    val customerId: String,
+    val summaryJsonEncrypted: String,
+    val generatedAt: String,
+    val sourceHash: String? = null,
+    val updatedAt: String
+)
+
+@Entity(tableName = "sync_outbox", indices = [Index(value = ["operationId"], unique = true)])
+data class SyncOutboxEntity(
+    @PrimaryKey(autoGenerate = true) val localId: Long = 0,
+    val operationId: String = newId(),
+    val entityType: String,
+    val entityId: String,
+    val baseJson: String,
+    val patchJson: String,
+    val deleted: Boolean = false,
+    val createdAt: String = nowIso(),
+    val attemptCount: Int = 0
+)
+
+@Entity(tableName = "sync_conflicts")
+data class SyncConflictEntity(
+    @PrimaryKey val id: String,
+    val entityType: String,
+    val entityId: String,
+    val kind: String,
+    val baseJson: String,
+    val localJson: String,
+    val remoteJson: String,
+    val localDeleted: Boolean,
+    val remoteDeleted: Boolean,
+    val createdAt: String = nowIso()
+)
+
+@Entity(tableName = "sync_state")
+data class SyncStateEntity(
+    @PrimaryKey val singletonId: Int = 1,
+    val cursor: Long = 0,
+    val lastSuccessAt: String? = null,
+    val lastError: String? = null
+)
+
+@Entity(tableName = "sync_tombstone_acks")
+data class SyncTombstoneAckEntity(
+    @PrimaryKey val cursor: Long
 )

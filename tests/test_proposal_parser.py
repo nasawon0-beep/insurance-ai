@@ -1,6 +1,6 @@
 from database.proposal_parser import parse_proposal
 from database.policy_coverages import detect_candidate_pages, DocumentType
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
 
 class TestProposalParser:
 

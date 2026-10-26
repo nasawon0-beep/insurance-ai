@@ -144,6 +144,14 @@ def _lock_is_free(lock_path: str) -> bool:
     return True
 
 
+def _start_model_warmups() -> None:
+    """Start optional model warmups only when the master switch is enabled."""
+    if os.environ.get("ENGINE_WARMUP", "1") != "1":
+        return
+    threading.Thread(target=_warm_ollama, daemon=True).start()
+    threading.Thread(target=_warm_whisper, daemon=True).start()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
@@ -153,9 +161,7 @@ async def _lifespan(app: FastAPI):
     if dev_skip_auth:
         print("⚠️  경고: DEV_SKIP_AUTH=1 활성화됨. 프로덕션 환경에서 절대 사용 금지!", file=sys.stderr)
 
-    if os.environ.get("ENGINE_WARMUP", "1") == "1":
-        threading.Thread(target=_warm_ollama, daemon=True).start()
-    threading.Thread(target=_warm_whisper, daemon=True).start()
+    _start_model_warmups()
     _startup_maintenance()
 
     _lock = os.environ.get("APP_LOCK_FILE", "")
@@ -630,7 +636,21 @@ def _healthy(host: str, port: int) -> bool:
         return False
 
 
-if __name__ == "__main__":
+def _dispatch_packaged_command(argv: list[str]) -> bool:
+    """Run bundled LAN-sync modes without requiring an external Python install."""
+    if len(argv) < 2 or argv[1] not in {"--lan-sync-server", "--lan-sync-admin"}:
+        return False
+    mode = argv[1]
+    sys.argv = [argv[0], *argv[2:]]
+    if mode == "--lan-sync-server":
+        from lan_sync.server import main as command_main
+    else:
+        from lan_sync.admin import main as command_main
+    command_main()
+    return True
+
+
+if __name__ == "__main__" and not _dispatch_packaged_command(sys.argv):
     import uvicorn
 
     # 반드시 127.0.0.1만 — 외부에서 접근 불가

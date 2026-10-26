@@ -1,7 +1,7 @@
 import base64
 
 import pytest
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
 
 pytest.importorskip("httpx")
 

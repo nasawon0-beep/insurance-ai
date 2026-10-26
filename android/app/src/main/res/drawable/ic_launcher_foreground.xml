@@ -1,1 +1,19 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108"><path android:fillColor="#FFFFFF" android:pathData="M24,30h60v48h-60z"/><path android:fillColor="#0F766E" android:pathData="M34,42h40v6h-40zM34,54h40v6h-40zM34,66h26v6h-26z"/></vector>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Round-2 B mark, mapped from the 1024px master into Android's 66dp safe zone. -->
+    <path
+        android:fillColor="#F7F0DF"
+        android:pathData="M40.078,25.734h33.75l8.438,8.438v33.328H65.391V42.609H40.078z" />
+    <path
+        android:fillColor="#F7F0DF"
+        android:pathData="M25.734,40.5h16.875v24.891h25.312v16.875H34.172l-8.438,-8.438z" />
+    <path
+        android:fillColor="#E6D8BD"
+        android:pathData="M73.828,25.734v8.438h8.438z" />
+    <path
+        android:fillColor="#E6D8BD"
+        android:pathData="M34.172,82.266v-8.438h-8.438z" />
+</vector>

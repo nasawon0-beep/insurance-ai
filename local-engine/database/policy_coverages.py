@@ -135,8 +135,22 @@ def detect_candidate_pages(pdf_path: str, doc_type: DocumentType) -> dict:
             if "보장현황" in text and ("미가입" in text or "부족" in text or "충분" in text):
                 result["coverage_summary_pages"].append(page_num)
 
-            # 가입담보상세List
-            if "가입담보상세List" in text or "가입담보 상세 List" in text or "NO 보험사" in text or "NO 구분 회사" in text:
+            # 가입담보상세List 또는 신용정보원 구조의 계약별 담보 원장
+            compact_text = compact(text)
+            credit_bureau_ledger = all(
+                token in compact_text
+                for token in (
+                    "신정원담보명", "회사명", "상품명", "회사담보명",
+                    "가입금액", "보험시기", "보험종기",
+                )
+            )
+            if (
+                "가입담보상세List" in text
+                or "가입담보 상세 List" in text
+                or "NO 보험사" in text
+                or "NO 구분 회사" in text
+                or credit_bureau_ledger
+            ):
                 result["detail_list_pages"].append(page_num)
 
             # 상품별가입담보상세
@@ -834,6 +848,77 @@ def parse_policy_coverages_from_pdf(
                 if not rows:
                     continue
                 compact_table = compact(" ".join(cell for row in rows for cell in row))
+                credit_bureau_header = next((
+                    i for i, row in enumerate(rows)
+                    if all(
+                        any(compact(cell) == token for cell in row)
+                        for token in [
+                            "신정원담보명", "회사명", "상품명", "회사담보명",
+                            "가입금액", "보험시기", "보험종기",
+                        ]
+                    )
+                ), None)
+                if credit_bureau_header is not None:
+                    header = rows[credit_bureau_header]
+                    compact_header = [compact(cell) for cell in header]
+                    indices = {
+                        token: compact_header.index(token)
+                        for token in [
+                            "신정원담보명", "회사명", "상품명", "회사담보명",
+                            "가입금액", "보험시기", "보험종기",
+                        ]
+                    }
+                    current_insurer = current_product = None
+                    for source_row, row in enumerate(
+                        rows[credit_bureau_header + 1:], start=credit_bureau_header + 1
+                    ):
+                        if len(row) <= max(indices.values()):
+                            continue
+                        rider = row[indices["회사담보명"]]
+                        if not rider:
+                            continue
+                        if row[indices["회사명"]]:
+                            current_insurer = row[indices["회사명"]]
+                        if row[indices["상품명"]]:
+                            current_product = row[indices["상품명"]]
+                        standard_raw = row[indices["신정원담보명"]]
+                        amount_text = row[indices["가입금액"]]
+                        amount = parse_amount(amount_text)
+                        ledger.append({
+                            "source_file_name": source_file_name,
+                            "source_hash": source_hash,
+                            "source_page": page_no,
+                            "source_table": table_index,
+                            "source_row": source_row,
+                            "source_occurrence_key": (
+                                f"ledger:{source_hash or 'nohash'}:{page_no}:{table_index}:{source_row}"
+                            ),
+                            "insurer": current_insurer,
+                            "product_name": current_product,
+                            "rider_no": None,
+                            "coverage_type": None,
+                            "rider_name": rider,
+                            "rider_name_raw": rider,
+                            "standard_name_extracted_raw": standard_raw,
+                            "standard_name_raw": standard_raw,
+                            "standard_name": normalize_standard_name(rider, standard_raw),
+                            "standard_name_verification": "raw_cell",
+                            "source_standard_name": None,
+                            "source_standard_names_json": "[]",
+                            "source_type": "contract_ledger",
+                            "source_link_status": "unlinked",
+                            "review_status": "unreviewed",
+                            "amount": amount,
+                            "amount_text": amount_text,
+                            "amount_status": infer_amount_status(amount, amount_text),
+                            "start_date": row[indices["보험시기"]].replace(".", "-") or None,
+                            "end_date": row[indices["보험종기"]].replace(".", "-") or None,
+                            "confidence": 0.99,
+                            "raw_text": " | ".join(cell for cell in row if cell),
+                        })
+                    # This table is itself the contract ledger. Treating it as a
+                    # separate summary/link source would double-count the same rows.
+                    continue
                 detail_header = next((i for i, row in enumerate(rows) if all(_find_cell_index(row, token) is not None for token in ["구분", "회사명", "담보명"])), None)
                 if detail_header is not None:
                     header = rows[detail_header]

@@ -77,6 +77,56 @@ def test_appendix_continuation_requires_adjacent_sequential_rider_numbers():
     assert not policy_coverages._can_carry_appendix_identity(10, 11, None, 31)
 
 
+def test_credit_bureau_detail_table_is_contract_ledger_without_summary_double_count(monkeypatch):
+    table_rows = [
+        ["신정원담보명", "회사명", "상품명", "회사담보명", "가입금액", "보험시기", "보험종기"],
+        ["암진단", "합성손해보험", "합성 건강보험", "일반암 진단비", "3,000만", "2025.01.01", "2045.01.01"],
+        ["질병수술", "", "", "질병 수술비", "0", "2025.01.01", "2045.01.01"],
+        ["기타", "합성생명", "합성 종신보험", "금액 확인 담보", "-", "2024.02.02", "2054.02.02"],
+        [None, None, None, None, None, None, None],
+    ]
+
+    class FakeTable:
+        def extract(self):
+            return table_rows
+
+    class FakePage:
+        def find_tables(self):
+            return [FakeTable()]
+
+    class FakePdf:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    import pdfplumber
+
+    monkeypatch.setattr(pdfplumber, "open", lambda _path: FakePdf())
+    rows, occurrences = policy_coverages.parse_policy_coverages_from_pdf(
+        "synthetic-kb.pdf", "synthetic-kb.pdf", "synthetic-hash", with_occurrences=True
+    )
+
+    assert len(rows) == 3
+    assert occurrences == []
+    assert [(row["insurer"], row["product_name"], row["rider_name"]) for row in rows] == [
+        ("합성손해보험", "합성 건강보험", "일반암 진단비"),
+        ("합성손해보험", "합성 건강보험", "질병 수술비"),
+        ("합성생명", "합성 종신보험", "금액 확인 담보"),
+    ]
+    assert [(row["amount"], row["amount_status"]) for row in rows] == [
+        (30_000_000, "known"),
+        (0, "explicit_zero"),
+        (None, "unknown_dash"),
+    ]
+    assert [row["source_page"] for row in rows] == [1, 1, 1]
+    assert len({row["source_occurrence_key"] for row in rows}) == 3
+    assert all(row["source_type"] == "contract_ledger" for row in rows)
+
+
 def test_policy_coverages_appendix_parser_normalizes_required_rows():
     page = """
 별첨 상품별 보험가입현황 27

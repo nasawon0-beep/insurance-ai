@@ -1,3 +1,4 @@
+mod mobile_sync;
 mod ollama;
 
 use fs2::FileExt;
@@ -181,6 +182,7 @@ const LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const LOCAL_ENGINE_PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_ENGINE_STARTUP_MAX_ATTEMPTS: usize = 10;
 const LOCAL_ENGINE_STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const QA_LOCAL_ENGINE_STARTUP_DEADLINE: Duration = Duration::from_secs(60);
 const CONTROL_SERVER_PORT: u16 = 8790;
 const QA_MARKER_NAME: &str = ".insurance-ai-qa-profile.json";
 const QA_INSTANCE_HEADER: &str = "X-Insurance-AI-QA-Instance";
@@ -707,6 +709,145 @@ fn health_body_matches_profile(
             == profile.profile_fingerprint.as_deref()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QaHealthProbe {
+    Healthy,
+    BindPending,
+    TlsFailure,
+    IdentityMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QaHealthWaitFailure {
+    ChildExited,
+    BindTimeout,
+    TlsFailure,
+    IdentityMismatch,
+}
+
+impl QaHealthWaitFailure {
+    fn message(self) -> &'static str {
+        match self {
+            Self::ChildExited => "local-engine child가 readiness 전에 종료됐습니다",
+            Self::BindTimeout => "local-engine one-file startup timeout before bind",
+            Self::TlsFailure => "local-engine pinned TLS handshake 또는 health 요청에 실패했습니다",
+            Self::IdentityMismatch => "local-engine health identity가 일치하지 않습니다",
+        }
+    }
+}
+
+fn qa_health_probe_at(
+    host: &str,
+    port: u16,
+    service_key: &str,
+    profile: &RuntimeProfile,
+    timeout: Duration,
+) -> QaHealthProbe {
+    if !is_tcp_port_open(host, port, timeout.min(Duration::from_millis(200))) {
+        return QaHealthProbe::BindPending;
+    }
+    let Ok(certificate) = qa_pinned_certificate(profile) else {
+        return QaHealthProbe::TlsFailure;
+    };
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(certificate)
+        .build()
+    else {
+        return QaHealthProbe::TlsFailure;
+    };
+    let Ok(response) = client.get(format!("https://{host}:{port}/health")).send() else {
+        return QaHealthProbe::TlsFailure;
+    };
+    if !response.status().is_success() {
+        return QaHealthProbe::IdentityMismatch;
+    }
+    let Ok(text) = response.text() else {
+        return QaHealthProbe::IdentityMismatch;
+    };
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return QaHealthProbe::IdentityMismatch;
+    };
+    if health_body_matches_profile(&body, service_key, profile) {
+        QaHealthProbe::Healthy
+    } else {
+        QaHealthProbe::IdentityMismatch
+    }
+}
+
+fn wait_for_qa_health_with<Probe, ChildRunning, Elapsed, Sleep>(
+    deadline: Duration,
+    retry_interval: Duration,
+    mut probe: Probe,
+    mut child_running: ChildRunning,
+    mut elapsed: Elapsed,
+    mut sleep: Sleep,
+) -> Result<(), QaHealthWaitFailure>
+where
+    Probe: FnMut(Duration) -> QaHealthProbe,
+    ChildRunning: FnMut() -> bool,
+    Elapsed: FnMut() -> Duration,
+    Sleep: FnMut(Duration),
+{
+    let mut last_failure = QaHealthWaitFailure::BindTimeout;
+    loop {
+        if !child_running() {
+            return Err(QaHealthWaitFailure::ChildExited);
+        }
+        let spent = elapsed();
+        if spent >= deadline {
+            return Err(last_failure);
+        }
+        let probe_timeout = LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT.min(deadline - spent);
+        match probe(probe_timeout) {
+            QaHealthProbe::Healthy => return Ok(()),
+            QaHealthProbe::BindPending => last_failure = QaHealthWaitFailure::BindTimeout,
+            QaHealthProbe::TlsFailure => last_failure = QaHealthWaitFailure::TlsFailure,
+            QaHealthProbe::IdentityMismatch => last_failure = QaHealthWaitFailure::IdentityMismatch,
+        }
+        if !child_running() {
+            return Err(QaHealthWaitFailure::ChildExited);
+        }
+        let spent = elapsed();
+        if spent >= deadline {
+            return Err(last_failure);
+        }
+        sleep(retry_interval.min(deadline - spent));
+    }
+}
+
+fn wait_for_qa_local_engine_health(
+    app: &tauri::AppHandle,
+    profile: &RuntimeProfile,
+) -> Result<(), QaHealthWaitFailure> {
+    let started = Instant::now();
+    let state = app.state::<SidecarChildren>();
+    wait_for_qa_health_with(
+        QA_LOCAL_ENGINE_STARTUP_DEADLINE,
+        LOCAL_ENGINE_STARTUP_RETRY_INTERVAL,
+        |timeout| {
+            qa_health_probe_at(
+                LOCAL_ENGINE_HOST,
+                profile.engine_port,
+                "local_engine",
+                profile,
+                timeout,
+            )
+        },
+        || {
+            state
+                .local_engine
+                .lock()
+                .expect("local-engine child lock")
+                .is_some()
+        },
+        || started.elapsed(),
+        std::thread::sleep,
+    )
+}
+
 fn is_tcp_port_open(host: &str, port: u16, timeout: Duration) -> bool {
     let Ok(mut addrs) = (host, port).to_socket_addrs() else {
         return false;
@@ -888,6 +1029,7 @@ fn spawn_local_engine(
         )
         .env("RAG_DB_PATH", profile.data_dir.join("rag-index.sqlite3"))
         .env("WHISPER_MODEL_DIR", &profile.model_dir)
+        .env("COVERAGE_ANALYSIS_LOG_DIR", &profile.log_dir)
         .env("CUSTOMER_DB_KEYFILE", profile.customer_key_path())
         .env("ENGINE_PORT", profile.engine_port.to_string())
         // WebView 의 /api-secret fetch 가 Origin/TLS/CORS 계층에서 막혀도 Tauri 명령이 같은 파일을 읽어 로컬 API 인증을 복구할 수 있게 고정 경로를 넘긴다.
@@ -999,7 +1141,15 @@ fn ensure_local_engine(
     profile: tauri::State<'_, RuntimeProfile>,
 ) -> Result<(), String> {
     spawn_local_engine(&app, &profile, true).map_err(|e| format!("local-engine 복구 실패: {e}"))?;
-    if wait_for_local_engine_health(&profile) {
+    if profile.qa {
+        wait_for_qa_local_engine_health(&app, &profile).map_err(|failure| {
+            format!(
+                "local-engine 서버를 시작할 수 없습니다. {} 로그: {}",
+                failure.message(),
+                sidecar_log_path(&profile, "local-engine.log").to_string_lossy()
+            )
+        })
+    } else if wait_for_local_engine_health(&profile) {
         Ok(())
     } else {
         let log_path = sidecar_log_path(&profile, "local-engine.log");
@@ -1396,6 +1546,76 @@ mod tests {
         fs::remove_dir_all(production).expect("remove production");
     }
 
+    fn simulated_qa_wait(
+        outcomes: impl FnMut(Duration) -> QaHealthProbe,
+        child_running: impl FnMut() -> bool,
+    ) -> (Result<(), QaHealthWaitFailure>, Duration) {
+        use std::cell::Cell;
+        let elapsed = Cell::new(Duration::ZERO);
+        let result = wait_for_qa_health_with(
+            QA_LOCAL_ENGINE_STARTUP_DEADLINE,
+            LOCAL_ENGINE_STARTUP_RETRY_INTERVAL,
+            outcomes,
+            child_running,
+            || elapsed.get(),
+            |delay| elapsed.set(elapsed.get() + delay),
+        );
+        (result, elapsed.get())
+    }
+
+    #[test]
+    fn qa_readiness_accepts_health_after_legacy_eighteen_second_boundary() {
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let result = wait_for_qa_health_with(
+            QA_LOCAL_ENGINE_STARTUP_DEADLINE,
+            LOCAL_ENGINE_STARTUP_RETRY_INTERVAL,
+            |_| {
+                if elapsed.get() > Duration::from_secs(18) {
+                    QaHealthProbe::Healthy
+                } else {
+                    QaHealthProbe::BindPending
+                }
+            },
+            || true,
+            || elapsed.get(),
+            |delay| elapsed.set(elapsed.get() + delay),
+        );
+        assert_eq!(result, Ok(()));
+        assert!(elapsed.get() > Duration::from_secs(18));
+        assert!(elapsed.get() < QA_LOCAL_ENGINE_STARTUP_DEADLINE);
+    }
+
+    #[test]
+    fn qa_readiness_reports_bind_timeout_at_sixty_second_deadline() {
+        let (result, elapsed) = simulated_qa_wait(|_| QaHealthProbe::BindPending, || true);
+        assert_eq!(result, Err(QaHealthWaitFailure::BindTimeout));
+        assert_eq!(elapsed, QA_LOCAL_ENGINE_STARTUP_DEADLINE);
+    }
+
+    #[test]
+    fn qa_readiness_reports_child_exit_without_waiting_for_deadline() {
+        let checks = std::cell::Cell::new(0_u8);
+        let (result, elapsed) = simulated_qa_wait(
+            |_| QaHealthProbe::BindPending,
+            || {
+                let current = checks.get();
+                checks.set(current + 1);
+                current == 0
+            },
+        );
+        assert_eq!(result, Err(QaHealthWaitFailure::ChildExited));
+        assert!(elapsed < QA_LOCAL_ENGINE_STARTUP_DEADLINE);
+    }
+
+    #[test]
+    fn qa_readiness_keeps_tls_and_identity_failures_distinct() {
+        let (tls_result, _) = simulated_qa_wait(|_| QaHealthProbe::TlsFailure, || true);
+        assert_eq!(tls_result, Err(QaHealthWaitFailure::TlsFailure));
+
+        let (identity_result, _) = simulated_qa_wait(|_| QaHealthProbe::IdentityMismatch, || true);
+        assert_eq!(identity_result, Err(QaHealthWaitFailure::IdentityMismatch));
+    }
+
     #[test]
     fn qa_health_accepts_only_matching_instance_identity() {
         let profile = qa_health_profile(free_port());
@@ -1420,6 +1640,29 @@ mod tests {
             "local_engine",
             &profile
         ));
+    }
+
+    #[test]
+    fn qa_health_probe_classifies_untrusted_tls_as_tls_failure() {
+        let (listener, port) = localhost_listener();
+        let server = thread::spawn(move || {
+            let _ = listener.accept().expect("accept port probe");
+            let (mut stream, _) = listener.accept().expect("accept TLS probe");
+            let mut bytes = [0_u8; 1024];
+            let _ = stream.read(&mut bytes);
+        });
+        let profile = qa_health_profile(port);
+        assert_eq!(
+            qa_health_probe_at(
+                "127.0.0.1",
+                port,
+                "local_engine",
+                &profile,
+                Duration::from_millis(500),
+            ),
+            QaHealthProbe::TlsFailure
+        );
+        server.join().expect("join untrusted TLS server");
     }
 
     #[test]
@@ -1540,6 +1783,7 @@ mod tests {
 }
 
 fn terminate_managed_sidecars(app_handle: &tauri::AppHandle) {
+    mobile_sync::terminate(app_handle);
     #[cfg(windows)]
     if let Some(job) = app_handle.try_state::<SidecarJob>() {
         job.terminate_all();
@@ -1584,6 +1828,16 @@ pub fn run() {
             local_engine_request,
             control_server_request,
             runtime_profile,
+            mobile_sync::mobile_sync_status,
+            mobile_sync::mobile_sync_start,
+            mobile_sync::mobile_sync_stop,
+            mobile_sync::mobile_sync_startup_preference,
+            mobile_sync::mobile_sync_set_startup_preference,
+            mobile_sync::mobile_sync_restore_if_enabled,
+            mobile_sync::mobile_sync_create_pairing_code,
+            mobile_sync::mobile_sync_list_devices,
+            mobile_sync::mobile_sync_revoke_device,
+            mobile_sync::mobile_sync_firewall_apply,
         ])
         .setup(|app| {
             let production_config_dir = app.path().app_config_dir()?;
@@ -1619,6 +1873,7 @@ pub fn run() {
             lock_file.lock_exclusive()?;
             app.manage(AppLock(lock_file));
             app.manage(profile.clone());
+            app.manage(mobile_sync::MobileSyncRuntime::default());
 
             #[cfg(windows)]
             let sidecar_job = SidecarJob::new()?;
@@ -1698,10 +1953,11 @@ pub fn run() {
                 }
             }
             if profile.qa {
-                if !wait_for_local_engine_health(&profile) {
-                    return Err(std::io::Error::other(
-                        "QA local-engine health identity 검증에 실패했습니다",
-                    )
+                if let Err(failure) = wait_for_qa_local_engine_health(app.handle(), &profile) {
+                    return Err(std::io::Error::other(format!(
+                        "QA local-engine readiness 실패: {}",
+                        failure.message()
+                    ))
                     .into());
                 }
                 if !wait_for_profile_service_health(

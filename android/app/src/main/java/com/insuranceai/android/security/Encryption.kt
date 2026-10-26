@@ -13,6 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
+import com.insuranceai.android.sync.SyncTokenCipher
 
 interface CryptoKeyProvider {
     fun getOrCreateDbPassphrase(): ByteArray
@@ -96,27 +97,47 @@ class KeyStoreManager(context: Context) : CryptoKeyProvider {
     }
 }
 
-class EncryptionService(private val keyProvider: CryptoKeyProvider) {
-    fun encrypt(plaintext: String): String {
-        if (plaintext.isBlank()) return plaintext
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyProvider.getOrCreateFieldAesKey(), "AES"))
-        return "enc:v1:" + Base64.getEncoder().encodeToString(cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8)))
+class EncryptionService(
+    private val keyProvider: CryptoKeyProvider,
+    private val authenticationGate: AuthenticationGate = AuthenticationGate(),
+) : SyncTokenCipher {
+    override fun verifyAvailable() {
+        authenticationGate.runSensitive {
+            val key = keyProvider.getOrCreateFieldAesKey()
+            try {
+                require(key.size == 32) { "AES-256 key must be 32 bytes" }
+            } finally {
+                key.fill(0)
+            }
+        }
     }
 
-    fun decrypt(ciphertext: String): String {
+    override fun encrypt(plaintext: String): String {
+        if (plaintext.isBlank()) return plaintext
+        return authenticationGate.runSensitive {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyProvider.getOrCreateFieldAesKey(), "AES"))
+            "enc:v1:" + Base64.getEncoder().encodeToString(cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8)))
+        }
+    }
+
+    override fun decrypt(ciphertext: String): String {
         if (ciphertext.isBlank() || !ciphertext.startsWith("enc:v1:")) return ciphertext
-        val combined = Base64.getDecoder().decode(ciphertext.removePrefix("enc:v1:"))
-        val iv = combined.copyOfRange(0, 12)
-        val encrypted = combined.copyOfRange(12, combined.size)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyProvider.getOrCreateFieldAesKey(), "AES"), GCMParameterSpec(128, iv))
-        return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        return authenticationGate.runSensitive {
+            val combined = Base64.getDecoder().decode(ciphertext.removePrefix("enc:v1:"))
+            val iv = combined.copyOfRange(0, 12)
+            val encrypted = combined.copyOfRange(12, combined.size)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyProvider.getOrCreateFieldAesKey(), "AES"), GCMParameterSpec(128, iv))
+            String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        }
     }
 
     fun hmacSha256(value: String): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(keyProvider.getOrCreateHmacKey(), "HmacSHA256"))
-        return mac.doFinal(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        return authenticationGate.runSensitive {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(keyProvider.getOrCreateHmacKey(), "HmacSHA256"))
+            mac.doFinal(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        }
     }
 }

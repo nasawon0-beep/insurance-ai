@@ -64,22 +64,36 @@ jobs:
           cp dist/control-server.exe ../desktop/src-tauri/binaries/control-server-x86_64-pc-windows-msvc.exe
         shell: bash
 
-      - name: Build local-engine
+      - name: Build local-engine onedir runtime
+        shell: pwsh
         run: |
-          cd local-engine
-          pip install -r requirements.txt
-          pip install -r ../tests/requirements.txt
-          pip install pyinstaller
-          pyinstaller local-engine.spec
-          python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b dist/local-engine.exe > local-engine-archive.txt
-          grep '_cffi_backend' local-engine-archive.txt
-          grep 'python311.dll' local-engine-archive.txt
-          if grep -q 'python314.dll' local-engine-archive.txt; then
-            echo "python314.dll must not be bundled" >&2
-            exit 1
-          fi
-          cp dist/local-engine.exe ../desktop/src-tauri/binaries/local-engine-x86_64-pc-windows-msvc.exe
-        shell: bash
+          python -m venv local-engine/.venv
+          & local-engine/.venv/Scripts/python.exe -m pip install --upgrade pip
+          & local-engine/.venv/Scripts/python.exe -m pip install -r local-engine/requirements.txt -r tests/requirements.txt 'pyinstaller>=6,<7'
+          & scripts/build-local-engine-onedir.ps1
+
+      - name: Verify local-engine onedir modules and resources
+        shell: pwsh
+        run: |
+          $Exe = (Get-ChildItem desktop/src-tauri/binaries/onedir/local-engine-*.exe -File | Select-Object -First 1).FullName
+          $Internal = 'desktop/src-tauri/binaries/onedir/local-engine._internal'
+          if (-not $Exe -or -not (Test-Path "$Internal/python311.dll")) {
+            throw 'local-engine onedir executable/runtime is incomplete'
+          }
+          & local-engine/.venv/Scripts/python.exe -m PyInstaller.utils.cliutils.archive_viewer -l -r -b $Exe > local-engine-archive.txt
+          foreach ($Module in @('runtime_paths', 'database.coverage', 'database.coverage_analysis_parser', 'database.coverage_mapping')) {
+            if (-not (Select-String -LiteralPath local-engine-archive.txt -SimpleMatch $Module -Quiet)) {
+              throw "required local-engine module missing: $Module"
+            }
+          }
+          if (Test-Path "$Internal/whisper/models") {
+            $RuntimeCache = Get-ChildItem "$Internal/whisper/models" -Recurse -File
+            if ($RuntimeCache) { throw 'runtime Whisper cache must not be packaged' }
+          }
+          if (Test-Path "$Internal/logs") {
+            $RuntimeLogs = Get-ChildItem "$Internal/logs" -Recurse -File
+            if ($RuntimeLogs) { throw 'runtime logs must not be packaged' }
+          }
 
       - name: Install root dependencies
         run: npm ci
@@ -106,10 +120,10 @@ jobs:
           cd src-tauri
           cargo check
 
-      - name: Build Windows signed bundles
+      - name: Build Windows signed bundles from onedir candidate
         run: |
           cd desktop
-          npm run tauri build
+          npm run tauri -- build --ci -v --config src-tauri/tauri.onedir.conf.json
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 

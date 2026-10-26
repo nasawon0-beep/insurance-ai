@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -19,7 +20,7 @@ interface CustomerDao {
     @Query("SELECT * FROM customers WHERE id = :id")
     suspend fun getById(id: String): CustomerEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insert(customer: CustomerEntity)
 
     @Update
@@ -27,6 +28,9 @@ interface CustomerDao {
 
     @Delete
     suspend fun delete(customer: CustomerEntity)
+
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -51,6 +55,27 @@ interface PolicyDao {
 
     @Delete
     suspend fun delete(policy: PolicyEntity)
+
+    @Query("DELETE FROM policies WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface PolicyCoverageDao {
+    @Query("SELECT * FROM policy_coverages ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<PolicyCoverageEntity>>
+
+    @Query("SELECT * FROM policy_coverages WHERE customerId = :customerId ORDER BY updatedAt DESC")
+    fun observeForCustomer(customerId: String): Flow<List<PolicyCoverageEntity>>
+
+    @Query("SELECT * FROM policy_coverages WHERE policyId = :policyId ORDER BY standardName, riderName, id")
+    fun observeForPolicy(policyId: String): Flow<List<PolicyCoverageEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(item: PolicyCoverageEntity)
+
+    @Query("DELETE FROM policy_coverages WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -75,4 +100,22 @@ interface ConsultationDao {
 
     @Delete
     suspend fun delete(consultation: ConsultationEntity)
+
+    @Query("DELETE FROM consultations WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface CoverageAnalysisDao {
+    @Query("SELECT * FROM coverage_analysis_results ORDER BY generatedAt DESC")
+    fun observeAll(): Flow<List<CoverageAnalysisEntity>>
+
+    @Query("SELECT * FROM coverage_analysis_results WHERE customerId = :customerId ORDER BY generatedAt DESC")
+    fun observeForCustomer(customerId: String): Flow<List<CoverageAnalysisEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(item: CoverageAnalysisEntity)
+
+    @Query("DELETE FROM coverage_analysis_results WHERE id = :id")
+    suspend fun deleteById(id: String)
 }

@@ -3,7 +3,7 @@ import pytest
 from database.coverage_analysis_parser import parse_coverage_analysis
 from database import coverage_analysis_parser
 from database.policy_coverages import DocumentType, detect_candidate_pages
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
 
 
 def test_headerless_legacy_summary_is_detected_and_parsed(monkeypatch):

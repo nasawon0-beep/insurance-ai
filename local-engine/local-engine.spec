@@ -15,6 +15,7 @@ if sys.version_info[:2] != (3, 11):
 
 
 packages = [
+    "lan_sync",
     "faster_whisper",
     "ctranslate2",
     "onnxruntime",

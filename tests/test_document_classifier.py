@@ -3,7 +3,34 @@ from database.policy_coverages import (
     classify_document_type,
     detect_candidate_pages,
 )
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
+
+
+def test_detects_credit_bureau_contract_ledger_by_structural_headers(monkeypatch):
+    class FakePage:
+        def extract_text(self):
+            return (
+                "신정원 담보명 회사명 상품명 회사 담보명 "
+                "가입금액 보험시기 보험종기"
+            )
+
+    class FakePdf:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    import pdfplumber
+
+    monkeypatch.setattr(pdfplumber, "open", lambda _path: FakePdf())
+    pages = detect_candidate_pages(
+        "synthetic-credit-bureau.pdf", DocumentType.COVERAGE_ANALYSIS_FULL
+    )
+    assert pages["detail_list_pages"] == [1]
+
 
 class TestDocumentClassifier:
 

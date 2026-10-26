@@ -26,8 +26,12 @@ def _app_versions():
     return package, package_lock["version"], tauri, cargo, lock
 
 
-def test_app_version_is_exactly_2_5_3_everywhere():
-    assert _app_versions() == ("2.5.3",) * 5
+def test_app_versions_match_desktop_package_source_of_truth():
+    source_version = json.loads(
+        (ROOT / "desktop/package.json").read_text(encoding="utf-8")
+    )["version"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", source_version)
+    assert _app_versions() == (source_version,) * 5
 
 
 def test_sync_version_handles_windows_cargo_lock_newlines_and_is_strict():
@@ -64,10 +68,22 @@ def test_windows_sidecar_build_is_pinned_to_python_311():
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell/Python installation contract")
 def test_powershell_51_native_argv_probes_three_interpreters(tmp_path):
     python311 = Path(os.environ["LOCALAPPDATA"]) / "Programs/Python/Python311/python.exe"
+    assert python311.is_file(), python311
+    control_venv = tmp_path / "control-server-venv"
+    local_venv = tmp_path / "local-engine-venv"
+    for venv in (control_venv, local_venv):
+        created = subprocess.run(
+            [str(python311), "-m", "venv", "--without-pip", str(venv)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert created.returncode == 0, created.stderr or created.stdout
     interpreters = [
         python311,
-        ROOT / "control-server/.venv/Scripts/python.exe",
-        ROOT / "local-engine/.venv/Scripts/python.exe",
+        control_venv / "Scripts/python.exe",
+        local_venv / "Scripts/python.exe",
     ]
     assert all(path.is_file() for path in interpreters), interpreters
 

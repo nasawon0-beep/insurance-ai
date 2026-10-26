@@ -7,7 +7,7 @@ from database import policy_coverages
 from database.proposal_parser import parse_proposal
 from database.policy_coverages import detect_candidate_pages, DocumentType
 from parser.doc_parser import parse_pdf as parse_document_pdf
-from private_pdf_fixtures import private_pdf
+from pdf_fixture_resolver import private_pdf
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "real_pdfs"

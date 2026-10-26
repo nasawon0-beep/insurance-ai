@@ -27,6 +27,8 @@ from urllib.error import HTTPError, URLError
 
 from huggingface_hub.utils import tqdm as hub_tqdm
 
+from runtime_paths import whisper_model_dir
+
 try:
     import requests
 except ImportError:  # optional dependency
@@ -37,7 +39,7 @@ try:
 except ImportError:  # optional dependency
     httpx = None
 
-_MODEL_DIR = Path(os.environ.get("WHISPER_MODEL_DIR", str(Path(__file__).parent / "models")))
+_MODEL_DIR = whisper_model_dir()
 _MIN_FREE_BYTES = 1_500_000_000
 
 # --- CLI (whisper.cpp) 설정 ---

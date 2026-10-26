@@ -16,7 +16,7 @@ class LoginScreenComposeTest {
             LoginScreen(biometricAvailable = true, onAuthenticate = {})
         }
 
-        composeRule.onNodeWithText("Insurance AI").assertIsDisplayed()
+        composeRule.onNodeWithText("모아둠").assertIsDisplayed()
         composeRule.onNodeWithText("생체 인증으로 시작").assertIsDisplayed()
     }
 }
