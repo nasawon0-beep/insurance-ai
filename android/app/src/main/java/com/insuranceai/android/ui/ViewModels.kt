@@ -22,6 +22,7 @@ import com.insuranceai.android.sync.PairingCoordinator
 import com.insuranceai.android.sync.PairingRequest
 import com.insuranceai.android.sync.RecoveryCoordinator
 import com.insuranceai.android.sync.RecoveryRequest
+
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -179,6 +180,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     val addressContinuityState = addressContinuityCoordinator.state
     val registered = MutableStateFlow(repository.isConnectionConfigured())
     val registrationState = MutableStateFlow(repository.connectionRegistrationState())
+    val tlsBindingState = MutableStateFlow(repository.tlsBindingState())
     val stagedRecoveryAvailable = MutableStateFlow(repository.hasStagedRecovery())
     val connectionLabel = MutableStateFlow(repository.connectionLabel())
     val syncState: StateFlow<SyncStateEntity?> = repository.observeState()
@@ -188,6 +190,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             syncState.collect { state ->
                 registrationState.value = repository.connectionRegistrationState()
+                tlsBindingState.value = repository.tlsBindingState()
                 if (!pairingState.value.codeConsumed && state != null) status.value = syncStatusFromState(state)
             }
         }
@@ -214,15 +217,19 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
         registered.value = repository.isConnectionConfigured()
         registrationState.value = repository.connectionRegistrationState()
+                tlsBindingState.value = repository.tlsBindingState()
         stagedRecoveryAvailable.value = repository.hasStagedRecovery()
         connectionLabel.value = repository.connectionLabel()
     }
 
     fun recoverConnection(
         code: String,
+        endpoint: String,
+        pin: String,
+        confirmedFromPc: Boolean,
         requestAuthentication: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
     ) = viewModelScope.launch {
-        recoveryCoordinator.recover(RecoveryRequest(code)) {
+        recoveryCoordinator.recover(RecoveryRequest(code, endpoint, pin, confirmedFromPc)) {
             suspendCancellableCoroutine { continuation ->
                 requestAuthentication(
                     { if (continuation.isActive) continuation.resume(true) },
@@ -232,6 +239,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
         registered.value = repository.isConnectionConfigured()
         registrationState.value = repository.connectionRegistrationState()
+                tlsBindingState.value = repository.tlsBindingState()
         stagedRecoveryAvailable.value = repository.hasStagedRecovery()
         connectionLabel.value = repository.connectionLabel()
     }
@@ -264,6 +272,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrElse(::syncFailureStatus)
         } finally {
             registrationState.value = repository.connectionRegistrationState()
+                tlsBindingState.value = repository.tlsBindingState()
         }
     }
 

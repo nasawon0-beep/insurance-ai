@@ -356,6 +356,19 @@ fn mobile_stderr_category(stderr: &[u8]) -> Option<&'static str> {
     }
 }
 
+fn certificate_admin_arguments(state_dir: &Path, host: &str, database: &Path) -> Vec<String> {
+    vec![
+        "--lan-sync-admin".into(),
+        "--db".into(),
+        database.to_string_lossy().into_owned(),
+        "ensure-certificate".into(),
+        "--state-dir".into(),
+        state_dir.to_string_lossy().into_owned(),
+        "--host".into(),
+        host.into(),
+    ]
+}
+
 #[tauri::command]
 pub(crate) async fn mobile_sync_start(
     app: tauri::AppHandle,
@@ -397,17 +410,17 @@ pub(crate) async fn mobile_sync_start(
     let state_dir = mobile_state_dir(&profile);
     std::fs::create_dir_all(&state_dir)
         .map_err(|error| fail_start(&state, format!("모바일 연결 설정 폴더 생성 실패: {error}")))?;
+    let database = mobile_database(&profile);
+    if !database.is_file() {
+        return Err(fail_start(
+            &state,
+            "고객 DB가 준비되지 않아 모바일 연결을 시작할 수 없습니다".into(),
+        ));
+    }
     let cert_text = admin_output(
         &app,
         &profile,
-        vec![
-            "--lan-sync-admin".into(),
-            "ensure-certificate".into(),
-            "--state-dir".into(),
-            state_dir.to_string_lossy().into_owned(),
-            "--host".into(),
-            host.clone(),
-        ],
+        certificate_admin_arguments(&state_dir, &host, &database),
     )
     .await
     .map_err(|message| fail_start(&state, message))?;
@@ -419,13 +432,6 @@ pub(crate) async fn mobile_sync_start(
     let certificate: CertificateOutput = serde_json::from_str(certificate_json.trim())
         .map_err(|_| fail_start(&state, "인증서 준비 응답을 해석할 수 없습니다".into()))?;
 
-    let database = mobile_database(&profile);
-    if !database.is_file() {
-        return Err(fail_start(
-            &state,
-            "고객 DB가 준비되지 않아 모바일 연결을 시작할 수 없습니다".into(),
-        ));
-    }
     let shutdown_file = state_dir.join("stop.request");
     let _ = std::fs::remove_file(&shutdown_file);
     let mut command = app
@@ -937,6 +943,28 @@ mod tests {
         assert_eq!(start_gate(true, false), StartGate::ReturnRunning);
         assert_eq!(start_gate(false, true), StartGate::RejectStarting);
         assert_eq!(start_gate(false, false), StartGate::Proceed);
+    }
+
+    #[test]
+    fn certificate_admin_arguments_include_database_for_migration_gate() {
+        let arguments = certificate_admin_arguments(
+            Path::new(r"C:\state"),
+            "192.168.50.11",
+            Path::new(r"C:\profile\customers.db"),
+        );
+        assert_eq!(
+            arguments,
+            vec![
+                "--lan-sync-admin",
+                "--db",
+                r"C:\profile\customers.db",
+                "ensure-certificate",
+                "--state-dir",
+                r"C:\state",
+                "--host",
+                "192.168.50.11",
+            ]
+        );
     }
 
     #[test]

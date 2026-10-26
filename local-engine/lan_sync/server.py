@@ -13,8 +13,8 @@ import ssl
 from pathlib import Path
 
 import uvicorn
-
 from .app import create_app
+from .certificate import certificate_spki_sha256
 
 
 def _parent_lock_is_free(lock_path: str) -> bool:
@@ -78,13 +78,18 @@ def main() -> None:
     pem = Path(args.cert).read_text(encoding="utf-8")
     der = ssl.PEM_cert_to_DER_cert(pem)
     fingerprint = hashlib.sha256(der).hexdigest()
+    spki_sha256 = certificate_spki_sha256(args.cert)
     print(f"certificate_sha256={fingerprint}")
     print(f"listen=https://{args.host}:{args.port}")
     shutdown_file = Path(args.shutdown_file) if args.shutdown_file else None
     if shutdown_file is not None:
         shutdown_file.unlink(missing_ok=True)
     config = uvicorn.Config(
-        create_app(args.db, pc_instance_id=args.instance_id),
+        create_app(
+            args.db,
+            pc_instance_id=args.instance_id,
+            tls_identity_spki_sha256=spki_sha256,
+        ),
         host=args.host,
         port=args.port,
         ssl_certfile=args.cert,

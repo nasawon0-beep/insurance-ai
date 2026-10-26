@@ -62,7 +62,9 @@ class LanSyncServerSecurityTest(unittest.TestCase):
             ]
             with patch.object(sys, "argv", argv), patch.object(
                 server.ssl, "PEM_cert_to_DER_cert", return_value=b"synthetic-der"
-            ), patch.object(server, "create_app", return_value="synthetic-app"), patch.object(
+            ), patch.object(
+                server, "certificate_spki_sha256", return_value="ab" * 32
+            ), patch.object(server, "create_app", return_value="synthetic-app") as create_app, patch.object(
                 server.uvicorn, "Config"
             ) as config, patch.object(
                 server, "_serve", new=lambda *args: "synthetic-serve"
@@ -73,6 +75,11 @@ class LanSyncServerSecurityTest(unittest.TestCase):
         self.assertEqual("", config.call_args.kwargs["forwarded_allow_ips"])
         self.assertEqual("192.168.1.20", config.call_args.kwargs["host"])
         self.assertEqual(18443, config.call_args.kwargs["port"])
+        create_app.assert_called_once_with(
+            str(fixture / "synthetic.sqlite3"),
+            pc_instance_id="0123456789abcdef0123456789abcdef",
+            tls_identity_spki_sha256="ab" * 32,
+        )
         run.assert_called_once_with("synthetic-serve")
 
 

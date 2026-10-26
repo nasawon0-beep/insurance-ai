@@ -50,6 +50,7 @@ import com.insuranceai.android.data.PolicyReadableFields
 import com.insuranceai.android.data.local.SyncConflictEntity
 import com.insuranceai.android.sync.ConnectionRegistrationState
 import com.insuranceai.android.sync.RecoveryUiState
+import com.insuranceai.android.sync.TlsBindingState
 import org.json.JSONObject
 import java.text.NumberFormat
 import java.util.Locale
@@ -654,6 +655,7 @@ fun SyncScreen(
     val recoveryState by viewModel.recoveryState.collectAsState()
     val stagedRecoveryAvailable by viewModel.stagedRecoveryAvailable.collectAsState()
     val registrationState by viewModel.registrationState.collectAsState()
+    val tlsBindingState by viewModel.tlsBindingState.collectAsState()
     val resolutionState by viewModel.conflictResolutionState.collectAsState()
     val addressState by viewModel.addressContinuityState.collectAsState()
     val registered by viewModel.registered.collectAsState()
@@ -690,6 +692,12 @@ fun SyncScreen(
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) "기존 연결 복구 필요" else "등록된 PC", fontWeight = FontWeight.Bold)
                         Text(connectionLabel)
+                        Text(when (tlsBindingState) {
+                            TlsBindingState.READY -> "자동 주소 전환 준비 완료"
+                            TlsBindingState.PENDING -> "자동 주소 전환 준비 중 · 다른 활성 기기도 업데이트가 필요할 수 있습니다"
+                            TlsBindingState.FAILED -> "자동 주소 전환 준비 실패 · 연결은 유지되며 다시 동기화해 주세요"
+                            TlsBindingState.NOT_REQUIRED -> "자동 주소 전환 정보 미등록"
+                        })
                         Text("최근 동기화 · ${formatKoreanDateTime(syncState?.lastSuccessAt)}")
                         if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) {
                             Text("PC에서 연결이 해제되었거나 인증 정보를 다시 확인해야 합니다. 기존 저장 자료와 미전송 자료는 그대로 유지됩니다.")
@@ -720,9 +728,23 @@ fun SyncScreen(
                     RecoveryConnectionCard(
                         code = recoveryCode,
                         onCodeChange = { recoveryCode = it },
+                        movedEndpoint = movedEndpoint,
+                        onMovedEndpointChange = { movedEndpoint = it },
+                        movedPin = movedPin,
+                        onMovedPinChange = { movedPin = it },
+                        movedPinConfirmed = movedPinConfirmed,
+                        onMovedPinConfirmedChange = { movedPinConfirmed = it },
                         state = recoveryState,
                         stagedRecoveryAvailable = stagedRecoveryAvailable,
-                        onRecover = { viewModel.recoverConnection(recoveryCode, onAuthenticate) },
+                        onRecover = {
+                            viewModel.recoverConnection(
+                                recoveryCode,
+                                movedEndpoint,
+                                movedPin,
+                                movedPinConfirmed,
+                                onAuthenticate,
+                            )
+                        },
                     )
                 }
             }
@@ -814,6 +836,12 @@ fun SyncScreen(
 internal fun RecoveryConnectionCard(
     code: String,
     onCodeChange: (String) -> Unit,
+    movedEndpoint: String = "",
+    onMovedEndpointChange: (String) -> Unit = {},
+    movedPin: String = "",
+    onMovedPinChange: (String) -> Unit = {},
+    movedPinConfirmed: Boolean = false,
+    onMovedPinConfirmedChange: (Boolean) -> Unit = {},
     state: RecoveryUiState,
     stagedRecoveryAvailable: Boolean = false,
     onRecover: () -> Unit,
@@ -836,9 +864,35 @@ internal fun RecoveryConnectionCard(
                 label = { Text("복구 코드") },
                 modifier = Modifier.fillMaxWidth(),
             )
+            Text("PC 주소도 바뀌었다면 PC 화면의 새 주소와 인증서 SHA-256을 직접 대조해 입력하세요. 확인 전에는 코드가 전송되지 않습니다.")
+            OutlinedTextField(
+                movedEndpoint,
+                onMovedEndpointChange,
+                enabled = !state.inFlight,
+                label = { Text("새 https://PC주소:포트 (선택)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                movedPin,
+                onMovedPinChange,
+                enabled = !state.inFlight,
+                label = { Text("새 인증서 SHA-256 (선택)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row {
+                Checkbox(
+                    checked = movedPinConfirmed,
+                    onCheckedChange = onMovedPinConfirmedChange,
+                    enabled = !state.inFlight,
+                )
+                Text("PC 화면의 새 주소와 인증서 SHA-256이 정확히 일치합니다")
+            }
             Text(state.status)
             Button(
-                enabled = !state.inFlight && (code.matches(Regex("\\d{6}")) || (code.isBlank() && stagedRecoveryAvailable)),
+                enabled = !state.inFlight &&
+                    (code.matches(Regex("\\d{6}")) || (code.isBlank() && stagedRecoveryAvailable)) &&
+                    ((movedEndpoint.isBlank() && movedPin.isBlank()) ||
+                        (movedEndpoint.isNotBlank() && movedPin.isNotBlank() && movedPinConfirmed)),
                 onClick = onRecover,
                 modifier = Modifier.fillMaxWidth(),
             ) {

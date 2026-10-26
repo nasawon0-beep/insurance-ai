@@ -7,6 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.test.runTest
 import java.security.cert.CertificateException
+import java.security.cert.CertificateFactory
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
 
 class PcDiscoveryTest {
     private val instance = "0123456789abcdef0123456789abcdef"
@@ -66,6 +69,77 @@ class PcDiscoveryTest {
     }
 
     @Test
+    fun spoofedCertificateCandidateIsSkippedBeforeTryingValidSameIdentityAddress() = runTest {
+        val first = DiscoveredPc("https://192.168.50.11:18443", instance)
+        val second = DiscoveredPc("https://192.168.50.12:18443", instance)
+        val actions = FakeActions(
+            instance,
+            firstFailure = CertificateException("Server certificate identity mismatch"),
+        )
+
+        assertEquals(
+            AutoReconnectResult.CONNECTED,
+            PcAutoReconnectCoordinator(actions, FakeDiscovery(listOf(first, second))).reconnectWithResult(),
+        )
+        assertEquals(listOf(first, second), actions.probed)
+    }
+
+    @Test
+    fun leafOrPreviouslyBoundSpkiCanAuthenticateButUnknownIdentityCannot() {
+        val oldLeaf = "a".repeat(64)
+        val stableSpki = "b".repeat(64)
+        assertTrue(matchesPinnedServerIdentity(oldLeaf, stableSpki, oldLeaf, null))
+        assertTrue(matchesPinnedServerIdentity("c".repeat(64), stableSpki, oldLeaf, stableSpki))
+        assertFalse(matchesPinnedServerIdentity("c".repeat(64), "d".repeat(64), oldLeaf, stableSpki))
+        assertFalse(matchesPinnedServerIdentity("c".repeat(64), stableSpki, oldLeaf, null))
+    }
+
+    @Test
+    fun selfSignedServerCertificateRequiresLeafOrStableSpkiAndValidSignature() {
+        val certificate = javaClass.getResourceAsStream("/tls/synthetic-self-signed.txt").use {
+            CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
+        }
+        fun digest(bytes: ByteArray) = MessageDigest.getInstance("SHA-256")
+            .digest(bytes).joinToString("") { "%02x".format(it) }
+        val leaf = digest(certificate.encoded)
+        val spki = digest(certificate.publicKey.encoded)
+
+        validatePinnedServerCertificate(certificate, leaf, null)
+        validatePinnedServerCertificate(certificate, "c".repeat(64), spki)
+        assertThrows(CertificateException::class.java) {
+            validatePinnedServerCertificate(certificate, "c".repeat(64), "d".repeat(64))
+        }
+    }
+
+    @Test
+    fun authenticatedServerIdentityMustMatchPeerAndAnyStoredBinding() {
+        val identity = "b".repeat(64)
+        assertEquals(identity, validatePeerTlsIdentity(identity, identity, null))
+        assertEquals(identity, validatePeerTlsIdentity(identity, identity, identity))
+        assertThrows(SecurityException::class.java) {
+            validatePeerTlsIdentity("c".repeat(64), identity, identity)
+        }
+        assertThrows(SecurityException::class.java) {
+            validatePeerTlsIdentity(identity, identity, "d".repeat(64))
+        }
+    }
+
+    @Test
+    fun rediscoveryCandidateProbesAreBounded() = runTest {
+        val candidates = (1..20).map {
+            DiscoveredPc("https://192.168.50.$it:18443", instance)
+        }
+        val actions = FakeActions(instance, alwaysFail = true)
+
+        assertEquals(
+            AutoReconnectResult.DISCOVERY_FAILED,
+            PcAutoReconnectCoordinator(actions, FakeDiscovery(candidates)).reconnectWithResult(),
+        )
+        assertEquals(8, actions.probed.size)
+        assertEquals(1, actions.existingEndpointProbes)
+    }
+
+    @Test
     fun emptyDiscoveryUsesOnlyAuthenticatedPinnedExistingEndpointFallback() = runTest {
         val actions = FakeActions(instance, existingEndpointVerified = true)
 
@@ -115,6 +189,8 @@ class PcDiscoveryTest {
     private class FakeActions(
         private val registered: String?,
         private val failFirst: Boolean = false,
+        private val firstFailure: Throwable? = null,
+        private val alwaysFail: Boolean = false,
         private val existingEndpointVerified: Boolean = false,
         private val existingEndpointFailure: Throwable? = null,
     ) : DiscoveredAddressActions {
@@ -123,7 +199,9 @@ class PcDiscoveryTest {
         override fun registeredPcInstanceId(): String? = registered
         override suspend fun verifyAndUpdateDiscoveredAddress(candidate: DiscoveredPc) {
             probed += candidate
+            if (probed.size == 1) firstFailure?.let { throw it }
             if (failFirst && probed.size == 1) error("pin or authentication failure")
+            if (alwaysFail) error("synthetic unavailable candidate")
         }
         override suspend fun verifyCurrentAddress(): Boolean {
             existingEndpointProbes++

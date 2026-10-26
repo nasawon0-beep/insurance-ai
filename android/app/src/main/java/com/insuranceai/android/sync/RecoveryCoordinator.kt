@@ -6,7 +6,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import java.net.SocketTimeoutException
 
-data class RecoveryRequest(val code: String)
+data class RecoveryRequest(
+    val code: String,
+    val endpoint: String = "",
+    val certificatePin: String = "",
+    val confirmedFromPc: Boolean = false,
+)
 
 data class RecoveryUiState(
     val status: String = "PC에서 복구 코드를 받은 뒤 입력하세요",

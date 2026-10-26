@@ -67,10 +67,11 @@ class PcAutoReconnectCoordinator(
         try {
             val expected = actions.registeredPcInstanceId()
             val candidates = runCatching { discovery.discover().distinct() }.getOrDefault(emptyList())
-            for (candidate in candidates) {
+            for (candidate in candidates.take(8)) {
                 if (!mayProbeDiscoveredCandidate(expected, candidate)) continue
                 val verified = runCatching { actions.verifyAndUpdateDiscoveredAddress(candidate) }
                 if (verified.isSuccess) return AutoReconnectResult.CONNECTED
+                if (verified.exceptionOrNull()?.isCertificateReconnectRejection() == true) continue
                 if (verified.exceptionOrNull()?.isFailClosedReconnectFailure() == true) {
                     return AutoReconnectResult.AUTHENTICATION_FAILED
                 }
@@ -86,6 +87,15 @@ class PcAutoReconnectCoordinator(
             mutex.unlock()
         }
     }
+}
+
+private fun Throwable.isCertificateReconnectRejection(): Boolean {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is CertificateException) return true
+        current = current.cause
+    }
+    return false
 }
 
 private fun Throwable.isFailClosedReconnectFailure(): Boolean {

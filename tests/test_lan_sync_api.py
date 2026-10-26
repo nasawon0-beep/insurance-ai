@@ -14,7 +14,13 @@ class LanSyncApiTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.instance_id = "0123456789abcdef0123456789abcdef"
-        self.app = create_app(Path(self.tmp.name) / "api.sqlite3", enable_production_bridge=False, pc_instance_id=self.instance_id)
+        self.spki = "b" * 64
+        self.app = create_app(
+            Path(self.tmp.name) / "api.sqlite3",
+            enable_production_bridge=False,
+            pc_instance_id=self.instance_id,
+            tls_identity_spki_sha256=self.spki,
+        )
         self.store = self.app.state.sync_store
         self.store.seed_synthetic_customer("c-1", {"name": "합성 고객", "phone": "010-0000"})
 
@@ -42,6 +48,7 @@ class LanSyncApiTest(unittest.TestCase):
             self.assertEqual(200, paired.status_code)
             body = paired.json()
             self.assertEqual(self.instance_id, body["pc_instance_id"])
+            self.assertEqual(self.spki, body["tls_identity_spki_sha256"])
             duplicate = client.post("/v1/pair", json={"code": pair.code, "device_name": "other"})
             self.assertEqual(401, duplicate.status_code)
             headers = {"Authorization": f"Bearer {body['token']}"}
@@ -50,6 +57,30 @@ class LanSyncApiTest(unittest.TestCase):
             self.store.revoke_device(body["device_id"])
             revoked = client.post("/v1/sync", headers=headers, json={"cursor": 0, "operations": []})
             self.assertEqual(401, revoked.status_code)
+
+    def test_tls_identity_binding_requires_authentication_and_exact_server_identity(self):
+        pair = self.store.create_pairing_code("synthetic-pc", 60)
+        with TestClient(self.app, base_url="https://testserver") as client:
+            paired = client.post("/v1/pair", json={"code": pair.code, "device_name": "synthetic-phone"}).json()
+            headers = {"Authorization": f"Bearer {paired['token']}"}
+
+            unauthenticated = client.post("/v1/tls-identity/bind", json={"spki_sha256": self.spki})
+            mismatch = client.post(
+                "/v1/tls-identity/bind",
+                headers=headers,
+                json={"spki_sha256": "c" * 64},
+            )
+            bound = client.post(
+                "/v1/tls-identity/bind",
+                headers=headers,
+                json={"spki_sha256": self.spki},
+            )
+
+            self.assertEqual(401, unauthenticated.status_code)
+            self.assertEqual(422, mismatch.status_code)
+            self.assertEqual(200, bound.status_code)
+            self.assertEqual({"status": "bound", "tls_identity_spki_sha256": self.spki}, bound.json())
+            self.assertTrue(self.store.tls_identity_rollover_ready(self.spki))
 
     def test_recovery_response_loss_retry_preserves_identity_ownership_and_idempotency(self):
         pair = self.store.create_pairing_code("synthetic-pc", 60)
@@ -72,6 +103,7 @@ class LanSyncApiTest(unittest.TestCase):
             self.assertEqual(200, accepted_but_response_lost.status_code)
             self.assertEqual(accepted_but_response_lost.json(), retried.json())
             self.assertEqual(paired["device_id"], retried.json()["device_id"])
+            self.assertEqual(self.spki, retried.json()["tls_identity_spki_sha256"])
             new_headers = {"Authorization": "Bearer replacement-token-with-sufficient-entropy-api-0001"}
             replay = client.post("/v1/sync", headers=new_headers, json={"cursor": 0, "operations": [operation]})
             self.assertEqual(first.json()["results"], replay.json()["results"])

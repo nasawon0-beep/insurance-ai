@@ -18,9 +18,12 @@ def create_app(
     *,
     enable_production_bridge: bool = True,
     pc_instance_id: str | None = None,
+    tls_identity_spki_sha256: str | None = None,
 ) -> FastAPI:
     if pc_instance_id is not None and re.fullmatch(r"[0-9a-f]{32}", pc_instance_id) is None:
         raise ValueError("invalid PC instance identity")
+    if tls_identity_spki_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", tls_identity_spki_sha256) is None:
+        raise ValueError("invalid TLS identity SPKI digest")
     store = SyncStore(db_path)
     store.initialize()
     bridge = ProductionBridge(store) if enable_production_bridge else None
@@ -54,6 +57,8 @@ def create_app(
             response = asdict(paired)
             if pc_instance_id is not None:
                 response["pc_instance_id"] = pc_instance_id
+            if tls_identity_spki_sha256 is not None:
+                response["tls_identity_spki_sha256"] = tls_identity_spki_sha256
             return response
         except PairingRateLimitError as exc:
             raise HTTPException(
@@ -79,7 +84,10 @@ def create_app(
                 pc_instance_id,
                 source,
             )
-            return {"device_id": recovered.device_id, "pc_instance_id": pc_instance_id}
+            response = {"device_id": recovered.device_id, "pc_instance_id": pc_instance_id}
+            if tls_identity_spki_sha256 is not None:
+                response["tls_identity_spki_sha256"] = tls_identity_spki_sha256
+            return response
         except PairingRateLimitError as exc:
             raise HTTPException(
                 status_code=429,
@@ -122,7 +130,27 @@ def create_app(
         response = store.continuity(ctx)
         if pc_instance_id is not None:
             response["pc_instance_id"] = pc_instance_id
+        if tls_identity_spki_sha256 is not None:
+            response["tls_identity_spki_sha256"] = tls_identity_spki_sha256
         return response
+
+    @app.post("/v1/tls-identity/bind")
+    async def bind_tls_identity(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        ctx = auth(authorization)
+        if tls_identity_spki_sha256 is None:
+            raise HTTPException(status_code=404, detail="TLS identity binding unavailable")
+        body = await request.json()
+        candidate = str(body.get("spki_sha256", "")).strip().lower()
+        if candidate != tls_identity_spki_sha256:
+            raise HTTPException(status_code=422, detail="TLS identity mismatch")
+        try:
+            store.bind_tls_identity(ctx, candidate)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"status": "bound", "tls_identity_spki_sha256": candidate}
 
     @app.post("/v1/conflicts/{conflict_id}/resolve")
     async def resolve(conflict_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:

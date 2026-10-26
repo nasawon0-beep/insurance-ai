@@ -34,6 +34,7 @@ class SyncRepository(
     fun observePendingItems() = syncDao.observePendingItems()
     fun isConnectionConfigured(): Boolean = settings.isConfigured()
     fun connectionRegistrationState(): ConnectionRegistrationState = settings.registrationState()
+    fun tlsBindingState(): TlsBindingState = settings.tlsBindingState()
     fun hasStagedRecovery(): Boolean = settings.hasStagedRecovery()
     fun connectionLabel(): String = settings.endpointLabel() ?: "등록된 PC 없음"
     override fun registeredPcInstanceId(): String? = settings.registeredPcInstanceId()
@@ -64,14 +65,40 @@ class SyncRepository(
         val expectedInstance = old.pcInstanceId ?: error("기존 PC 확인 정보가 없습니다")
         val staged = settings.stagedRecoveryToken()
         if (request.code.isBlank() && staged == null) error("복구 코드를 입력하세요")
+        val hasMovedTuple = request.endpoint.isNotBlank() || request.certificatePin.isNotBlank()
+        if (hasMovedTuple) {
+            require(request.confirmedFromPc) { "PC 화면의 새 주소와 인증서를 확인해야 합니다" }
+            require(request.endpoint.isNotBlank() && request.certificatePin.isNotBlank()) {
+                "새 주소와 인증서 SHA-256을 모두 입력하세요"
+            }
+        }
         val candidate = staged ?: Base64.getUrlEncoder().withoutPadding()
             .encodeToString(ByteArray(32).also(SecureRandom()::nextBytes))
-            .also(settings::stageRecoveryToken)
-        val response = if (request.code.isBlank()) {
-            client.post(old.copy(token = candidate), "/v1/continuity", JSONObject())
+            .also {
+                if (hasMovedTuple) settings.stageRecovery(it, request.endpoint, request.certificatePin)
+                else settings.stageRecoveryToken(it)
+            }
+        if (staged != null && hasMovedTuple) {
+            settings.stageRecovery(staged, request.endpoint, request.certificatePin)
+        }
+        val recoveryConnection = if (staged != null) {
+            settings.stagedRecoveryConnection(old)
+        } else if (hasMovedTuple) {
+            old.copy(
+                endpoint = request.endpoint.trimEnd('/'),
+                certificateSha256 = request.certificatePin.lowercase().replace(":", ""),
+                tlsIdentitySpkiSha256 = null,
+            )
+        } else old
+        val transport = if (request.code.isBlank()) {
+            client.postWithPeerIdentity(
+                recoveryConnection.copy(token = candidate),
+                "/v1/continuity",
+                JSONObject(),
+            )
         } else {
-            client.post(
-                old,
+            client.postWithPeerIdentity(
+                recoveryConnection,
                 "/v1/recover",
                 JSONObject()
                     .put("code", request.code)
@@ -81,9 +108,27 @@ class SyncRepository(
                 authenticated = false,
             )
         }
+        val response = transport.body
         check(response.getString("device_id") == expectedDevice) { "Recovery device identity mismatch" }
         check(response.getString("pc_instance_id") == expectedInstance) { "Recovery PC identity mismatch" }
-        settings.promoteStagedRecovery(expectedDevice, expectedInstance)
+        val identity = validatePeerTlsIdentity(
+            response.getString("tls_identity_spki_sha256"),
+            transport.peerSpkiSha256,
+            old.tlsIdentitySpkiSha256,
+        )
+        val bindingFailure = bindRemoteTlsIdentityBounded(
+            recoveryConnection.copy(token = candidate, tlsIdentitySpkiSha256 = identity),
+            identity,
+            markRecoveryOnUnauthorized = false,
+        )
+        if (bindingFailure != null) throw bindingFailure
+        settings.promoteStagedRecovery(
+            expectedDevice,
+            expectedInstance,
+            recoveryConnection.endpoint,
+            transport.peerCertificateSha256,
+            identity,
+        )
         clearBlockedAfterVerifiedRecovery()
     }
 
@@ -95,10 +140,70 @@ class SyncRepository(
             throw error
         }
 
+    private suspend fun authenticatedPostWithPeer(
+        connection: SyncConnection,
+        path: String,
+        body: JSONObject,
+    ): LanSyncResponse = try {
+        client.postWithPeerIdentity(connection, path, body)
+    } catch (error: LanSyncHttpException) {
+        if (error.statusCode == 401) settings.markRecoveryRequired()
+        throw error
+    }
+
+    private suspend fun bindRemoteTlsIdentity(
+        connection: SyncConnection,
+        identity: String,
+        markRecoveryOnUnauthorized: Boolean = true,
+    ) {
+        val result = try {
+            client.postWithPeerIdentity(
+                connection,
+                "/v1/tls-identity/bind",
+                JSONObject().put("spki_sha256", identity),
+            )
+        } catch (error: LanSyncHttpException) {
+            if (markRecoveryOnUnauthorized && error.statusCode == 401) settings.markRecoveryRequired()
+            throw error
+        }
+        check(result.body.getString("status") == "bound") { "TLS identity binding was not confirmed" }
+        validatePeerTlsIdentity(
+            result.body.getString("tls_identity_spki_sha256"),
+            result.peerSpkiSha256,
+            identity,
+        )
+    }
+
+    private suspend fun bindRemoteTlsIdentityBounded(
+        connection: SyncConnection,
+        identity: String,
+        markRecoveryOnUnauthorized: Boolean = true,
+    ): Throwable? {
+        settings.markTlsBindingState(TlsBindingState.PENDING)
+        var failure: Throwable? = null
+        repeat(2) {
+            try {
+                bindRemoteTlsIdentity(connection, identity, markRecoveryOnUnauthorized)
+                settings.bindTlsIdentity(identity)
+                return null
+            } catch (error: Throwable) {
+                failure = error
+            }
+        }
+        settings.markTlsBindingState(TlsBindingState.FAILED)
+        return failure
+    }
+
     override suspend fun pairAndSave(request: PairingRequest) {
         val provisional = SyncConnection(request.endpoint.trimEnd('/'), request.certificatePin, "")
         val body = JSONObject().put("code", request.code).put("device_name", request.deviceName)
-        val response = client.post(provisional, "/v1/pair", body, authenticated = false)
+        val transport = client.postWithPeerIdentity(provisional, "/v1/pair", body, authenticated = false)
+        val response = transport.body
+        val identity = validatePeerTlsIdentity(
+            response.getString("tls_identity_spki_sha256"),
+            transport.peerSpkiSha256,
+            null,
+        )
         try {
             settings.save(
                 request.endpoint,
@@ -106,7 +211,11 @@ class SyncRepository(
                 response.getString("token"),
                 response.getString("device_id"),
                 response.optString("pc_instance_id").takeIf(String::isNotBlank),
+                identity,
             )
+            val saved = settings.load()
+                ?: throw PairingLocalSaveException(IllegalStateException("saved credential unavailable"))
+            bindRemoteTlsIdentityBounded(saved, identity, markRecoveryOnUnauthorized = false)
         } catch (error: PairingLocalSaveException) {
             throw error
         } catch (error: Throwable) {
@@ -121,8 +230,16 @@ class SyncRepository(
             certificateSha256 = request.certificatePin.lowercase().replace(":", ""),
             token = old.token,
             deviceId = old.deviceId,
+            pcInstanceId = old.pcInstanceId,
+            tlsIdentitySpkiSha256 = old.tlsIdentitySpkiSha256,
         )
-        val response = authenticatedPost(candidate, "/v1/continuity", JSONObject())
+        val transport = authenticatedPostWithPeer(candidate, "/v1/continuity", JSONObject())
+        val response = transport.body
+        val identity = validatePeerTlsIdentity(
+            response.getString("tls_identity_spki_sha256"),
+            transport.peerSpkiSha256,
+            old.tlsIdentitySpkiSha256,
+        )
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
         val proof = ContinuityProof(
             status = response.getString("status"),
@@ -137,7 +254,13 @@ class SyncRepository(
             localConflictIds = syncDao.conflicts().mapTo(mutableSetOf()) { it.id },
             proof = proof,
         )
-        settings.updateVerifiedAddress(candidate.endpoint, candidate.certificateSha256, proof.deviceId, proof.pcInstanceId)
+        settings.updateVerifiedAddress(
+            candidate.endpoint,
+            transport.peerCertificateSha256,
+            proof.deviceId,
+            proof.pcInstanceId,
+            identity,
+        )
         clearBlockedAfterVerifiedRecovery()
     }
 
@@ -145,7 +268,13 @@ class SyncRepository(
         val old = settings.load() ?: error("페어링이 필요합니다")
         require(mayProbeDiscoveredCandidate(old.pcInstanceId, candidate)) { "Discovered PC identity mismatch" }
         val discoveredConnection = old.copy(endpoint = candidate.endpoint.trimEnd('/'))
-        val response = authenticatedPost(discoveredConnection, "/v1/continuity", JSONObject())
+        val transport = authenticatedPostWithPeer(discoveredConnection, "/v1/continuity", JSONObject())
+        val response = transport.body
+        val identity = validatePeerTlsIdentity(
+            response.getString("tls_identity_spki_sha256"),
+            transport.peerSpkiSha256,
+            old.tlsIdentitySpkiSha256,
+        )
         val authenticatedInstance = response.getString("pc_instance_id")
         validateDiscoveredContinuity(old.pcInstanceId, candidate.instanceId, authenticatedInstance)
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
@@ -164,9 +293,10 @@ class SyncRepository(
         )
         settings.updateVerifiedAddress(
             discoveredConnection.endpoint,
-            old.certificateSha256,
+            transport.peerCertificateSha256,
             proof.deviceId,
             authenticatedInstance,
+            identity,
         )
         clearBlockedAfterVerifiedRecovery()
     }
@@ -175,7 +305,13 @@ class SyncRepository(
         val current = settings.load() ?: return@run false
         val expectedInstance = current.pcInstanceId ?: return@run false
         val expectedDevice = current.deviceId ?: return@run false
-        val response = authenticatedPost(current, "/v1/continuity", JSONObject())
+        val transport = authenticatedPostWithPeer(current, "/v1/continuity", JSONObject())
+        val response = transport.body
+        val identity = validatePeerTlsIdentity(
+            response.getString("tls_identity_spki_sha256"),
+            transport.peerSpkiSha256,
+            current.tlsIdentitySpkiSha256,
+        )
         val authenticatedInstance = response.getString("pc_instance_id")
         validateDiscoveredContinuity(expectedInstance, expectedInstance, authenticatedInstance)
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
@@ -191,6 +327,11 @@ class SyncRepository(
                 pcInstanceId = authenticatedInstance,
             ),
         )
+        val bindingFailure = bindRemoteTlsIdentityBounded(
+            current.copy(tlsIdentitySpkiSha256 = identity),
+            identity,
+        )
+        if (bindingFailure != null) throw bindingFailure
         clearBlockedAfterVerifiedRecovery()
         true
     }

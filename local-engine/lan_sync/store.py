@@ -163,6 +163,13 @@ class SyncStore:
           PRIMARY KEY(bucket_type, bucket_key)
         );
         """)
+        device_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(sync_devices)").fetchall()
+        }
+        if "tls_identity_spki_sha256" not in device_columns:
+            self.conn.execute(
+                "ALTER TABLE sync_devices ADD COLUMN tls_identity_spki_sha256 TEXT"
+            )
 
     @staticmethod
     def _token_digest(token: str) -> str:
@@ -433,6 +440,38 @@ class SyncStore:
         if row is None or row["revoked_at"] is not None or not hmac.compare_digest(row["token_digest"], digest):
             raise AuthError("unauthorized device")
         return AuthContext(row["id"])
+
+    def bind_tls_identity(self, auth: AuthContext, spki_sha256: str) -> None:
+        normalized = spki_sha256.strip().lower()
+        if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+            raise ValidationError("invalid TLS identity SPKI digest")
+        with self.conn:
+            updated = self.conn.execute(
+                """
+                UPDATE sync_devices
+                SET tls_identity_spki_sha256=?
+                WHERE id=? AND revoked_at IS NULL
+                """,
+                (normalized, auth.device_id),
+            )
+            if updated.rowcount != 1:
+                raise AuthError("device is not active")
+
+    def tls_identity_rollover_ready(self, spki_sha256: str) -> bool:
+        normalized = spki_sha256.strip().lower()
+        if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+            return False
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS active_count,
+                   SUM(CASE WHEN tls_identity_spki_sha256=? THEN 1 ELSE 0 END) AS bound_count
+            FROM sync_devices
+            WHERE revoked_at IS NULL
+            """,
+            (normalized,),
+        ).fetchone()
+        active_count = int(row["active_count"])
+        return active_count > 0 and int(row["bound_count"] or 0) == active_count
 
     def revoke_device(self, device_id: str) -> None:
         if self.conn.execute("UPDATE sync_devices SET revoked_at=? WHERE id=?", (int(time.time()), device_id)).rowcount != 1:

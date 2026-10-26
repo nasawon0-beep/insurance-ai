@@ -49,6 +49,20 @@ class SyncStoreTest(unittest.TestCase):
         with self.assertRaises(AuthError):
             self.store.authenticate(paired.token)
 
+    def test_tls_identity_rollover_requires_every_active_device_binding(self):
+        spki = "a" * 64
+        self.assertFalse(self.store.tls_identity_rollover_ready(spki))
+
+        self.store.bind_tls_identity(self.auth, spki)
+        self.assertTrue(self.store.tls_identity_rollover_ready(spki))
+
+        code = self.store.create_pairing_code("test-pc", ttl_seconds=60)
+        second = self.store.pair_device(code.code, "android-test-2", "192.0.2.2")
+        self.assertFalse(self.store.tls_identity_rollover_ready(spki))
+
+        self.store.revoke_device(second.device_id)
+        self.assertTrue(self.store.tls_identity_rollover_ready(spki))
+
     def test_target_bound_recovery_restores_same_identity_and_rejects_old_token(self):
         old_token = self.device.token
         device_id = self.device.device_id

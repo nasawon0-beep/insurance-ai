@@ -6,9 +6,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
+from pathlib import Path
 
-from .certificate import ensure_certificate
+from .certificate import certificate_spki_sha256, ensure_certificate
 from .store import SyncStore
+
+
+def tls_rollover_ready(db_path: str | Path, cert_path: str | Path) -> bool:
+    database = Path(db_path).resolve()
+    certificate = Path(cert_path)
+    if not database.is_file() or not certificate.is_file():
+        return False
+    spki_sha256 = certificate_spki_sha256(certificate)
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(sync_devices)").fetchall()
+        }
+        if "tls_identity_spki_sha256" not in columns:
+            return False
+        active_count, bound_count = connection.execute(
+            """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN tls_identity_spki_sha256=? THEN 1 ELSE 0 END)
+            FROM sync_devices
+            WHERE revoked_at IS NULL
+            """,
+            (spki_sha256,),
+        ).fetchone()
+        return int(active_count) > 0 and int(bound_count or 0) == int(active_count)
+    finally:
+        connection.close()
 
 
 def main() -> None:
@@ -34,11 +63,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.action == "ensure-certificate":
+        cert_path = Path(args.state_dir) / "mobile-sync-cert.pem"
         result = ensure_certificate(
             args.state_dir,
             args.host,
             valid_days=args.valid_days,
             renew_before_days=args.renew_before_days,
+            allow_address_reissue=bool(args.db) and tls_rollover_ready(args.db, cert_path),
         )
         print(json.dumps(result))
         return
