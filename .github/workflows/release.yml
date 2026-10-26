@@ -118,7 +118,7 @@ jobs:
           node --test --experimental-strip-types tests/*.test.ts tests/*.test.mjs
           npm run build
           cd src-tauri
-          cargo check
+          TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo check
 
       - name: Build Windows signed bundles from onedir candidate
         run: |

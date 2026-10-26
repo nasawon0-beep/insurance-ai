@@ -50,6 +50,25 @@ def test_release_validation_uses_the_local_engine_venv_python():
     assert source.index(install_command) < source.index("- name: Validate release candidate")
 
 
+def test_release_cargo_checks_the_staged_onedir_sidecar_config():
+    source = RELEASE.read_text(encoding="utf-8")
+    validate_step = source.split("- name: Validate release candidate", 1)[1].split(
+        "- name: Build Windows signed bundles", 1
+    )[0]
+    cargo_check_lines = [
+        line.strip() for line in source.splitlines() if "cargo check" in line
+    ]
+
+    assert 'TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo check' in validate_step
+    assert cargo_check_lines == [
+        'TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo check'
+    ]
+    assert (
+        "npm run tauri -- build --ci -v --config src-tauri/tauri.onedir.conf.json"
+        in source
+    )
+
+
 def test_general_build_is_draft_and_public_mirror_requires_explicit_input():
     source = BUILD.read_text(encoding="utf-8")
     assert "publish_public:" in source
