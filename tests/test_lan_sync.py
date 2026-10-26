@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "local-engine"))
@@ -47,6 +48,95 @@ class SyncStoreTest(unittest.TestCase):
         self.store.revoke_device(paired.device_id)
         with self.assertRaises(AuthError):
             self.store.authenticate(paired.token)
+
+    def test_target_bound_recovery_restores_same_identity_and_rejects_old_token(self):
+        old_token = self.device.token
+        device_id = self.device.device_id
+        instance_id = "0123456789abcdef0123456789abcdef"
+        self.store.revoke_device(device_id)
+        recovery = self.store.create_recovery_code(device_id, instance_id, ttl_seconds=60)
+
+        recovered = self.store.recover_device(
+            recovery.code,
+            "replacement-token-with-sufficient-entropy-0001",
+            device_id,
+            instance_id,
+            instance_id,
+            "192.0.2.1",
+        )
+
+        self.assertEqual(device_id, recovered.device_id)
+        self.assertEqual(device_id, self.store.authenticate(recovered.token).device_id)
+        with self.assertRaises(AuthError):
+            self.store.authenticate(old_token)
+
+    def test_recovery_rejects_wrong_device_pc_reuse_expiry_and_bruteforce(self):
+        instance_id = "0123456789abcdef0123456789abcdef"
+        self.store.revoke_device(self.device.device_id)
+        recovery = self.store.create_recovery_code(self.device.device_id, instance_id, ttl_seconds=60)
+        with self.assertRaises(AuthError):
+            self.store.recover_device(recovery.code, "replacement-token-with-sufficient-entropy-0002", "wrong-device", instance_id, instance_id, "192.0.2.1")
+        with self.assertRaises(AuthError):
+            self.store.recover_device(recovery.code, "replacement-token-with-sufficient-entropy-0002", self.device.device_id, "f" * 32, instance_id, "192.0.2.1")
+
+        recovered = self.store.recover_device(recovery.code, "replacement-token-with-sufficient-entropy-0002", self.device.device_id, instance_id, instance_id, "192.0.2.1")
+        repeated = self.store.recover_device(recovery.code, recovered.token, self.device.device_id, instance_id, instance_id, "192.0.2.1")
+        self.assertEqual(recovered, repeated)
+        with self.assertRaises(AuthError):
+            self.store.recover_device(recovery.code, "different-replacement-token-with-enough-entropy", self.device.device_id, instance_id, instance_id, "192.0.2.1")
+
+        self.store.revoke_device(self.device.device_id)
+        second = self.store.create_recovery_code(self.device.device_id, instance_id, ttl_seconds=1)
+        self.store._clock = lambda: second.expires_at + 1
+        with self.assertRaises(AuthError):
+            self.store.recover_device(second.code, "replacement-token-with-sufficient-entropy-0003", self.device.device_id, instance_id, instance_id, "192.0.2.1")
+
+    def test_recovery_transaction_failure_rolls_back_code_and_credential(self):
+        instance_id = "0123456789abcdef0123456789abcdef"
+        self.store.revoke_device(self.device.device_id)
+        recovery = self.store.create_recovery_code(self.device.device_id, instance_id, ttl_seconds=60)
+        before = self.store.conn.execute(
+            "SELECT token_digest,revoked_at FROM sync_devices WHERE id=?", (self.device.device_id,)
+        ).fetchone()
+        self.store.conn.execute("""
+            CREATE TRIGGER synthetic_recovery_failure BEFORE UPDATE OF token_digest ON sync_devices
+            BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END
+        """)
+        with self.assertRaises(Exception):
+            self.store.recover_device(recovery.code, "replacement-token-with-sufficient-entropy-0004", self.device.device_id, instance_id, instance_id, "192.0.2.1")
+        after = self.store.conn.execute(
+            "SELECT token_digest,revoked_at FROM sync_devices WHERE id=?", (self.device.device_id,)
+        ).fetchone()
+        code_row = self.store.conn.execute("SELECT used_at FROM sync_recovery_codes").fetchone()
+        self.assertEqual(tuple(before), tuple(after))
+        self.assertIsNone(code_row["used_at"])
+
+    def test_recovery_code_concurrent_use_has_exactly_one_winner(self):
+        instance_id = "0123456789abcdef0123456789abcdef"
+        self.store.revoke_device(self.device.device_id)
+        recovery = self.store.create_recovery_code(self.device.device_id, instance_id, ttl_seconds=60)
+        outcomes = []
+        start = threading.Barrier(3)
+
+        def attempt(candidate):
+            start.wait()
+            try:
+                self.store.recover_device(recovery.code, candidate, self.device.device_id, instance_id, instance_id, "192.0.2.1")
+                outcomes.append("ok")
+            except Exception:
+                outcomes.append("denied")
+
+        threads = [
+            threading.Thread(target=attempt, args=("replacement-token-concurrent-with-entropy-a",)),
+            threading.Thread(target=attempt, args=("replacement-token-concurrent-with-entropy-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(["denied", "ok"], sorted(outcomes))
 
     def test_unauthenticated_access_is_blocked(self):
         with self.assertRaises(AuthError):

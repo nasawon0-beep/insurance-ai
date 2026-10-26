@@ -20,6 +20,8 @@ import com.insuranceai.android.sync.AddressContinuityCoordinator
 import com.insuranceai.android.sync.AddressContinuityRequest
 import com.insuranceai.android.sync.PairingCoordinator
 import com.insuranceai.android.sync.PairingRequest
+import com.insuranceai.android.sync.RecoveryCoordinator
+import com.insuranceai.android.sync.RecoveryRequest
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -165,15 +167,19 @@ class CoverageAnalysisViewModel(application: Application) : AndroidViewModel(app
 class SyncViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = (application as InsuranceAiApplication).container.syncRepository
     private val pairingCoordinator = PairingCoordinator(repository)
+    private val recoveryCoordinator = RecoveryCoordinator(repository)
     private val conflictResolutionCoordinator = ConflictResolutionCoordinator(repository)
     private val addressContinuityCoordinator = AddressContinuityCoordinator(repository)
     val conflicts: StateFlow<List<SyncConflictEntity>> = repository.observeConflicts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val status = MutableStateFlow("페어링 필요 또는 동기화 대기")
     val pairingState = pairingCoordinator.state
+    val recoveryState = recoveryCoordinator.state
     val conflictResolutionState = conflictResolutionCoordinator.state
     val addressContinuityState = addressContinuityCoordinator.state
     val registered = MutableStateFlow(repository.isConnectionConfigured())
+    val registrationState = MutableStateFlow(repository.connectionRegistrationState())
+    val stagedRecoveryAvailable = MutableStateFlow(repository.hasStagedRecovery())
     val connectionLabel = MutableStateFlow(repository.connectionLabel())
     val syncState: StateFlow<SyncStateEntity?> = repository.observeState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -181,6 +187,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             syncState.collect { state ->
+                registrationState.value = repository.connectionRegistrationState()
                 if (!pairingState.value.codeConsumed && state != null) status.value = syncStatusFromState(state)
             }
         }
@@ -206,6 +213,26 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         registered.value = repository.isConnectionConfigured()
+        registrationState.value = repository.connectionRegistrationState()
+        stagedRecoveryAvailable.value = repository.hasStagedRecovery()
+        connectionLabel.value = repository.connectionLabel()
+    }
+
+    fun recoverConnection(
+        code: String,
+        requestAuthentication: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
+    ) = viewModelScope.launch {
+        recoveryCoordinator.recover(RecoveryRequest(code)) {
+            suspendCancellableCoroutine { continuation ->
+                requestAuthentication(
+                    { if (continuation.isActive) continuation.resume(true) },
+                    { if (continuation.isActive) continuation.resume(false) },
+                )
+            }
+        }
+        registered.value = repository.isConnectionConfigured()
+        registrationState.value = repository.connectionRegistrationState()
+        stagedRecoveryAvailable.value = repository.hasStagedRecovery()
         connectionLabel.value = repository.connectionLabel()
     }
 
@@ -231,9 +258,13 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncNow() = viewModelScope.launch {
         status.value = "동기화 중"
-        status.value = runCatching {
-            if (repository.syncOnce()) "동기화 완료" else "페어링 필요"
-        }.getOrElse(::syncFailureStatus)
+        try {
+            status.value = runCatching {
+                if (repository.syncOnce()) "동기화 완료" else "페어링 필요"
+            }.getOrElse(::syncFailureStatus)
+        } finally {
+            registrationState.value = repository.connectionRegistrationState()
+        }
     }
 
     fun resolve(
@@ -255,6 +286,10 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 fun syncFailureStatus(error: Throwable): String =
     if (error.requiresUserAuthentication()) {
         "앱 잠금 해제 후 동기화를 다시 시도합니다"
+    } else if (error is com.insuranceai.android.sync.LanSyncHttpException && error.statusCode == 401) {
+        "PC에서 연결이 해제되었거나 인증 정보를 다시 확인해야 합니다 · 기존 자료는 그대로입니다"
+    } else if (error is java.net.SocketTimeoutException) {
+        "PC 응답 시간 초과 · 네트워크 연결을 확인해 주세요"
     } else {
         "실패: ${error.message ?: error.javaClass.simpleName}"
     }

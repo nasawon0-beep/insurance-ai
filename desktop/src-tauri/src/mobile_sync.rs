@@ -729,6 +729,60 @@ pub(crate) async fn mobile_sync_create_pairing_code(
 }
 
 #[tauri::command]
+pub(crate) async fn mobile_sync_create_recovery_code(
+    app: tauri::AppHandle,
+    profile: tauri::State<'_, RuntimeProfile>,
+    state: tauri::State<'_, MobileSyncRuntime>,
+    device_id: String,
+    confirmed: bool,
+) -> Result<PairingCodeOutput, String> {
+    if !confirmed {
+        return Err("로컬 관리자 확인 후에만 복구 코드를 만들 수 있습니다".into());
+    }
+    if !current_status(&state.0.lock().expect("mobile sync state lock")).running {
+        return Err("모바일 연결 서버를 먼저 시작하세요".into());
+    }
+    if device_id.len() > 64
+        || !device_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err("올바르지 않은 기기 식별자입니다".into());
+    }
+    let instance_id = mobile_instance_id(&profile)?;
+    let output = admin_output(
+        &app,
+        &profile,
+        vec![
+            "--lan-sync-admin".into(),
+            "--db".into(),
+            mobile_database(&profile).to_string_lossy().into_owned(),
+            "create-recovery-code".into(),
+            device_id,
+            "--pc-instance-id".into(),
+            instance_id,
+            "--ttl".into(),
+            "120".into(),
+        ],
+    )
+    .await?;
+    let values: std::collections::HashMap<_, _> = output
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    let code = values
+        .get("recovery_code")
+        .ok_or("복구 코드 응답이 올바르지 않습니다")?
+        .to_string();
+    let expires_at = values
+        .get("expires_at")
+        .ok_or("복구 코드 만료 응답이 올바르지 않습니다")?
+        .parse()
+        .map_err(|_| "복구 코드 만료 응답이 올바르지 않습니다")?;
+    Ok(PairingCodeOutput { code, expires_at })
+}
+
+#[tauri::command]
 pub(crate) async fn mobile_sync_list_devices(
     app: tauri::AppHandle,
     profile: tauri::State<'_, RuntimeProfile>,

@@ -3,6 +3,7 @@ package com.insuranceai.android.sync
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class SyncSettingsTest {
@@ -92,6 +93,46 @@ class SyncSettingsTest {
         }
 
         assertEquals(before, store.values)
+    }
+
+    @Test
+    fun revokedStateAndStagedRecoveryPreserveExistingCredentialUntilAtomicPromotion() {
+        val store = MemoryStore()
+        val settings = SyncSettings(store, FixtureCipher())
+        settings.save(connection.endpoint, connection.certificateSha256, connection.token, "same-device", "a".repeat(32))
+        settings.markRecoveryRequired()
+        settings.stageRecoveryToken("replacement-token-with-sufficient-entropy")
+
+        assertEquals(ConnectionRegistrationState.RECOVERY_REQUIRED, settings.registrationState())
+        assertFalse(settings.isReadyForAutomaticSync())
+        assertTrue(settings.hasStagedRecovery())
+        assertEquals(connection.token, settings.load()?.token)
+        assertEquals("replacement-token-with-sufficient-entropy", settings.stagedRecoveryToken())
+
+        settings.promoteStagedRecovery("same-device", "a".repeat(32))
+        assertEquals("replacement-token-with-sufficient-entropy", settings.load()?.token)
+        assertEquals(ConnectionRegistrationState.ACTIVE, settings.registrationState())
+        assertEquals(null, settings.stagedRecoveryToken())
+        assertFalse(settings.hasStagedRecovery())
+    }
+
+    @Test
+    fun failedRecoveryPromotionLeavesOldCredentialAndStageRecoverable() {
+        val store = MemoryStore()
+        val settings = SyncSettings(store, FixtureCipher())
+        settings.save(connection.endpoint, connection.certificateSha256, connection.token, "same-device", "b".repeat(32))
+        settings.markRecoveryRequired()
+        settings.stageRecoveryToken("replacement-token-with-sufficient-entropy")
+        store.commitResult = false
+
+        assertThrows(PairingLocalSaveException::class.java) {
+            settings.promoteStagedRecovery("same-device", "b".repeat(32))
+        }
+
+        store.commitResult = true
+        assertEquals(connection.token, settings.load()?.token)
+        assertEquals("replacement-token-with-sufficient-entropy", settings.stagedRecoveryToken())
+        assertFalse(settings.registrationState() == ConnectionRegistrationState.ACTIVE)
     }
 
     private class MemoryStore(

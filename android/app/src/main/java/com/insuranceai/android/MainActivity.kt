@@ -58,7 +58,7 @@ class MainActivity : FragmentActivity() {
                             lifecycleScope.launch {
                                 container.foregroundSyncLifecycleCoordinator.resume(
                                     sessionValid = sessionManager.isSessionValid(),
-                                    connectionConfigured = container.syncSettings.isConfigured(),
+                                    connectionConfigured = container.syncSettings.isReadyForAutomaticSync(),
                                 )
                             }
                             onSuccess()
@@ -122,7 +122,7 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             container.foregroundSyncLifecycleCoordinator.resume(
                 sessionValid = sessionManager.isSessionValid(),
-                connectionConfigured = container.syncSettings.isConfigured(),
+                connectionConfigured = container.syncSettings.isReadyForAutomaticSync(),
             )
         }
     }

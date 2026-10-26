@@ -18,6 +18,10 @@ def main() -> None:
     create = sub.add_parser("create-code")
     create.add_argument("--pc-name", required=True)
     create.add_argument("--ttl", type=int, default=300)
+    recover = sub.add_parser("create-recovery-code")
+    recover.add_argument("device_id")
+    recover.add_argument("--pc-instance-id", required=True)
+    recover.add_argument("--ttl", type=int, default=120)
     revoke = sub.add_parser("revoke")
     revoke.add_argument("device_id")
     sub.add_parser("list-devices")
@@ -46,6 +50,10 @@ def main() -> None:
         if args.action == "create-code":
             result = store.create_pairing_code(args.pc_name, args.ttl)
             print(f"pairing_code={result.code}")
+            print(f"expires_at={result.expires_at}")
+        elif args.action == "create-recovery-code":
+            result = store.create_recovery_code(args.device_id, args.pc_instance_id, args.ttl)
+            print(f"recovery_code={result.code}")
             print(f"expires_at={result.expires_at}")
         elif args.action == "revoke":
             store.revoke_device(args.device_id)

@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-scaffold"
-version = "2.5.6"
+version = "2.5.7"
 dependencies = [
  "fs2",
  "futures-util",

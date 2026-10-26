@@ -64,6 +64,31 @@ def create_app(
         except (AuthError, ValidationError) as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    @app.post("/v1/recover")
+    async def recover(request: Request) -> dict[str, Any]:
+        if pc_instance_id is None:
+            raise HTTPException(status_code=404, detail="recovery unavailable")
+        body = await request.json()
+        source = request.client.host if request.client is not None else "unknown"
+        try:
+            recovered = store.recover_device(
+                str(body.get("code", "")),
+                str(body.get("candidate_token", "")),
+                str(body.get("expected_device_id", "")),
+                str(body.get("pc_instance_id", "")),
+                pc_instance_id,
+                source,
+            )
+            return {"device_id": recovered.device_id, "pc_instance_id": pc_instance_id}
+        except PairingRateLimitError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="recovery temporarily unavailable",
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
+        except (AuthError, ValidationError) as exc:
+            raise HTTPException(status_code=401, detail="recovery denied") from exc
+
     @app.post("/v1/sync")
     async def sync(request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         ctx = auth(authorization)

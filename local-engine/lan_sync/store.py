@@ -46,6 +46,12 @@ class PairingCode:
 
 
 @dataclass(frozen=True)
+class RecoveryCode:
+    code: str
+    expires_at: int
+
+
+@dataclass(frozen=True)
 class PairedDevice:
     device_id: str
     token: str
@@ -111,6 +117,13 @@ class SyncStore:
         CREATE TABLE IF NOT EXISTS sync_pairing_codes(
           digest TEXT PRIMARY KEY, salt TEXT NOT NULL, expires_at INTEGER NOT NULL,
           used_at INTEGER, pc_name TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sync_recovery_codes(
+          digest TEXT PRIMARY KEY, salt TEXT NOT NULL,
+          target_device_id TEXT NOT NULL, pc_instance_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL, used_at INTEGER,
+          completed_token_digest TEXT,
+          FOREIGN KEY(target_device_id) REFERENCES sync_devices(id)
         );
         CREATE TABLE IF NOT EXISTS sync_entities(
           entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL,
@@ -211,6 +224,113 @@ class SyncStore:
             raise
         self._finish_pairing_attempt(source_bucket, succeeded=True)
         return PairedDevice(device_id, token)
+
+    def create_recovery_code(
+        self,
+        device_id: str,
+        pc_instance_id: str,
+        ttl_seconds: int = 120,
+    ) -> RecoveryCode:
+        valid_instance = len(pc_instance_id) == 32 and all(
+            character in "0123456789abcdef" for character in pc_instance_id
+        )
+        if not valid_instance or ttl_seconds < 1 or ttl_seconds > 300:
+            raise ValidationError("invalid recovery request")
+        target = self.conn.execute(
+            "SELECT revoked_at FROM sync_devices WHERE id=?", (device_id,)
+        ).fetchone()
+        if target is None or target["revoked_at"] is None:
+            raise ValidationError("recovery target must be a revoked device")
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        salt = secrets.token_hex(16)
+        digest = self._pair_digest(code, salt)
+        expires = int(self._clock()) + ttl_seconds
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM sync_recovery_codes WHERE target_device_id=? AND used_at IS NULL",
+                (device_id,),
+            )
+            self.conn.execute(
+                "INSERT INTO sync_recovery_codes(digest,salt,target_device_id,pc_instance_id,expires_at) VALUES(?,?,?,?,?)",
+                (digest, salt, device_id, pc_instance_id, expires),
+            )
+        return RecoveryCode(code, expires)
+
+    def recover_device(
+        self,
+        code: str,
+        candidate_token: str,
+        expected_device_id: str,
+        requested_pc_instance_id: str,
+        server_pc_instance_id: str,
+        source: str,
+    ) -> PairedDevice:
+        source_bucket = self._begin_pairing_attempt(source)
+        now = int(self._clock())
+        try:
+            if (
+                len(code) != 6
+                or not code.isascii()
+                or not code.isdigit()
+                or not (32 <= len(candidate_token) <= 256)
+                or not expected_device_id
+                or not hmac.compare_digest(requested_pc_instance_id, server_pc_instance_id)
+            ):
+                raise AuthError("invalid, expired, or already-used recovery code")
+            candidate_digest = self._token_digest(candidate_token)
+            with self._pairing_lock:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    rows = self.conn.execute(
+                        "SELECT digest,salt,target_device_id,pc_instance_id,expires_at,used_at,completed_token_digest "
+                        "FROM sync_recovery_codes WHERE expires_at>=?",
+                        (now,),
+                    ).fetchall()
+                    match = next((
+                        row for row in rows
+                        if hmac.compare_digest(self._pair_digest(code, row["salt"]), row["digest"])
+                    ), None)
+                    if (
+                        match is None
+                        or not hmac.compare_digest(match["target_device_id"], expected_device_id)
+                        or not hmac.compare_digest(match["pc_instance_id"], server_pc_instance_id)
+                    ):
+                        raise AuthError("invalid, expired, or already-used recovery code")
+                    if match["used_at"] is not None:
+                        current = self.conn.execute(
+                            "SELECT token_digest,revoked_at FROM sync_devices WHERE id=?",
+                            (expected_device_id,),
+                        ).fetchone()
+                        if (
+                            current is None
+                            or current["revoked_at"] is not None
+                            or match["completed_token_digest"] is None
+                            or not hmac.compare_digest(match["completed_token_digest"], candidate_digest)
+                            or not hmac.compare_digest(current["token_digest"], candidate_digest)
+                        ):
+                            raise AuthError("invalid, expired, or already-used recovery code")
+                        self.conn.execute("COMMIT")
+                    else:
+                        updated = self.conn.execute(
+                            "UPDATE sync_recovery_codes SET used_at=?,completed_token_digest=? WHERE digest=? AND used_at IS NULL",
+                            (now, candidate_digest, match["digest"]),
+                        ).rowcount
+                        activated = self.conn.execute(
+                            "UPDATE sync_devices SET token_digest=?,revoked_at=NULL WHERE id=? AND revoked_at IS NOT NULL",
+                            (candidate_digest, expected_device_id),
+                        ).rowcount
+                        if updated != 1 or activated != 1:
+                            raise AuthError("invalid, expired, or already-used recovery code")
+                        self.conn.execute("COMMIT")
+                except Exception:
+                    if self.conn.in_transaction:
+                        self.conn.execute("ROLLBACK")
+                    raise
+        except Exception:
+            self._finish_pairing_attempt(source_bucket, succeeded=False)
+            raise
+        self._finish_pairing_attempt(source_bucket, succeeded=True)
+        return PairedDevice(expected_device_id, candidate_token)
 
     @staticmethod
     def _source_digest(source: str) -> str:

@@ -51,6 +51,33 @@ class LanSyncApiTest(unittest.TestCase):
             revoked = client.post("/v1/sync", headers=headers, json={"cursor": 0, "operations": []})
             self.assertEqual(401, revoked.status_code)
 
+    def test_recovery_response_loss_retry_preserves_identity_ownership_and_idempotency(self):
+        pair = self.store.create_pairing_code("synthetic-pc", 60)
+        with TestClient(self.app, base_url="https://testserver") as client:
+            paired = client.post("/v1/pair", json={"code": pair.code, "device_name": "synthetic-phone"}).json()
+            old_headers = {"Authorization": f"Bearer {paired['token']}"}
+            operation = {"operation_id": "before-revoke", "entity_type": "customer", "entity_id": "c-1", "base": {"name": "합성 고객", "phone": "010-0000"}, "patch": {"memo": "보존"}, "deleted": False}
+            first = client.post("/v1/sync", headers=old_headers, json={"cursor": 0, "operations": [operation]})
+            self.assertEqual(200, first.status_code)
+            self.store.revoke_device(paired["device_id"])
+            recovery = self.store.create_recovery_code(paired["device_id"], self.instance_id, 60)
+            payload = {
+                "code": recovery.code,
+                "candidate_token": "replacement-token-with-sufficient-entropy-api-0001",
+                "expected_device_id": paired["device_id"],
+                "pc_instance_id": self.instance_id,
+            }
+            accepted_but_response_lost = client.post("/v1/recover", json=payload)
+            retried = client.post("/v1/recover", json=payload)
+            self.assertEqual(200, accepted_but_response_lost.status_code)
+            self.assertEqual(accepted_but_response_lost.json(), retried.json())
+            self.assertEqual(paired["device_id"], retried.json()["device_id"])
+            new_headers = {"Authorization": "Bearer replacement-token-with-sufficient-entropy-api-0001"}
+            replay = client.post("/v1/sync", headers=new_headers, json={"cursor": 0, "operations": [operation]})
+            self.assertEqual(first.json()["results"], replay.json()["results"])
+            self.assertEqual(1, self.store.operation_count())
+            self.assertEqual(401, client.post("/v1/sync", headers=old_headers, json={"cursor": 0, "operations": []}).status_code)
+
     def test_android_resolve_contract_clears_conflict_after_server_confirmation_and_refresh(self):
         pair = self.store.create_pairing_code("synthetic-pc", 60)
         base = {"name": "합성 고객", "phone": "010-0000"}

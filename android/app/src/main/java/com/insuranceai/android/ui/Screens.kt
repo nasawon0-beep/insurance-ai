@@ -48,6 +48,8 @@ import com.insuranceai.android.data.local.CustomerEntity
 import com.insuranceai.android.data.local.PolicyEntity
 import com.insuranceai.android.data.PolicyReadableFields
 import com.insuranceai.android.data.local.SyncConflictEntity
+import com.insuranceai.android.sync.ConnectionRegistrationState
+import com.insuranceai.android.sync.RecoveryUiState
 import org.json.JSONObject
 import java.text.NumberFormat
 import java.util.Locale
@@ -649,6 +651,9 @@ fun SyncScreen(
     val conflicts by viewModel.conflicts.collectAsState()
     val status by viewModel.status.collectAsState()
     val pairingState by viewModel.pairingState.collectAsState()
+    val recoveryState by viewModel.recoveryState.collectAsState()
+    val stagedRecoveryAvailable by viewModel.stagedRecoveryAvailable.collectAsState()
+    val registrationState by viewModel.registrationState.collectAsState()
     val resolutionState by viewModel.conflictResolutionState.collectAsState()
     val addressState by viewModel.addressContinuityState.collectAsState()
     val registered by viewModel.registered.collectAsState()
@@ -659,11 +664,15 @@ fun SyncScreen(
     var endpoint by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    var recoveryCode by remember { mutableStateOf("") }
     var movedEndpoint by remember { mutableStateOf("") }
     var movedPin by remember { mutableStateOf("") }
     var movedPinConfirmed by remember { mutableStateOf(false) }
     LaunchedEffect(pairingState.codeConsumed) {
         if (pairingState.codeConsumed) code = ""
+    }
+    LaunchedEffect(recoveryState.codeConsumed) {
+        if (recoveryState.codeConsumed) recoveryCode = ""
     }
     LaunchedEffect(deleteTarget, conflicts) {
         val target = deleteTarget
@@ -679,10 +688,14 @@ fun SyncScreen(
             item {
                 if (registered) Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("등록된 PC", fontWeight = FontWeight.Bold)
+                        Text(if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) "기존 연결 복구 필요" else "등록된 PC", fontWeight = FontWeight.Bold)
                         Text(connectionLabel)
                         Text("최근 동기화 · ${formatKoreanDateTime(syncState?.lastSuccessAt)}")
-                        Text("등록 정보와 인증서 확인을 재사용하므로 연결할 때마다 새 코드를 받을 필요가 없습니다.")
+                        if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) {
+                            Text("PC에서 연결이 해제되었거나 인증 정보를 다시 확인해야 합니다. 기존 저장 자료와 미전송 자료는 그대로 유지됩니다.")
+                        } else {
+                            Text("등록 정보와 인증서 확인을 재사용하므로 연결할 때마다 새 코드를 받을 필요가 없습니다.")
+                        }
                     }
                 } else Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -703,10 +716,21 @@ fun SyncScreen(
                 }
             }
             item {
-                if (registered) Card(Modifier.fillMaxWidth()) {
+                if (registered && registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) {
+                    RecoveryConnectionCard(
+                        code = recoveryCode,
+                        onCodeChange = { recoveryCode = it },
+                        state = recoveryState,
+                        stagedRecoveryAvailable = stagedRecoveryAvailable,
+                        onRecover = { viewModel.recoverConnection(recoveryCode, onAuthenticate) },
+                    )
+                }
+            }
+            item {
+                if (registered && registrationState == ConnectionRegistrationState.ACTIVE) Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("PC 주소 변경 복구", fontWeight = FontWeight.Bold)
-                        Text("재페어링하지 않습니다. PC 화면에 표시된 새 HTTPS 주소와 새 인증서 SHA-256을 직접 대조한 경우에만 기존 암호화 token으로 같은 기기 identity와 미해결 충돌을 확인합니다.")
+                        Text("처음 등록을 다시 하지 않습니다. PC 화면의 새 주소와 인증서 확인값을 직접 대조한 경우에만 기존 연결과 미해결 항목을 확인합니다.")
                         OutlinedTextField(
                             movedEndpoint,
                             { movedEndpoint = it },
@@ -746,7 +770,7 @@ fun SyncScreen(
                         Text("동기화 상태", fontWeight = FontWeight.Bold)
                         Text(status)
                         Text("자동 동기화는 네트워크 연결 후 OS가 실행하며, 실행 시각은 보장되지 않습니다.")
-                        Button(enabled = registered && !pairingState.inFlight, onClick = viewModel::syncNow, modifier = Modifier.fillMaxWidth()) { Text("지금 동기화") }
+                        Button(enabled = registered && registrationState == ConnectionRegistrationState.ACTIVE && !pairingState.inFlight, onClick = viewModel::syncNow, modifier = Modifier.fillMaxWidth()) { Text("지금 동기화") }
                         if (!registered) Text("PC를 처음 등록하면 이후에는 새 코드 없이 동기화합니다.")
                         if (conflicts.isNotEmpty()) Text("충돌 ${conflicts.size}건 · 자동 덮어쓰기하지 않습니다.", fontWeight = FontWeight.Bold)
                     }
@@ -783,6 +807,50 @@ fun SyncScreen(
                 }) { Text("삭제 확인") }
             },
         )
+    }
+}
+
+@Composable
+internal fun RecoveryConnectionCard(
+    code: String,
+    onCodeChange: (String) -> Unit,
+    state: RecoveryUiState,
+    stagedRecoveryAvailable: Boolean = false,
+    onRecover: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("기존 연결 복구", fontWeight = FontWeight.Bold)
+            Text(
+                if (stagedRecoveryAvailable && code.isBlank()) {
+                    "이전 복구 요청의 PC 승인을 확인할 수 있습니다. 확인 실패 시 PC에서 새 복구 코드를 생성하세요. 기존 미전송 자료는 삭제되지 않습니다."
+                } else {
+                    "PC에서 이 기기를 선택해 만든 복구 코드를 입력하세요. 기존 미전송 자료는 삭제되지 않습니다."
+                }
+            )
+            OutlinedTextField(
+                code,
+                onCodeChange,
+                enabled = !state.inFlight,
+                visualTransformation = PasswordVisualTransformation(),
+                label = { Text("복구 코드") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(state.status)
+            Button(
+                enabled = !state.inFlight && (code.matches(Regex("\\d{6}")) || (code.isBlank() && stagedRecoveryAvailable)),
+                onClick = onRecover,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    when {
+                        state.inFlight -> "복구 중"
+                        code.isBlank() && stagedRecoveryAvailable -> "복구 확인 다시 시도"
+                        else -> "기존 연결 복구"
+                    }
+                )
+            }
+        }
     }
 }
 

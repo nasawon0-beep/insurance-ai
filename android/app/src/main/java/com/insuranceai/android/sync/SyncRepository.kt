@@ -16,13 +16,15 @@ import com.insuranceai.android.security.EncryptionService
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
+import java.security.SecureRandom
+import java.util.Base64
 
 class SyncRepository(
     private val database: AppDatabase,
     private val encryption: EncryptionService,
     private val settings: SyncSettings,
     private val client: LanSyncClient = LanSyncClient()
-) : PairingActions, ConflictResolutionActions, AddressContinuityActions, DiscoveredAddressActions {
+) : PairingActions, RecoveryActions, ConflictResolutionActions, AddressContinuityActions, DiscoveredAddressActions {
     private val syncDao = database.syncDao()
     private val syncRunGate = SyncRunGate()
 
@@ -31,6 +33,8 @@ class SyncRepository(
     fun observePendingCount(): Flow<Int> = syncDao.observePendingCount()
     fun observePendingItems() = syncDao.observePendingItems()
     fun isConnectionConfigured(): Boolean = settings.isConfigured()
+    fun connectionRegistrationState(): ConnectionRegistrationState = settings.registrationState()
+    fun hasStagedRecovery(): Boolean = settings.hasStagedRecovery()
     fun connectionLabel(): String = settings.endpointLabel() ?: "등록된 PC 없음"
     override fun registeredPcInstanceId(): String? = settings.registeredPcInstanceId()
 
@@ -49,6 +53,47 @@ class SyncRepository(
     override suspend fun prepareCredentialStorage() {
         settings.verifyCredentialStorageAvailable()
     }
+
+    override suspend fun prepareRecoveryStorage() {
+        settings.verifyCredentialStorageAvailable()
+    }
+
+    override suspend fun recoverAndPromote(request: RecoveryRequest) = syncRunGate.run {
+        val old = settings.load() ?: error("기존 연결 정보가 없습니다")
+        val expectedDevice = old.deviceId ?: error("기존 연결 확인 정보가 없습니다")
+        val expectedInstance = old.pcInstanceId ?: error("기존 PC 확인 정보가 없습니다")
+        val staged = settings.stagedRecoveryToken()
+        if (request.code.isBlank() && staged == null) error("복구 코드를 입력하세요")
+        val candidate = staged ?: Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(ByteArray(32).also(SecureRandom()::nextBytes))
+            .also(settings::stageRecoveryToken)
+        val response = if (request.code.isBlank()) {
+            client.post(old.copy(token = candidate), "/v1/continuity", JSONObject())
+        } else {
+            client.post(
+                old,
+                "/v1/recover",
+                JSONObject()
+                    .put("code", request.code)
+                    .put("candidate_token", candidate)
+                    .put("expected_device_id", expectedDevice)
+                    .put("pc_instance_id", expectedInstance),
+                authenticated = false,
+            )
+        }
+        check(response.getString("device_id") == expectedDevice) { "Recovery device identity mismatch" }
+        check(response.getString("pc_instance_id") == expectedInstance) { "Recovery PC identity mismatch" }
+        settings.promoteStagedRecovery(expectedDevice, expectedInstance)
+        clearBlockedAfterVerifiedRecovery()
+    }
+
+    private suspend fun authenticatedPost(connection: SyncConnection, path: String, body: JSONObject): JSONObject =
+        try {
+            client.post(connection, path, body)
+        } catch (error: LanSyncHttpException) {
+            if (error.statusCode == 401) settings.markRecoveryRequired()
+            throw error
+        }
 
     override suspend fun pairAndSave(request: PairingRequest) {
         val provisional = SyncConnection(request.endpoint.trimEnd('/'), request.certificatePin, "")
@@ -77,7 +122,7 @@ class SyncRepository(
             token = old.token,
             deviceId = old.deviceId,
         )
-        val response = client.post(candidate, "/v1/continuity", JSONObject())
+        val response = authenticatedPost(candidate, "/v1/continuity", JSONObject())
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
         val proof = ContinuityProof(
             status = response.getString("status"),
@@ -100,7 +145,7 @@ class SyncRepository(
         val old = settings.load() ?: error("페어링이 필요합니다")
         require(mayProbeDiscoveredCandidate(old.pcInstanceId, candidate)) { "Discovered PC identity mismatch" }
         val discoveredConnection = old.copy(endpoint = candidate.endpoint.trimEnd('/'))
-        val response = client.post(discoveredConnection, "/v1/continuity", JSONObject())
+        val response = authenticatedPost(discoveredConnection, "/v1/continuity", JSONObject())
         val authenticatedInstance = response.getString("pc_instance_id")
         validateDiscoveredContinuity(old.pcInstanceId, candidate.instanceId, authenticatedInstance)
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
@@ -130,7 +175,7 @@ class SyncRepository(
         val current = settings.load() ?: return@run false
         val expectedInstance = current.pcInstanceId ?: return@run false
         val expectedDevice = current.deviceId ?: return@run false
-        val response = client.post(current, "/v1/continuity", JSONObject())
+        val response = authenticatedPost(current, "/v1/continuity", JSONObject())
         val authenticatedInstance = response.getString("pc_instance_id")
         validateDiscoveredContinuity(expectedInstance, expectedInstance, authenticatedInstance)
         val conflictIds = response.optJSONArray("unresolved_conflict_ids") ?: JSONArray()
@@ -151,6 +196,7 @@ class SyncRepository(
     }
 
     override suspend fun syncOnce(): Boolean = syncRunGate.run {
+        if (settings.registrationState() != ConnectionRegistrationState.ACTIVE) return@run false
         val connection = settings.load() ?: return@run false
         try {
             syncOnceLocked(connection)
@@ -185,7 +231,7 @@ class SyncRepository(
                 .put("limit", 200)
                 .put("operations", operations)
                 .put("tombstone_acks", JSONArray(priorAcks))
-            val response = client.post(connection, "/v1/sync", body)
+            val response = authenticatedPost(connection, "/v1/sync", body)
             applyResponse(response, priorAcks)
             val conflicts = response.optJSONArray("conflicts") ?: JSONArray()
             serverConflictIds = buildSet {
@@ -214,7 +260,7 @@ class SyncRepository(
         plan.unavailableReason?.let { throw ConflictResolutionUnavailableException(it) }
         val request = checkNotNull(plan.request)
         return syncRunGate.run {
-            val response = client.post(
+            val response = authenticatedPost(
                 connection,
                 request.path,
                 JSONObject().put("resolution", JSONObject(request.resolution)).put("deleted", request.deleted)

@@ -2,7 +2,11 @@ package com.insuranceai.android.ui
 
 import com.insuranceai.android.data.local.SyncStateEntity
 import com.insuranceai.android.security.AuthenticationRequiredException
+import com.insuranceai.android.sync.LanSyncHttpException
+import java.net.SocketTimeoutException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SyncLabelsTest {
@@ -19,6 +23,19 @@ class SyncLabelsTest {
             syncFailureStatus(AuthenticationRequiredException())
         )
         assertEquals("실패: network", syncFailureStatus(IllegalStateException("network")))
+    }
+
+    @Test
+    fun unauthorizedAndTimeoutHaveDistinctConservativeUserMessages() {
+        val unauthorized = syncFailureStatus(LanSyncHttpException(401))
+        val timeout = syncFailureStatus(SocketTimeoutException())
+
+        assertTrue(unauthorized.contains("연결이 해제되었거나"))
+        assertTrue(unauthorized.contains("다시 확인"))
+        assertTrue(timeout.contains("응답 시간"))
+        assertFalse(timeout.contains("해제"))
+        assertFalse(unauthorized.contains("token", ignoreCase = true))
+        assertFalse(unauthorized.contains("UUID", ignoreCase = true))
     }
 
     @Test

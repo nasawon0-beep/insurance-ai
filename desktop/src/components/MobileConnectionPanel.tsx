@@ -36,6 +36,7 @@ export default function MobileConnectionPanel() {
   const [status, setStatus] = useState<MobileSyncStatus>(emptyStatus);
   const [devices, setDevices] = useState<MobileDevice[]>([]);
   const [pairing, setPairing] = useState<PairingCode | null>(null);
+  const [recovery, setRecovery] = useState<PairingCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -83,6 +84,13 @@ export default function MobileConnectionPanel() {
   });
   const createCode = () => run(async () => {
     setPairing(await invoke<PairingCode>("mobile_sync_create_pairing_code"));
+    setRecovery(null);
+  });
+  const createRecoveryCode = (device: MobileDevice) => run(async () => {
+    if (!window.confirm(`‘${device.name}’ 기기를 기존 등록 정보와 미전송 자료를 유지한 채 다시 연결할까요?`)) return;
+    setRecovery(await invoke<PairingCode>("mobile_sync_create_recovery_code", { deviceId: device.id, confirmed: true }));
+    setPairing(null);
+    setNotice("선택한 기기 전용 복구 코드를 만들었습니다. 모바일에서 ‘기존 연결 복구’에 입력하세요.");
   });
   const setStartupRestore = (enabled: boolean) => run(async () => {
     const preference = await invoke<MobileStartupPreference>("mobile_sync_set_startup_preference", { enabled });
@@ -147,12 +155,27 @@ export default function MobileConnectionPanel() {
           <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>모바일에서 PC 주소와 인증서 지문을 함께 확인하세요.</div>
         </div>
       )}
+      {recovery && (
+        <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6 }}>
+          <div>기존 연결 복구 코드: <strong style={{ fontSize: "1.25rem", letterSpacing: 3 }}>{recovery.code}</strong></div>
+          <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>만료: {formattedTime(recovery.expiresAt)}</div>
+          <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>선택한 기기에서 한 번만 사용할 수 있습니다. 기존 기기와 미전송 자료를 유지합니다.</div>
+        </div>
+      )}
       <div style={{ marginTop: 12, fontSize: "0.875rem" }}><b>등록된 모바일</b></div>
       {devices.filter((device) => !device.revoked_at).length === 0 && <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>등록된 모바일이 없습니다.</p>}
       {devices.filter((device) => !device.revoked_at).map((device) => (
         <div key={device.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "5px 0", fontSize: "0.75rem" }}>
           <span>{device.name} · 등록 {formattedTime(device.created_at)}</span>
           <button disabled={busy} onClick={() => void revoke(device)}>해제</button>
+        </div>
+      ))}
+      <div style={{ marginTop: 12, fontSize: "0.875rem" }}><b>연결 해제된 모바일</b></div>
+      {devices.filter((device) => device.revoked_at).length === 0 && <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>연결 해제된 모바일이 없습니다.</p>}
+      {devices.filter((device) => device.revoked_at).map((device) => (
+        <div key={device.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "5px 0", fontSize: "0.75rem" }}>
+          <span>{device.name} · 해제 {formattedTime(device.revoked_at)}</span>
+          <button disabled={busy || !status.running} onClick={() => void createRecoveryCode(device)}>이 기기 다시 연결</button>
         </div>
       ))}
       {(error || status.lastError) && <p role="alert" style={{ color: "#b00", fontSize: "0.75rem" }}>오류: {error ?? status.lastError}</p>}

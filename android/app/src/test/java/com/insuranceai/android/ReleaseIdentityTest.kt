@@ -5,9 +5,9 @@ import org.junit.Test
 
 class ReleaseIdentityTest {
     @Test
-    fun authenticationExpiryFixHasMonotonicPackageVersion() {
+    fun revokedConnectionRecoveryHasMonotonicPackageVersion() {
         assertEquals("com.insuranceai.android", BuildConfig.APPLICATION_ID)
-        assertEquals(4, BuildConfig.VERSION_CODE)
-        assertEquals("1.0.0-phase4", BuildConfig.VERSION_NAME)
+        assertEquals(5, BuildConfig.VERSION_CODE)
+        assertEquals("1.0.0-phase5", BuildConfig.VERSION_NAME)
     }
 }

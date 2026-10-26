@@ -1835,6 +1835,7 @@ pub fn run() {
             mobile_sync::mobile_sync_set_startup_preference,
             mobile_sync::mobile_sync_restore_if_enabled,
             mobile_sync::mobile_sync_create_pairing_code,
+            mobile_sync::mobile_sync_create_recovery_code,
             mobile_sync::mobile_sync_list_devices,
             mobile_sync::mobile_sync_revoke_device,
             mobile_sync::mobile_sync_firewall_apply,

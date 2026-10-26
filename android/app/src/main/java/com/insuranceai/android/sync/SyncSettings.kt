@@ -12,6 +12,8 @@ data class SyncConnection(
     val pcInstanceId: String? = null,
 )
 
+enum class ConnectionRegistrationState { UNREGISTERED, ACTIVE, RECOVERY_REQUIRED }
+
 interface SyncTokenCipher {
     fun verifyAvailable()
     fun encrypt(plaintext: String): String
@@ -77,6 +79,8 @@ class SyncSettings(
                     "endpoint" to normalizedEndpoint,
                     "certificate_sha256" to pin,
                     "token_encrypted" to encryptedToken,
+                    "registration_state" to ConnectionRegistrationState.ACTIVE.name,
+                    "recovery_token_encrypted" to "",
                 )
             deviceId?.takeIf(String::isNotBlank)?.let { values["device_id"] = it }
             pcInstanceId?.takeIf(String::isNotBlank)?.let { values["pc_instance_id"] = it }
@@ -111,6 +115,75 @@ class SyncSettings(
     }
 
     fun registeredPcInstanceId(): String? = prefs.getString("pc_instance_id")
+
+    fun registrationState(): ConnectionRegistrationState {
+        if (!isConfigured()) return ConnectionRegistrationState.UNREGISTERED
+        return when (prefs.getString("registration_state")) {
+            ConnectionRegistrationState.RECOVERY_REQUIRED.name -> ConnectionRegistrationState.RECOVERY_REQUIRED
+            else -> ConnectionRegistrationState.ACTIVE
+        }
+    }
+
+    fun isReadyForAutomaticSync(): Boolean = registrationState() == ConnectionRegistrationState.ACTIVE
+
+    fun markRecoveryRequired() {
+        check(prefs.putStrings(mapOf("registration_state" to ConnectionRegistrationState.RECOVERY_REQUIRED.name))) {
+            "registration state commit failed"
+        }
+    }
+
+    fun markActive() {
+        check(prefs.putStrings(mapOf("registration_state" to ConnectionRegistrationState.ACTIVE.name))) {
+            "registration state commit failed"
+        }
+    }
+
+    fun stageRecoveryToken(token: String) {
+        require(token.length >= 32) { "Recovery credential required" }
+        try {
+            val encrypted = encryption.encrypt(token)
+            check(prefs.putStrings(mapOf("recovery_token_encrypted" to encrypted))) {
+                "recovery staging commit failed"
+            }
+        } catch (error: PairingLocalSaveException) {
+            throw error
+        } catch (error: Throwable) {
+            throw PairingLocalSaveException(error)
+        }
+    }
+
+    fun stagedRecoveryToken(): String? = prefs.getString("recovery_token_encrypted")
+        ?.takeIf(String::isNotBlank)
+        ?.let(encryption::decrypt)
+
+    fun hasStagedRecovery(): Boolean = !prefs.getString("recovery_token_encrypted").isNullOrBlank()
+
+    fun promoteStagedRecovery(expectedDeviceId: String, expectedPcInstanceId: String) {
+        val current = load() ?: throw PairingLocalSaveException(IllegalStateException("existing credential unavailable"))
+        if (current.deviceId != expectedDeviceId || current.pcInstanceId != expectedPcInstanceId) {
+            throw PairingLocalSaveException(IllegalStateException("recovery identity mismatch"))
+        }
+        val staged = prefs.getString("recovery_token_encrypted")
+            ?.takeIf(String::isNotBlank)
+            ?: throw PairingLocalSaveException(IllegalStateException("staged recovery unavailable"))
+        try {
+            check(prefs.putStrings(mapOf(
+                "token_encrypted" to staged,
+                "recovery_token_encrypted" to "",
+                "registration_state" to ConnectionRegistrationState.ACTIVE.name,
+            ))) { "recovery promotion commit failed" }
+            val loaded = load()
+            check(
+                loaded?.deviceId == expectedDeviceId &&
+                    loaded.pcInstanceId == expectedPcInstanceId &&
+                    loaded.token == encryption.decrypt(staged)
+            ) { "recovery promotion read-back failed" }
+        } catch (error: PairingLocalSaveException) {
+            throw error
+        } catch (error: Throwable) {
+            throw PairingLocalSaveException(error)
+        }
+    }
 
     fun updateVerifiedAddress(
         endpoint: String,

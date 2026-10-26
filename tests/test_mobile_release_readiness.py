@@ -117,3 +117,14 @@ def test_mobile_ui_labels_pairing_code_without_exposing_bearer_credentials():
     assert "1회 연결 코드" in panel
     assert "기기 인증정보는 화면에 표시하지 않습니다" in panel
     assert "bearer" not in panel.lower()
+
+
+def test_pc_ui_separates_revoked_device_recovery_from_first_pairing():
+    panel = (ROOT / "desktop" / "src" / "components" / "MobileConnectionPanel.tsx").read_text(encoding="utf-8")
+
+    assert "연결 해제된 모바일" in panel
+    assert "이 기기 다시 연결" in panel
+    assert "기존 기기와 미전송 자료를 유지" in panel
+    assert "mobile_sync_create_recovery_code" in panel
+    assert "token" not in panel.lower()
+    assert "uuid" not in panel.lower()
