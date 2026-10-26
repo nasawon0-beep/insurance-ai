@@ -37,6 +37,19 @@ def test_release_workflow_uses_existing_signing_secret_names_only():
     assert "TAURI_SIGNING_PRIVATE_KEY_PASSWORD:" not in source
 
 
+def test_release_validation_uses_the_local_engine_venv_python():
+    source = RELEASE.read_text(encoding="utf-8")
+    validate_step = source.split("- name: Validate release candidate", 1)[1].split(
+        "- name: Build Windows signed bundles", 1
+    )[0]
+
+    assert "local-engine/.venv/Scripts/python.exe -m pytest -q" in validate_step
+    assert "\n          python -m pytest -q" not in validate_step
+    install_command = "local-engine/.venv/Scripts/python.exe -m pip install"
+    assert install_command in source
+    assert source.index(install_command) < source.index("- name: Validate release candidate")
+
+
 def test_general_build_is_draft_and_public_mirror_requires_explicit_input():
     source = BUILD.read_text(encoding="utf-8")
     assert "publish_public:" in source
