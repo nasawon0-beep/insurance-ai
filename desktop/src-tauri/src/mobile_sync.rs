@@ -214,6 +214,12 @@ fn mobile_database(profile: &RuntimeProfile) -> PathBuf {
     profile.data_dir.join("customers.sqlite3")
 }
 
+fn prepare_admin_secret_path(state_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(state_dir)
+        .map_err(|error| format!("모바일 연결 설정 폴더 생성 실패: {error}"))?;
+    Ok(state_dir.join("admin-api.secret"))
+}
+
 async fn admin_output(
     app: &tauri::AppHandle,
     profile: &RuntimeProfile,
@@ -228,7 +234,7 @@ async fn admin_output(
         .env("PYTHONUTF8", "1")
         .env(
             "INSURANCE_AI_API_SECRET_FILE",
-            mobile_state_dir(profile).join("admin-api.secret"),
+            prepare_admin_secret_path(&mobile_state_dir(profile))?,
         );
     for &(name, value) in mobile_keyfile_environment(profile.qa) {
         command = command.env(name, value);
@@ -912,6 +918,25 @@ pub(crate) fn terminate(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_secret_parent_exists_before_spawning_sidecar() {
+        let directory = std::env::temp_dir().join(format!(
+            "moadoom-admin-secret-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        assert!(!directory.exists());
+
+        let secret_path = prepare_admin_secret_path(&directory).expect("prepare state directory");
+
+        assert!(directory.is_dir());
+        assert_eq!(secret_path, directory.join("admin-api.secret"));
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
 
     #[test]
     fn firewall_rule_is_private_program_and_port_scoped() {
