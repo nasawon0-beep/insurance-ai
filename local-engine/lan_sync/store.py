@@ -84,7 +84,7 @@ WRITABLE_FIELDS: dict[str, frozenset[str]] = {
         "follow_up_at", "follow_up_done_at",
     }),
 }
-READ_ONLY_TYPES = frozenset({"policy", "coverage_analysis", "policy_coverage"})
+READ_ONLY_TYPES = frozenset({"policy", "coverage_analysis", "policy_coverage", "family_relationship"})
 PAIRING_WINDOW_SECONDS = 60
 PAIRING_SOURCE_FAILURE_LIMIT = 5
 PAIRING_SOURCE_COOLDOWN_SECONDS = 30

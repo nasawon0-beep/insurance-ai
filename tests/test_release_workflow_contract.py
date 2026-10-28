@@ -24,6 +24,7 @@ def test_release_workflow_verifies_runtime_modules_and_resources_before_bundle()
         "database.coverage",
         "database.coverage_analysis_parser",
         "database.coverage_mapping",
+        "database.family",
         "local-engine._internal",
         "python311.dll",
     ):

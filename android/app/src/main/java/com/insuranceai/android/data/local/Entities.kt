@@ -141,6 +141,20 @@ data class CoverageAnalysisEntity(
     val updatedAt: String
 )
 
+@Entity(
+    tableName = "family_relationships",
+    indices = [Index("customerAId"), Index("customerBId")]
+)
+data class FamilyRelationshipEntity(
+    @PrimaryKey val id: String,
+    val customerAId: String,
+    val customerBId: String,
+    val relationAToB: String,
+    val otherDescription: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String,
+)
+
 @Entity(tableName = "sync_outbox", indices = [Index(value = ["operationId"], unique = true)])
 data class SyncOutboxEntity(
     @PrimaryKey(autoGenerate = true) val localId: Long = 0,
@@ -173,7 +187,8 @@ data class SyncStateEntity(
     @PrimaryKey val singletonId: Int = 1,
     val cursor: Long = 0,
     val lastSuccessAt: String? = null,
-    val lastError: String? = null
+    val lastError: String? = null,
+    val familyBootstrapComplete: Boolean = false,
 )
 
 @Entity(tableName = "sync_tombstone_acks")

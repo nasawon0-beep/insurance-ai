@@ -57,7 +57,7 @@ from rag import answer as rag_answer
 from rag import index_parsed_doc
 
 from . import backup as _backup
-from . import coverage, policy_coverages, policy_qa, repo
+from . import coverage, family, policy_coverages, policy_qa, repo
 from .coverage_analysis_parser import parse_coverage_analysis
 from .policy_coverages import DocumentType, classify_document_type, detect_candidate_pages
 from .proposal_parser import parse_proposal
@@ -75,6 +75,8 @@ from .models import (
     ConsultationPatch,
     CustomerIn,
     CustomerPatch,
+    FamilyRelationshipBatchIn,
+    FamilyRelationshipIn,
     IntakeIn,
     PolicyIn,
     PolicyPatch,
@@ -2393,6 +2395,120 @@ def usage_export(
         content=text.encode("utf-8-sig"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="usage-{mode}.csv"'},
+    )
+
+
+@router.get("/customers/{cid}/family-relationships")
+def get_family_relationships(cid: str, conn=Depends(get_conn)):
+    try:
+        rows = family.list_relationships(conn, cid)
+    except family.FamilyNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "customer_id": cid,
+        "family_relationships": rows,
+        "schema_version": 1,
+    }
+
+
+@router.post("/customers/{cid}/family-relationships", status_code=201)
+def create_family_relationship(
+    cid: str,
+    body: FamilyRelationshipIn,
+    request: Request,
+    conn=Depends(get_conn),
+):
+    try:
+        created = family.create_relationships(
+            conn,
+            cid,
+            body.related_customer_id,
+            body.relationship,
+            other_description=body.other_description,
+            co_parent_customer_id=body.co_parent_customer_id,
+            shared_child_ids=body.shared_child_ids,
+        )
+    except family.FamilyNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except family.FamilyValidation as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except family.FamilyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    for item in created:
+        _audit(
+            conn,
+            request,
+            action="create",
+            entity="family_relationship",
+            entity_id=item["id"],
+            customer_id=cid,
+            fields=item["relation_a_to_b"],
+        )
+    return {
+        "created_relationships": created,
+        "family_relationships": family.list_relationships(conn, cid),
+        "schema_version": 1,
+    }
+
+
+@router.post("/customers/{cid}/family-relationships/batch", status_code=201)
+def create_family_relationship_batch(
+    cid: str,
+    body: FamilyRelationshipBatchIn,
+    request: Request,
+    conn=Depends(get_conn),
+):
+    try:
+        created, replay = family.create_relationship_batch(
+            conn,
+            cid,
+            body.idempotency_key,
+            [item.model_dump() for item in body.relationships],
+        )
+    except family.FamilyNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except family.FamilyValidation as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except family.FamilyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not replay:
+        for item in created:
+            _audit(
+                conn,
+                request,
+                action="create",
+                entity="family_relationship",
+                entity_id=item["id"],
+                customer_id=cid,
+                fields=item["relation_a_to_b"],
+            )
+    return {
+        "created_relationships": created,
+        "family_relationships": family.list_relationships(conn, cid),
+        "idempotent_replay": replay,
+        "schema_version": 1,
+    }
+
+
+@router.delete("/customers/{cid}/family-relationships/{relationship_id}", status_code=204)
+def delete_family_relationship(
+    cid: str,
+    relationship_id: str,
+    request: Request,
+    conn=Depends(get_conn),
+):
+    if repo.get_customer(conn, cid) is None:
+        raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+    if not family.delete_relationship(conn, cid, relationship_id):
+        raise HTTPException(status_code=404, detail="가족 관계를 찾을 수 없습니다.")
+    _audit(
+        conn,
+        request,
+        action="delete",
+        entity="family_relationship",
+        entity_id=relationship_id,
+        customer_id=cid,
+        fields="edge_only",
     )
 
 

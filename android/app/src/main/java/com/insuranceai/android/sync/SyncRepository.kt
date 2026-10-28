@@ -7,6 +7,8 @@ import com.insuranceai.android.data.local.CoverageAnalysisEntity
 import com.insuranceai.android.data.local.CustomerEntity
 import com.insuranceai.android.data.local.PolicyEntity
 import com.insuranceai.android.data.local.PolicyCoverageEntity
+import com.insuranceai.android.data.local.FamilyRelationshipEntity
+import com.insuranceai.android.data.local.SyncOutboxEntity
 import com.insuranceai.android.data.local.SYNC_SYNCED
 import com.insuranceai.android.data.local.SyncConflictEntity
 import com.insuranceai.android.data.local.SyncStateEntity
@@ -18,6 +20,38 @@ import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
 import java.security.SecureRandom
 import java.util.Base64
+
+const val MOBILE_SYNC_SCHEMA_VERSION = 2
+const val FAMILY_RELATIONSHIP_CAPABILITY = "family_relationship.v1"
+
+internal fun buildSyncRequest(
+    cursor: Long,
+    outbox: List<SyncOutboxEntity>,
+    tombstoneAcks: List<Long>,
+    includeFamilyCapability: Boolean = true,
+): JSONObject {
+    val operations = JSONArray()
+    outbox.forEach { item ->
+        operations.put(JSONObject()
+            .put("operation_id", item.operationId)
+            .put("entity_type", item.entityType)
+            .put("entity_id", item.entityId)
+            .put("base", JSONObject(item.baseJson))
+            .put("patch", JSONObject(item.patchJson))
+            .put("deleted", item.deleted))
+    }
+    return JSONObject()
+        .put("cursor", cursor)
+        .put("limit", 200)
+        .put("operations", operations)
+        .put("tombstone_acks", JSONArray(tombstoneAcks))
+        .also { request ->
+            if (includeFamilyCapability) {
+                request.put("schema_version", MOBILE_SYNC_SCHEMA_VERSION)
+                request.put("capabilities", JSONArray().put(FAMILY_RELATIONSHIP_CAPABILITY))
+            }
+        }
+}
 
 class SyncRepository(
     private val database: AppDatabase,
@@ -357,22 +391,22 @@ class SyncRepository(
             val outbox = syncDao.pending()
             val priorAcks = syncDao.pendingTombstoneAcks()
             if (outbox.isNotEmpty()) syncDao.markAttempted(outbox.map { it.operationId })
-            val operations = JSONArray()
-            outbox.forEach { item ->
-                operations.put(JSONObject()
-                    .put("operation_id", item.operationId)
-                    .put("entity_type", item.entityType)
-                    .put("entity_id", item.entityId)
-                    .put("base", JSONObject(item.baseJson))
-                    .put("patch", JSONObject(item.patchJson))
-                    .put("deleted", item.deleted))
+            // Existing v1 clients advanced past hidden family changes. Replaying from zero once
+            // hydrates family_relationship.v1 without deleting the durable cursor or local work.
+            val requestedCursor = if (state.familyBootstrapComplete) state.cursor else 0L
+            val body = buildSyncRequest(requestedCursor, outbox, priorAcks)
+            val response = try {
+                authenticatedPost(connection, "/v1/sync", body)
+            } catch (error: LanSyncHttpException) {
+                if (error.statusCode != 422) throw error
+                // Old servers may reject schema negotiation. Stable operation IDs make this
+                // bounded compatibility retry idempotent; family bootstrap remains pending.
+                authenticatedPost(
+                    connection,
+                    "/v1/sync",
+                    buildSyncRequest(state.cursor, outbox, priorAcks, includeFamilyCapability = false),
+                )
             }
-            val body = JSONObject()
-                .put("cursor", state.cursor)
-                .put("limit", 200)
-                .put("operations", operations)
-                .put("tombstone_acks", JSONArray(priorAcks))
-            val response = authenticatedPost(connection, "/v1/sync", body)
             applyResponse(response, priorAcks)
             val conflicts = response.optJSONArray("conflicts") ?: JSONArray()
             serverConflictIds = buildSet {
@@ -467,10 +501,15 @@ class SyncRepository(
                     remoteDeleted = conflict.optBoolean("remote_deleted")
                 ))
             }
+            val priorState = syncDao.state() ?: SyncStateEntity()
+            val familyActive = response.optJSONArray("active_capabilities")?.let { capabilities ->
+                (0 until capabilities.length()).any { capabilities.optString(it) == FAMILY_RELATIONSHIP_CAPABILITY }
+            } == true
             syncDao.saveState(SyncStateEntity(
                 cursor = response.getLong("next_cursor"),
                 lastSuccessAt = nowIso(),
-                lastError = null
+                lastError = null,
+                familyBootstrapComplete = priorState.familyBootstrapComplete || familyActive,
             ))
         }
     }
@@ -480,11 +519,15 @@ class SyncRepository(
         val id = change.getString("entity_id")
         if (change.optBoolean("deleted")) {
             when (type) {
-                "customer" -> database.customerDao().deleteById(id)
+                "customer" -> {
+                    database.familyRelationshipDao().deleteForCustomer(id)
+                    database.customerDao().deleteById(id)
+                }
                 "policy" -> database.policyDao().deleteById(id)
                 "policy_coverage" -> database.policyCoverageDao().deleteById(id)
                 "consultation" -> database.consultationDao().deleteById(id)
                 "coverage_analysis" -> database.coverageAnalysisDao().deleteById(id)
+                "family_relationship" -> database.familyRelationshipDao().deleteById(id)
             }
             return
         }
@@ -574,6 +617,15 @@ class SyncRepository(
                 generatedAt = payload.getString("generated_at"),
                 sourceHash = payload.nullable("source_hash"),
                 updatedAt = payload.nullable("updated_at") ?: nowIso()
+            ))
+            "family_relationship" -> database.familyRelationshipDao().insert(FamilyRelationshipEntity(
+                id = id,
+                customerAId = payload.getString("customer_a_id"),
+                customerBId = payload.getString("customer_b_id"),
+                relationAToB = payload.getString("relation_a_to_b"),
+                otherDescription = payload.nullable("other_description"),
+                createdAt = payload.nullable("created_at"),
+                updatedAt = payload.nullable("updated_at") ?: nowIso(),
             ))
         }
     }

@@ -115,6 +115,20 @@ class ConsultationPolicyUiTest {
     }
 
     @Test
+    fun policiesInScopeSortsMonthlyPremiumDescendingAndKeepsMissingLast() {
+        val policies = listOf(
+            PolicyEntity(id = "missing", customerId = "customer-1", premium = null),
+            PolicyEntity(id = "small", customerId = "customer-1", premium = 10000),
+            PolicyEntity(id = "large", customerId = "customer-1", premium = 50000),
+        )
+
+        assertEquals(
+            listOf("large", "small", "missing"),
+            policiesInScope(policies, PolicyBrowseState().selectCustomer("customer-1")).map { it.id },
+        )
+    }
+
+    @Test
     fun policyDisplayFormattingUsesKoreanCodesAndDoesNotBuildMissingRange() {
         assertEquals("매월", paymentCycleLabel("MONTHLY"))
         assertEquals("기타 (FUTURE_CYCLE)", paymentCycleLabel("FUTURE_CYCLE"))

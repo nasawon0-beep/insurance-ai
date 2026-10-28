@@ -12,8 +12,8 @@ import net.sqlcipher.database.SupportFactory
 @Database(
     entities = [CustomerEntity::class, PolicyEntity::class, ConsultationEntity::class,
         CoverageAnalysisEntity::class, PolicyCoverageEntity::class, SyncOutboxEntity::class, SyncConflictEntity::class,
-        SyncStateEntity::class, SyncTombstoneAckEntity::class],
-    version = 3,
+        SyncStateEntity::class, SyncTombstoneAckEntity::class, FamilyRelationshipEntity::class],
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -22,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun consultationDao(): ConsultationDao
     abstract fun coverageAnalysisDao(): CoverageAnalysisDao
     abstract fun policyCoverageDao(): PolicyCoverageDao
+    abstract fun familyRelationshipDao(): FamilyRelationshipDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -64,5 +65,14 @@ object DatabaseMigrations {
         }
     }
 
-    val ALL = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS `family_relationships` (`id` TEXT NOT NULL, `customerAId` TEXT NOT NULL, `customerBId` TEXT NOT NULL, `relationAToB` TEXT NOT NULL, `otherDescription` TEXT, `createdAt` TEXT, `updatedAt` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_family_relationships_customerAId` ON `family_relationships` (`customerAId`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_family_relationships_customerBId` ON `family_relationships` (`customerBId`)")
+            db.execSQL("ALTER TABLE `sync_state` ADD COLUMN `familyBootstrapComplete` INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    val ALL = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 }

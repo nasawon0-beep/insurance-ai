@@ -3,6 +3,7 @@ package com.insuranceai.android
 import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -35,7 +36,9 @@ class MainActivity : FragmentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
-        applySystemBarAppearance(window, useDarkIcons = shouldUseDarkSystemBarIcons(0.96f))
+        val darkMode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+            Configuration.UI_MODE_NIGHT_YES
+        applySystemBarAppearance(window, useDarkIcons = shouldUseDarkSystemBarIcons(if (darkMode) 0.08f else 0.96f))
         biometricAuthManager = BiometricAuthManager(this)
 
         // 앱 시작 5초 후 업데이트 API를 확인합니다. 업데이트가 있으면 DownloadManager로 APK를 내려받습니다.

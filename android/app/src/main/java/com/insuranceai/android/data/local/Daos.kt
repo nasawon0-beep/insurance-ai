@@ -119,3 +119,21 @@ interface CoverageAnalysisDao {
     @Query("DELETE FROM coverage_analysis_results WHERE id = :id")
     suspend fun deleteById(id: String)
 }
+
+@Dao
+interface FamilyRelationshipDao {
+    @Query("SELECT * FROM family_relationships ORDER BY updatedAt DESC, id")
+    fun observeAll(): Flow<List<FamilyRelationshipEntity>>
+
+    @Query("SELECT * FROM family_relationships WHERE id = :id")
+    suspend fun getById(id: String): FamilyRelationshipEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(item: FamilyRelationshipEntity)
+
+    @Query("DELETE FROM family_relationships WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM family_relationships WHERE customerAId = :customerId OR customerBId = :customerId")
+    suspend fun deleteForCustomer(customerId: String)
+}

@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from database import policy_coverages, repo
+from database import family, policy_coverages, repo
 
 from .store import SyncStore, ValidationError
 
 
-_MANAGED_TYPES = frozenset({"customer", "policy", "consultation", "policy_coverage", "coverage_analysis"})
+_MANAGED_TYPES = frozenset({"customer", "policy", "consultation", "policy_coverage", "coverage_analysis", "family_relationship"})
 _CUSTOMER_FIELDS = (
     "id", "name", "phone", "birth_date", "gender", "email", "address", "occupation",
     "tags", "memo", "customer_status", "birth_date_estimated", "first_registered_ym",
@@ -42,7 +42,7 @@ class ProductionBridge:
 
     def initialize(self) -> None:
         tables = {row[0] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        required = {"customers", "policies", "consultations", "policy_coverages", "audit_log"}
+        required = {"customers", "policies", "consultations", "policy_coverages", "family_relationships", "audit_log"}
         missing = required - tables
         if missing:
             raise ValidationError(f"production customer schema required; missing tables: {sorted(missing)}")
@@ -85,6 +85,9 @@ class ProductionBridge:
 
             for coverage in policy_coverages.list_policy_coverages(self.conn, customer_id):
                 snapshots[("policy_coverage", coverage["id"])] = dict(coverage)
+
+        for relationship in family.list_sync_snapshots(self.conn):
+            snapshots[("family_relationship", relationship["id"])] = relationship
 
         self.store.reconcile_snapshots(snapshots, _MANAGED_TYPES)
 

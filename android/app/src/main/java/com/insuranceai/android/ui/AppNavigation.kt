@@ -17,6 +17,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -58,16 +60,27 @@ fun InsuranceAiApp(
     val authenticationState by authenticationGate.state.collectAsState()
     var selectedCustomerId by rememberSaveable { mutableStateOf<String?>(null) }
     var showAllPolicies by rememberSaveable { mutableStateOf(false) }
-    MaterialTheme(colorScheme = lightColorScheme(
-        primary = Color(0xFF194A9C),
+    val darkTheme = isSystemInDarkTheme()
+    val colors = if (darkTheme) darkColorScheme(
+        primary = Color(0xFFAEC7E8),
+        onPrimary = Color(0xFF0D2D4D),
+        primaryContainer = Color(0xFF304F76),
+        onPrimaryContainer = Color.White,
+        background = Color(0xFF12171D),
+        surface = Color(0xFF1A2027),
+        surfaceVariant = Color(0xFF27313B),
+        onSurface = Color(0xFFF1F4F7),
+    ) else lightColorScheme(
+        primary = Color(0xFF304F76),
         onPrimary = Color.White,
-        primaryContainer = Color(0xFFDCE7FF),
-        onPrimaryContainer = Color(0xFF082B63),
-        background = Color(0xFFF7F5EF),
-        surface = Color(0xFFFFFDF8),
-        surfaceVariant = Color(0xFFE8E7E2),
-        onSurface = Color(0xFF202124),
-    )) {
+        primaryContainer = Color(0xFFE7EDF4),
+        onPrimaryContainer = Color(0xFF243B57),
+        background = Color(0xFFF4F5F6),
+        surface = Color.White,
+        surfaceVariant = Color(0xFFE7EDF4),
+        onSurface = Color(0xFF242B33),
+    )
+    MaterialTheme(colorScheme = colors) {
         val authenticationPolicy = authenticationUiPolicy(authenticationState.required)
         if (authenticationPolicy.showLockScreen) {
             LaunchedEffect(authenticationState.requestId) { sessionManager.endSession() }
@@ -119,6 +132,14 @@ fun InsuranceAiApp(
                                     showAllPolicies = false
                                     navController.navigate(Route.Policies.value) { launchSingleTop = true }
                                 },
+                                onOpenCoverageForCustomer = { customerId ->
+                                    selectedCustomerId = customerId
+                                    navController.navigate(Route.Coverage.value) { launchSingleTop = true }
+                                },
+                                onOpenConsultationsForCustomer = { customerId ->
+                                    selectedCustomerId = customerId
+                                    navController.navigate(Route.Consultations.value) { launchSingleTop = true }
+                                },
                                 onOpenSync = { navController.navigate(Route.Sync.value) { launchSingleTop = true } },
                             )
                         }
@@ -140,8 +161,8 @@ fun InsuranceAiApp(
                                 },
                             )
                         }
-                        composable(Route.Coverage.value) { CoverageAnalysisScreen() }
-                        composable(Route.Consultations.value) { ConsultationsScreen() }
+                        composable(Route.Coverage.value) { CoverageAnalysisScreen(selectedCustomerId = selectedCustomerId) }
+                        composable(Route.Consultations.value) { ConsultationsScreen(selectedCustomerId = selectedCustomerId) }
                         composable(Route.Sync.value) { SyncScreen(onAuthenticate = onAuthenticate) }
                     }
                 }

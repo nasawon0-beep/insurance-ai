@@ -39,6 +39,28 @@ CREATE TABLE IF NOT EXISTS customers (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS family_relationships (
+    id                  TEXT PRIMARY KEY,
+    customer_a_id       TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    customer_b_id       TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    relation_a_to_b     TEXT NOT NULL CHECK(relation_a_to_b IN ('SPOUSE','PARENT','CHILD','SIBLING','OTHER')),
+    other_description   TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    CHECK(customer_a_id < customer_b_id),
+    UNIQUE(customer_a_id, customer_b_id)
+);
+
+CREATE TABLE IF NOT EXISTS family_relationship_batch_idempotency (
+    customer_id       TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    scope             TEXT NOT NULL,
+    idempotency_key   TEXT NOT NULL,
+    payload_digest    TEXT NOT NULL,
+    result_json       TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    PRIMARY KEY(customer_id, scope, idempotency_key)
+);
+
 -- 주민번호 전체값 조회 접근 로그 (누가·언제·왜)
 CREATE TABLE IF NOT EXISTS rrn_access_log (
     id          TEXT PRIMARY KEY,
@@ -199,6 +221,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_policies_customer ON policies(customer_id);
+CREATE INDEX IF NOT EXISTS idx_family_customer_a ON family_relationships(customer_a_id);
+CREATE INDEX IF NOT EXISTS idx_family_customer_b ON family_relationships(customer_b_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_customer ON policy_coverages(customer_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_policy ON policy_coverages(policy_id);
 CREATE INDEX IF NOT EXISTS idx_policy_coverages_standard ON policy_coverages(standard_name);

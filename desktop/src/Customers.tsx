@@ -8,6 +8,14 @@ import {
   type PolicyDraft,
 } from "./PolicyList";
 
+import FamilyRelationships from "./FamilyRelationships";
+import NewCustomerFamilyRelationships from "./NewCustomerFamilyRelationships";
+import {
+  createFamilyBatchIdempotencyKey,
+  saveRegistrationFamilyDrafts,
+  type FamilyCustomerSummary,
+  type FamilyRegistrationDraft,
+} from "./familyRelationshipModel";
 import CoverageSourceSnapshot, { type PolicyCoverageSnapshot } from "./CoverageSourceSnapshot";
 import { track } from "./usage";
 import { engineFetch } from "./engine";
@@ -397,6 +405,7 @@ export default function CustomersScreen({
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [familyBackTarget, setFamilyBackTarget] = useState<{ id: string; name: string } | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const [detail, setDetail] = useState<CustomerDetail | null>(null);
   const detailGenRef = useRef(0);
@@ -450,10 +459,16 @@ export default function CustomersScreen({
   const [pendingConsultDelete, setPendingConsultDelete] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>("basic");
   const [birthDateHint, setBirthDateHint] = useState(false);
+  const [registrationFamilyDrafts, setRegistrationFamilyDrafts] = useState<FamilyRegistrationDraft[]>([]);
+  const [registrationFamilyBatchKey, setRegistrationFamilyBatchKey] = useState<string | null>(null);
+  const [createdCustomerForFamilyRetry, setCreatedCustomerForFamilyRetry] = useState<Customer | null>(null);
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const saveCustomerInFlightRef = useRef(false);
 
   // bulkRows(일괄 인식 목록)도 미저장 분석 결과다 — 저장 없이 떠나면 그대로 유실된다.
   const hasPendingDraftNow = () =>
-    hasPendingDraft(pendingPolicies, pendingCoverage, pendingConsult) || bulkRows.length > 0;
+    hasPendingDraft(pendingPolicies, pendingCoverage, pendingConsult) ||
+    bulkRows.length > 0 || registrationFamilyDrafts.length > 0 || createdCustomerForFamilyRetry !== null;
 
   const canLeaveAnalysisDraft = () =>
     !hasPendingDraftNow() || window.confirm("저장하지 않은 분석 결과가 있습니다. 버리고 이동할까요?");
@@ -473,7 +488,7 @@ export default function CustomersScreen({
   // 구분해서 올려야, 내부 가드(canOpenCustomer)와 상단 탭 가드의 정책이 일치한다.
   useEffect(() => {
     onDraftChange?.({ hasDraft: hasPendingDraftNow(), isAnalyzing: audioIntakeBusy || intakeBusy });
-  }, [pendingPolicies, pendingCoverage, pendingConsult, bulkRows, audioIntakeBusy, intakeBusy, onDraftChange]);
+  }, [pendingPolicies, pendingCoverage, pendingConsult, bulkRows, registrationFamilyDrafts, createdCustomerForFamilyRetry, audioIntakeBusy, intakeBusy, onDraftChange]);
 
   const openMergePreview = async () => {
     if (!dupMatch) return;
@@ -748,6 +763,9 @@ export default function CustomersScreen({
     setPolicyChecked([]);
     setPendingDocType(undefined);
     setPendingCoverage([]);
+    setRegistrationFamilyDrafts([]);
+    setRegistrationFamilyBatchKey(null);
+    setCreatedCustomerForFamilyRetry(null);
     setDupMatch(null);
     setMergePreview(null);
     setMode("new");
@@ -886,6 +904,9 @@ export default function CustomersScreen({
   };
 
   const saveCustomer = async () => {
+    if (saveCustomerInFlightRef.current) return;
+    saveCustomerInFlightRef.current = true;
+    setSavingCustomer(true);
     setError(null);
     setNotice(null);
     onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: "running", message: mode === "new" ? "새고객 등록 중…" : "고객 저장 중…" });
@@ -917,11 +938,44 @@ export default function CustomersScreen({
       };
 
       if (mode === "new") {
-        const created: Customer = await api("/customers", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
-        track("customer_created", { via: "form" });
+        let created: Customer;
+        let familyBatchKey = registrationFamilyBatchKey;
+        if (createdCustomerForFamilyRetry) {
+          created = createdCustomerForFamilyRetry;
+        } else {
+          created = await api("/customers", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          track("customer_created", { via: "form" });
+          if (registrationFamilyDrafts.length > 0) setCreatedCustomerForFamilyRetry(created);
+        }
+        let savedFamilyCount = 0;
+        if (registrationFamilyDrafts.length > 0) {
+          if (!familyBatchKey) {
+            familyBatchKey = createFamilyBatchIdempotencyKey();
+            setRegistrationFamilyBatchKey(familyBatchKey);
+          }
+          try {
+            const familyRows = await saveRegistrationFamilyDrafts(
+              api,
+              created.id,
+              registrationFamilyDrafts,
+              familyBatchKey,
+            );
+            savedFamilyCount = familyRows.length;
+            setRegistrationFamilyDrafts([]);
+            setRegistrationFamilyBatchKey(null);
+            setCreatedCustomerForFamilyRetry(null);
+          } catch (familyError) {
+            await refreshList();
+            const familyMessage = familyError instanceof Error ? familyError.message : String(familyError);
+            setNotice("고객은 등록됐지만 가족 관계 저장에 실패했습니다. 고객은 유지되며 아래 버튼으로 가족 관계만 다시 저장할 수 있습니다.");
+            setError(`가족 관계 저장 실패: ${familyMessage}`);
+            onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: "error", message: `${created.name} 고객 등록 완료, 가족 관계 저장 실패` });
+            return;
+          }
+        }
         await saveRrn(created.id);
         // 녹취로 만든 경우: 그 통화를 첫 상담 이력으로 붙인다
         if (pendingConsult) {
@@ -952,6 +1006,7 @@ export default function CustomersScreen({
           onDraftChange?.({ hasDraft: false, isAnalyzing: false }); // 위 confirmMerge 와 동일한 이유
           setNotice(
             `${created.name} 등록 완료` +
+              (savedFamilyCount ? ` · 가족 관계 ${savedFamilyCount}건 연결` : "") +
               (rrnSaved ? " · 주민번호 저장됨" : "") +
               (pol.saved ? ` · 보험계약 ${pol.saved}건 추가` : "") +
               (ledger.created ? ` · 담보 ${ledger.created}건 저장` : ledger.existing ? ` · 기존 담보 ${ledger.existing}건 연결` : "") +
@@ -1025,6 +1080,9 @@ export default function CustomersScreen({
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
       onBackgroundJob?.({ id: "customer-save", label: "새고객 등록", status: "error", message: "새고객 등록 실패: " + message });
+    } finally {
+      saveCustomerInFlightRef.current = false;
+      setSavingCustomer(false);
     }
   };
 
@@ -1548,12 +1606,27 @@ export default function CustomersScreen({
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", width: "100%" }}>
                 <strong style={{ fontSize: 15 }}>{mode === "new" ? "새 고객 등록" : (detail?.name || "고객 정보")}</strong>
+                {mode === "edit" && familyBackTarget && (
+                  <button
+                    onClick={() => {
+                      if (!canOpenCustomer(familyBackTarget.id)) return;
+                      setSelectedId(familyBackTarget.id);
+                      setFamilyBackTarget(null);
+                      setActiveTab("basic");
+                    }}
+                    title={`${familyBackTarget.name} 고객 상세로 돌아가기`}
+                    style={{ fontSize: 12 }}
+                  >
+                    ← 원래 고객으로 돌아가기 ({familyBackTarget.name})
+                  </button>
+                )}
                 {mode === "edit" && detail && statusChip(detail.effective_status)}
                 <button
+                  disabled={savingCustomer}
                   onClick={saveCustomer}
                   style={{ fontWeight: 700, background: "#2563eb", color: "#fff", border: "2px solid #3b82f6", borderRadius: 8, padding: "8px 20px", cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.25)", fontSize: 14 }}
                 >
-                  {mode === "new" ? "등록" : "변경사항 저장"}
+                  {savingCustomer ? "저장 중…" : createdCustomerForFamilyRetry ? "가족 관계만 다시 저장" : mode === "new" ? "등록" : "변경사항 저장"}
                 </button>
                 {mode === "edit" && !pendingDelete && (
                   <button onClick={() => setPendingDelete(true)} style={{ color: "#b00", fontSize: 12 }}>
@@ -1950,11 +2023,43 @@ export default function CustomersScreen({
                 />
               </label>
             </div>
+            {mode === "new" && (
+              <NewCustomerFamilyRelationships
+                customerName={form.name}
+                api={api}
+                drafts={registrationFamilyDrafts}
+                onChange={(drafts) => {
+                  if (createdCustomerForFamilyRetry) {
+                    setRegistrationFamilyBatchKey(createFamilyBatchIdempotencyKey());
+                    setNotice("가족 선택을 수정해 새 저장 요청으로 전환했습니다. 이미 저장된 고객은 다시 만들지 않습니다.");
+                  }
+                  setRegistrationFamilyDrafts(drafts);
+                }}
+                disabled={savingCustomer}
+              />
+            )}
+            {mode === "new" && createdCustomerForFamilyRetry && (
+              <p role="status" style={{ marginTop: 9, color: "#8a4b00", fontSize: 13 }}>
+                {createdCustomerForFamilyRetry.name} 고객 ID는 이미 저장됐습니다. 고객을 다시 만들지 않고 선택한 가족 관계 묶음만 재시도합니다.
+              </p>
+            )}
             <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-              <button onClick={saveCustomer} style={{ fontWeight: 700, padding: "10px 24px", background: "#2563eb", color: "#fff", border: "2px solid #3b82f6", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.25)", fontSize: 14 }}>
-                {mode === "new" ? "등록" : "변경사항 저장"}
+              <button disabled={savingCustomer} onClick={saveCustomer} style={{ fontWeight: 700, padding: "10px 24px", background: "#2563eb", color: "#fff", border: "2px solid #3b82f6", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.25)", fontSize: 14 }}>
+                {savingCustomer ? "저장 중…" : createdCustomerForFamilyRetry ? "가족 관계만 다시 저장" : mode === "new" ? "등록" : "변경사항 저장"}
               </button>
             </div>
+            {mode === "edit" && detail && (
+              <FamilyRelationships
+                customer={{ id: detail.id, name: detail.name }}
+                api={api}
+                onOpenCustomer={(related: FamilyCustomerSummary) => {
+                  if (!canOpenCustomer(related.id)) return;
+                  setFamilyBackTarget({ id: detail.id, name: detail.name });
+                  setSelectedId(related.id);
+                  setActiveTab("basic");
+                }}
+              />
+            )}
             </div>
           </>
         )}

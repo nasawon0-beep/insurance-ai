@@ -81,7 +81,7 @@ jobs:
             throw 'local-engine onedir executable/runtime is incomplete'
           }
           & local-engine/.venv/Scripts/python.exe -m PyInstaller.utils.cliutils.archive_viewer -l -r -b $Exe > local-engine-archive.txt
-          foreach ($Module in @('runtime_paths', 'database.coverage', 'database.coverage_analysis_parser', 'database.coverage_mapping')) {
+          foreach ($Module in @('runtime_paths', 'database.coverage', 'database.coverage_analysis_parser', 'database.coverage_mapping', 'database.family')) {
             if (-not (Select-String -LiteralPath local-engine-archive.txt -SimpleMatch $Module -Quiet)) {
               throw "required local-engine module missing: $Module"
             }

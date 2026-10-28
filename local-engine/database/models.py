@@ -6,9 +6,9 @@ py3.9 호환을 위해 `X | None` 대신 Optional 을 쓴다 (FastAPI/pydantic �
 """
 import re
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import rrn as _rrn
 
@@ -251,6 +251,57 @@ class CustomerPatch(BaseModel):
     @classmethod
     def _valid_frym(cls, v):
         return _check_first_registered_ym(v)
+
+
+class FamilyRelationshipIn(BaseModel):
+    related_customer_id: str = Field(..., min_length=1, max_length=128)
+    relationship: Literal["SPOUSE", "PARENT", "CHILD", "SIBLING", "OTHER"]
+    other_description: Optional[str] = Field(None, max_length=120)
+    co_parent_customer_id: Optional[str] = Field(None, min_length=1, max_length=128)
+    shared_child_ids: List[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("other_description")
+    @classmethod
+    def _safe_other_description(cls, value):
+        if value is None:
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        if any(ord(character) < 32 or character in "<>" for character in text):
+            raise ValueError("기타 관계 설명에는 줄바꿈, 제어문자, HTML 기호를 사용할 수 없습니다.")
+        return text
+
+    @field_validator("shared_child_ids")
+    @classmethod
+    def _unique_child_ids(cls, values):
+        if any(not str(value).strip() or len(str(value)) > 128 for value in values):
+            raise ValueError("올바른 자녀 고객 ID가 필요합니다.")
+        if len(set(values)) != len(values):
+            raise ValueError("같은 자녀를 중복 선택할 수 없습니다.")
+        return values
+
+    @model_validator(mode="after")
+    def _relationship_specific_fields(self):
+        if self.relationship == "OTHER" and not self.other_description:
+            raise ValueError("기타 관계 설명을 입력해 주세요.")
+        if self.relationship != "OTHER" and self.other_description:
+            raise ValueError("기타 관계에서만 설명을 입력할 수 있습니다.")
+        if self.relationship != "CHILD" and self.co_parent_customer_id:
+            raise ValueError("공동 자녀 선택은 자녀 관계에서만 사용할 수 있습니다.")
+        if self.relationship != "SPOUSE" and self.shared_child_ids:
+            raise ValueError("기존 자녀 함께 연결은 배우자 관계에서만 사용할 수 있습니다.")
+        return self
+
+
+class FamilyRelationshipBatchIn(BaseModel):
+    idempotency_key: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    relationships: List[FamilyRelationshipIn] = Field(..., min_length=1, max_length=100)
 
 
 class PolicyIn(BaseModel):

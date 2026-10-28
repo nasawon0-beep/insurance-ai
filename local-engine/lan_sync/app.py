@@ -12,6 +12,10 @@ from fastapi.responses import JSONResponse
 from .bridge import ProductionBridge
 from .store import AuthError, PairingRateLimitError, SyncStore, ValidationError
 
+SYNC_SCHEMA_VERSION = 2
+FAMILY_CAPABILITY = "family_relationship.v1"
+AVAILABLE_CAPABILITIES = (FAMILY_CAPABILITY,)
+
 
 def create_app(
     db_path: str | Path,
@@ -102,6 +106,13 @@ def create_app(
         ctx = auth(authorization)
         body = await request.json()
         try:
+            requested_schema = body.get("schema_version", 1)
+            capabilities = body.get("capabilities", [])
+            if type(requested_schema) is not int or requested_schema not in (1, SYNC_SCHEMA_VERSION):
+                raise ValidationError("unsupported sync schema version")
+            if not isinstance(capabilities, list) or any(not isinstance(item, str) for item in capabilities):
+                raise ValidationError("sync capabilities must be a string list")
+            family_enabled = requested_schema >= 2 and FAMILY_CAPABILITY in capabilities
             operations = body.get("operations", [])
             if bridge is not None and not operations:
                 bridge.refresh()
@@ -114,9 +125,16 @@ def create_app(
             pulled = store.pull(ctx, int(body.get("cursor", 0)), int(body.get("limit", 200)))
             if body.get("tombstone_acks"):
                 store.ack_tombstones(ctx, body["tombstone_acks"])
+            visible_changes = [
+                item for item in pulled.items
+                if family_enabled or item["entity_type"] != "family_relationship"
+            ]
             return {
+                "schema_version": requested_schema,
+                "available_capabilities": list(AVAILABLE_CAPABILITIES),
+                "active_capabilities": [FAMILY_CAPABILITY] if family_enabled else [],
                 "results": [asdict(item) for item in results],
-                "changes": pulled.items,
+                "changes": visible_changes,
                 "next_cursor": pulled.next_cursor,
                 "has_more": pulled.has_more,
                 "conflicts": store.list_conflicts(ctx),

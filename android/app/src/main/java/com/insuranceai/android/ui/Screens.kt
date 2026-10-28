@@ -22,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -77,6 +78,8 @@ fun CustomersScreen(
     selectedCustomerId: String?,
     onSelectedCustomerChange: (String?) -> Unit,
     onOpenPoliciesForCustomer: (String) -> Unit,
+    onOpenCoverageForCustomer: (String) -> Unit,
+    onOpenConsultationsForCustomer: (String) -> Unit,
     onOpenSync: () -> Unit,
     viewModel: CustomersViewModel = viewModel(),
 ) {
@@ -90,8 +93,10 @@ fun CustomersScreen(
     val policies by viewModel.policies.collectAsState()
     val analyses by viewModel.analyses.collectAsState()
     val consultations by viewModel.consultations.collectAsState()
+    val familyRelationships by viewModel.familyRelationships.collectAsState()
     var editing by remember { mutableStateOf<CustomerEntity?>(null) }
     var query by remember { mutableStateOf("") }
+    var customerFilter by remember { mutableStateOf("ALL") }
     var phone by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var memo by remember { mutableStateOf("") }
@@ -149,6 +154,7 @@ fun CustomersScreen(
         val customerPolicies = policies.filter { it.customerId == selectedCustomer.id }
         val customerAnalyses = analyses.filter { it.customerId == selectedCustomer.id }
         val customerConsultations = consultations.filter { it.customerId == selectedCustomer.id }
+        val familyRows = familyUiRows(selectedCustomer.id, customers, familyRelationships)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(onClick = { onSelectedCustomerChange(null) }) { Text("고객 목록으로") }
             Text(selectedCustomer.name, fontWeight = FontWeight.Bold)
@@ -161,6 +167,27 @@ fun CustomersScreen(
                 memo = fields.memo.orEmpty()
                 editing = selectedCustomer
             }) { Text("정보 수정") }
+            Text("가족", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (familyRows.isEmpty()) {
+                Text("연결된 가족이 없습니다.")
+            } else {
+                familyRows.forEach { family ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable {
+                            onSelectedCustomerChange(family.customerId)
+                        }.padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(family.customerLabel, fontWeight = FontWeight.Bold)
+                            Text(family.relationshipLabel)
+                        }
+                        Text("이동")
+                    }
+                    HorizontalDivider()
+                }
+            }
+            Text("가족 관계는 PC에서 편집할 수 있습니다.", style = MaterialTheme.typography.bodySmall)
             Text("계약 ${customerPolicies.size}건", fontWeight = FontWeight.Bold)
             customerPolicies.take(3).forEach { Text("${it.insurer ?: "보험사 미지정"} · ${it.productName ?: "상품명 미지정"} · ${policyStatusLabel(it.status)}") }
             if (customerPolicies.isEmpty()) Text("연결된 계약이 없습니다.")
@@ -170,9 +197,11 @@ fun CustomersScreen(
             ) { Text("이 고객 계약 보기") }
             Text("보장분석 ${customerAnalyses.size}건", fontWeight = FontWeight.Bold)
             customerAnalyses.firstOrNull()?.let { Text("최근 분석 · ${formatKoreanDateTime(it.generatedAt)}") } ?: Text("연결된 보장분석이 없습니다.")
+            TextButton(onClick = { onOpenCoverageForCustomer(selectedCustomer.id) }) { Text("이 고객 분석 보기") }
             Text("상담 ${customerConsultations.size}건", fontWeight = FontWeight.Bold)
             customerConsultations.take(3).forEach { Text("${formatKoreanDateTime(it.consultedAt)} · ${businessLabel(it.title ?: "상담")}") }
             if (customerConsultations.isEmpty()) Text("연결된 상담이 없습니다.")
+            TextButton(onClick = { onOpenConsultationsForCustomer(selectedCustomer.id) }) { Text("이 고객 상담 보기") }
         }
         return
     }
@@ -180,6 +209,11 @@ fun CustomersScreen(
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("모아둠 · 고객 목록") })
         OutlinedTextField(query, { query = it }, label = { Text("이름 또는 연락처 검색") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = customerFilter == "ALL", onClick = { customerFilter = "ALL" }, label = { Text("전체") })
+            FilterChip(selected = customerFilter == "ACTIVE", onClick = { customerFilter = "ACTIVE" }, label = { Text("활성") })
+            FilterChip(selected = customerFilter == "OTHER", onClick = { customerFilter = "OTHER" }, label = { Text("기타") })
+        }
         PcSyncSummaryCard(
             pendingCount = pendingCount,
             syncMessage = syncState?.lastError
@@ -188,7 +222,14 @@ fun CustomersScreen(
             onOpenSync = onOpenSync,
         )
         saveStatus?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
-        val filtered = customers.filter { query.isBlank() || it.name.contains(query, ignoreCase = true) || it.phone?.contains(query) == true }
+        val filtered = customers.filter {
+            val statusMatches = when (customerFilter) {
+                "ACTIVE" -> it.customerStatus == "ACTIVE"
+                "OTHER" -> it.customerStatus != "ACTIVE"
+                else -> true
+            }
+            statusMatches && (query.isBlank() || it.name.contains(query, ignoreCase = true) || it.phone?.contains(query) == true)
+        }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             if (filtered.isEmpty()) item { Text(if (query.isBlank()) "동기화된 고객이 없습니다." else "검색 결과가 없습니다.") }
             items(filtered, key = { it.id }) { item ->
@@ -415,7 +456,10 @@ internal fun PolicyDetailContent(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CoverageAnalysisScreen(viewModel: CoverageAnalysisViewModel = viewModel()) {
+fun CoverageAnalysisScreen(
+    selectedCustomerId: String? = null,
+    viewModel: CoverageAnalysisViewModel = viewModel(),
+) {
     val results by viewModel.results.collectAsState()
     val customers by viewModel.customers.collectAsState()
     val authenticationResumeId = LocalAuthenticationResumeId.current
@@ -472,10 +516,14 @@ fun CoverageAnalysisScreen(viewModel: CoverageAnalysisViewModel = viewModel()) {
     }
     val filtered = results.filter { item ->
         val customer = linkedCustomer(item.customerId, customers)
-        query.isBlank() || customer?.name?.contains(query, ignoreCase = true) == true || customer?.phone?.contains(query) == true
+        (selectedCustomerId == null || item.customerId == selectedCustomerId) &&
+            (query.isBlank() || customer?.name?.contains(query, ignoreCase = true) == true || customer?.phone?.contains(query) == true)
     }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("보장분석") })
+        selectedCustomerId?.let { id ->
+            Text("선택 고객 · ${linkedCustomer(id, customers)?.let(::customerChoice)?.label ?: "고객 정보 확인 중"}", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         OutlinedTextField(query, { query = it }, label = { Text("고객 이름 또는 연락처 검색") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
             if (filtered.isEmpty()) item { Text(if (query.isBlank()) "동기화된 보장분석이 없습니다." else "검색 결과가 없습니다.") }
@@ -502,7 +550,10 @@ fun CoverageAnalysisScreen(viewModel: CoverageAnalysisViewModel = viewModel()) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
+fun ConsultationsScreen(
+    selectedCustomerId: String? = null,
+    viewModel: ConsultationsViewModel = viewModel(),
+) {
     val consultations by viewModel.consultations.collectAsState()
     val customers by viewModel.customers.collectAsState()
     val saveStatus by viewModel.saveStatus.collectAsState()
@@ -511,7 +562,7 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
     var adding by remember { mutableStateOf(false) }
     var selectedConsultationId by remember { mutableStateOf<String?>(null) }
     var customerQuery by remember { mutableStateOf("") }
-    var selectedCustomerId by remember { mutableStateOf<String?>(null) }
+    var draftCustomerId by remember { mutableStateOf<String?>(selectedCustomerId) }
     var title by remember { mutableStateOf("") }
     var channel by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
@@ -543,7 +594,7 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
     }
 
     if (adding) {
-        val selectedCustomer = selectedCustomerId?.let { id -> customers.firstOrNull { it.id == id } }
+        val selectedCustomer = draftCustomerId?.let { id -> customers.firstOrNull { it.id == id } }
         val choices = filterCustomerChoices(customers, customerQuery).take(8)
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(16.dp),
@@ -559,7 +610,7 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
                 Text("선택할 고객이 없습니다. PC 동기화 후 다시 시도해 주세요.")
             } else if (selectedCustomer != null) {
                 DetailRow("선택한 고객", customerChoice(selectedCustomer).label)
-                TextButton(onClick = { selectedCustomerId = null }) { Text("고객 다시 선택") }
+                TextButton(onClick = { draftCustomerId = null }) { Text("고객 다시 선택") }
             } else {
                 OutlinedTextField(
                     customerQuery,
@@ -570,7 +621,7 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
                 if (choices.isEmpty()) Text("검색 결과가 없습니다.")
                 choices.forEach { choice ->
                     Card(Modifier.fillMaxWidth().clickable {
-                        selectedCustomerId = choice.customerId
+                        draftCustomerId = choice.customerId
                         validation = null
                     }) {
                         Text(choice.label, Modifier.padding(12.dp))
@@ -599,7 +650,7 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
                             content = ""
                             followUpAt = ""
                             customerQuery = ""
-                            selectedCustomerId = null
+                            draftCustomerId = null
                             adding = false
                         }
                     }
@@ -611,12 +662,16 @@ fun ConsultationsScreen(viewModel: ConsultationsViewModel = viewModel()) {
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("상담 기록") })
+        selectedCustomerId?.let { id ->
+            Text("선택 고객 · ${linkedCustomer(id, customers)?.let(::customerChoice)?.label ?: "고객 정보 확인 중"}", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         Button(onClick = { adding = true }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) { Text("상담 추가") }
         OutlinedTextField(listQuery, { listQuery = it }, label = { Text("고객·업무 검색") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
         saveStatus?.let { Text(it, Modifier.padding(16.dp)) }
         val filtered = consultations.filter { item ->
             val customer = linkedCustomer(item.customerId, customers)
-            listQuery.isBlank() || listOf(customer?.name, customer?.phone, item.title, item.channel).filterNotNull().any { it.contains(listQuery, ignoreCase = true) }
+            (selectedCustomerId == null || item.customerId == selectedCustomerId) &&
+                (listQuery.isBlank() || listOf(customer?.name, customer?.phone, item.title, item.channel).filterNotNull().any { it.contains(listQuery, ignoreCase = true) })
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             if (filtered.isEmpty()) item { Text(if (listQuery.isBlank()) "저장된 상담이 없습니다." else "검색 결과가 없습니다.") }
@@ -661,6 +716,7 @@ fun SyncScreen(
     val registered by viewModel.registered.collectAsState()
     val connectionLabel by viewModel.connectionLabel.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
+    val pendingCount by viewModel.pendingCount.collectAsState()
     val deleteConfirmation = remember { MissingCustomerDeleteConfirmationCoordinator() }
     val deleteTarget by deleteConfirmation.target.collectAsState()
     var endpoint by remember { mutableStateOf("") }
@@ -670,6 +726,7 @@ fun SyncScreen(
     var movedEndpoint by remember { mutableStateOf("") }
     var movedPin by remember { mutableStateOf("") }
     var movedPinConfirmed by remember { mutableStateOf(false) }
+    var advanced by remember { mutableStateOf(false) }
     LaunchedEffect(pairingState.codeConsumed) {
         if (pairingState.codeConsumed) code = ""
     }
@@ -691,18 +748,24 @@ fun SyncScreen(
                 if (registered) Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) "기존 연결 복구 필요" else "등록된 PC", fontWeight = FontWeight.Bold)
-                        Text(connectionLabel)
-                        Text(when (tlsBindingState) {
-                            TlsBindingState.READY -> "자동 주소 전환 준비 완료"
-                            TlsBindingState.PENDING -> "자동 주소 전환 준비 중 · 다른 활성 기기도 업데이트가 필요할 수 있습니다"
-                            TlsBindingState.FAILED -> "자동 주소 전환 준비 실패 · 연결은 유지되며 다시 동기화해 주세요"
-                            TlsBindingState.NOT_REQUIRED -> "자동 주소 전환 정보 미등록"
-                        })
+                        Text("등록된 PC")
+                        Text(if (registrationState == ConnectionRegistrationState.ACTIVE) "연결 준비됨" else "연결 복구 필요")
                         Text("최근 동기화 · ${formatKoreanDateTime(syncState?.lastSuccessAt)}")
+                        Text(pendingSyncSummary(pendingCount))
                         if (registrationState == ConnectionRegistrationState.RECOVERY_REQUIRED) {
                             Text("PC에서 연결이 해제되었거나 인증 정보를 다시 확인해야 합니다. 기존 저장 자료와 미전송 자료는 그대로 유지됩니다.")
                         } else {
-                            Text("등록 정보와 인증서 확인을 재사용하므로 연결할 때마다 새 코드를 받을 필요가 없습니다.")
+                            Text("등록 정보는 안전하게 보관되며 같은 PC에 자동으로 다시 연결합니다.")
+                        }
+                        TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "고급 설정 닫기" else "고급 설정") }
+                        if (advanced) {
+                            Text("PC 주소 · $connectionLabel")
+                            Text(when (tlsBindingState) {
+                                TlsBindingState.READY -> "인증서 신뢰 이전 준비 완료"
+                                TlsBindingState.PENDING -> "인증서 신뢰 이전 준비 중"
+                                TlsBindingState.FAILED -> "인증서 신뢰 이전 준비 실패 · 연결은 유지됩니다"
+                                TlsBindingState.NOT_REQUIRED -> "인증서 신뢰 이전 정보 미등록"
+                            })
                         }
                     }
                 } else Card(Modifier.fillMaxWidth()) {
@@ -749,7 +812,7 @@ fun SyncScreen(
                 }
             }
             item {
-                if (registered && registrationState == ConnectionRegistrationState.ACTIVE) Card(Modifier.fillMaxWidth()) {
+                if (advanced && registered && registrationState == ConnectionRegistrationState.ACTIVE) Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("PC 주소 변경 복구", fontWeight = FontWeight.Bold)
                         Text("처음 등록을 다시 하지 않습니다. PC 화면의 새 주소와 인증서 확인값을 직접 대조한 경우에만 기존 연결과 미해결 항목을 확인합니다.")

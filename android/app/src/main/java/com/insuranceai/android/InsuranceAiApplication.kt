@@ -5,6 +5,7 @@ import com.insuranceai.android.data.ConsultationRepository
 import com.insuranceai.android.data.CoverageAnalysisRepository
 import com.insuranceai.android.data.CustomerRepository
 import com.insuranceai.android.data.PolicyRepository
+import com.insuranceai.android.data.FamilyRelationshipRepository
 import com.insuranceai.android.data.local.AppDatabase
 import com.insuranceai.android.security.EncryptionService
 import com.insuranceai.android.security.AuthenticationGate
@@ -43,6 +44,9 @@ class AppContainer(application: Application) {
     }
     val policyRepository: PolicyRepository by lazy {
         PolicyRepository(database, encryptionService)
+    }
+    val familyRelationshipRepository: FamilyRelationshipRepository by lazy {
+        FamilyRelationshipRepository(database)
     }
     val consultationRepository: ConsultationRepository by lazy {
         ConsultationRepository(database, encryptionService, postCommitSync)

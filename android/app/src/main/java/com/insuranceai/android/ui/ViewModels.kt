@@ -38,6 +38,7 @@ class CustomersViewModel(application: Application) : AndroidViewModel(applicatio
     private val policyRepository = container.policyRepository
     private val analysisRepository = container.coverageAnalysisRepository
     private val consultationRepository = container.consultationRepository
+    private val familyRelationshipRepository = container.familyRelationshipRepository
     val customers: StateFlow<List<CustomerEntity>> = repository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val pendingCount: StateFlow<Int> = syncRepository.observePendingCount()
@@ -53,6 +54,8 @@ class CustomersViewModel(application: Application) : AndroidViewModel(applicatio
     val analyses = analysisRepository.observeResults()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val consultations = consultationRepository.observeConsultations()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val familyRelationships = familyRelationshipRepository.observeRelationships()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val saveStatus = MutableStateFlow<String?>(null)
     val saving = MutableStateFlow(false)
@@ -185,6 +188,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     val connectionLabel = MutableStateFlow(repository.connectionLabel())
     val syncState: StateFlow<SyncStateEntity?> = repository.observeState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    val pendingCount: StateFlow<Int> = repository.observePendingCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     init {
         viewModelScope.launch {

@@ -7,6 +7,7 @@ import com.insuranceai.android.data.local.CoverageAnalysisEntity
 import com.insuranceai.android.data.local.CustomerEntity
 import com.insuranceai.android.data.local.PolicyEntity
 import com.insuranceai.android.data.local.PolicyCoverageEntity
+import com.insuranceai.android.data.local.FamilyRelationshipEntity
 import com.insuranceai.android.data.local.SYNC_PENDING
 import com.insuranceai.android.data.local.SyncOutboxEntity
 import com.insuranceai.android.data.local.nowIso
@@ -89,6 +90,10 @@ class PolicyRepository(
     )
 
     fun rawCoverage(item: PolicyCoverageEntity): String = encryptionService.decrypt(item.rawPayloadEncrypted)
+}
+
+class FamilyRelationshipRepository(private val database: AppDatabase) {
+    fun observeRelationships(): Flow<List<FamilyRelationshipEntity>> = database.familyRelationshipDao().observeAll()
 }
 
 data class CoverageAnalysisView(val id: String, val customerId: String, val summaryJson: String, val generatedAt: String)

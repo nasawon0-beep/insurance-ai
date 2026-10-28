@@ -78,10 +78,18 @@ fun linkedCustomer(customerId: String, customers: List<CustomerEntity>): Custome
 fun selectPolicyById(policies: List<PolicyEntity>, policyId: String): PolicyEntity? =
     policies.firstOrNull { it.id == policyId }
 
-fun policiesInScope(policies: List<PolicyEntity>, state: PolicyBrowseState): List<PolicyEntity> = when {
-    state.showAllPolicies -> policies
-    state.customerId != null -> policies.filter { it.customerId == state.customerId }
-    else -> emptyList()
+fun policiesInScope(policies: List<PolicyEntity>, state: PolicyBrowseState): List<PolicyEntity> {
+    val scoped = when {
+        state.showAllPolicies -> policies
+        state.customerId != null -> policies.filter { it.customerId == state.customerId }
+        else -> emptyList()
+    }
+    return scoped.sortedWith(
+        compareByDescending<PolicyEntity> { it.premium != null }
+            .thenByDescending { it.premium ?: Int.MIN_VALUE }
+            .thenBy { it.productName.orEmpty() }
+            .thenBy { it.id }
+    )
 }
 
 fun selectedPolicyInScope(policies: List<PolicyEntity>, state: PolicyBrowseState): PolicyEntity? =
