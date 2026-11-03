@@ -81,7 +81,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
       setShowRecovery(false);
       setMode("login");
       setErr(null);
-      setMsg(central ? "새 비밀번호를 설정했습니다. 모아둠 계정으로 로그인한 뒤 설정에서 이 PC 계정을 연결하세요." : "새 비밀번호를 설정했습니다. 로그인해 주세요.");
+      setMsg("새 비밀번호를 설정했습니다. 로그인해 주세요.");
     } catch (e) {
       setRecoveryErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -180,8 +180,9 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
           {central && provider === "local" && (
             <p className="text-secondary" role="note" style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-3)" }}>
-              이 PC 기존 계정만으로는 로그인할 수 없습니다. 모아둠 계정으로 로그인한 뒤 설정 &gt; '이 PC 기존 계정 연결'에서 연결하세요.
-              고객 자료는 이 PC에 그대로 있습니다. 연결할 계정의 비밀번호를 잊었다면 아래 '비밀번호를 잊으셨나요?'로 재설정할 수 있습니다.
+              이 PC 기존 계정으로 로그인하면 '자료 보존 모드'로 열립니다: 기존 고객 자료 조회와 내보내기만 할 수 있고,
+              새 등록·수정·분석·AI 기능은 모아둠 계정으로 로그인해야 합니다. 이 PC 계정 비밀번호를 잊었다면 모아둠 계정으로
+              로그인하세요(같은 PC의 고객 자료가 그대로 보입니다).
             </p>
           )}
 
@@ -227,8 +228,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
               이메일 기억하기
             </label>
 
-            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy || (central && provider === "local")}>
-              {busy ? "처리 중..." : mode === "login" ? "로그인" : "가입하고 시작"}
+            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy}>
+              {busy ? "처리 중..." : mode === "login" ? (central && provider === "local" ? "자료 보존 모드로 열기" : "로그인") : "가입하고 시작"}
             </button>
           </form>
 
@@ -244,8 +245,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             </div>
           )}
 
-          {/* 비밀번호 복구 */}
-          {!showRecovery ? (
+          {/* 비밀번호 복구 — 중앙 빌드의 이 PC 계정은 인증 없는 로컬 재설정을 쓰지 않는다(서버도 차단) */}
+          {central && provider === "local" ? null : !showRecovery ? (
             <button
               type="button"
               onClick={openRecovery}

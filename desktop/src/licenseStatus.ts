@@ -167,5 +167,17 @@ export const CENTRAL_ACCOUNT_REQUIRED_MESSAGE =
 export function localSessionAllowed(centralBuild: boolean): boolean {
   return !centralBuild;
 }
+
+/**
+ * 앱 접근 방식. 중앙 회원 빌드에서 '이 PC 기존 계정'으로 로그인하면 이용권 없이
+ * 기존 고객 자료 조회·내보내기만 하는 '자료 보존 모드'(readonly)로 연다. 그 외는 이용권(license) 판정.
+ */
+export type AppAccessMode = "license" | "readonly";
+export function appAccessMode(centralBuild: boolean, provider: "central" | "local" | null): AppAccessMode {
+  return centralBuild && provider === "local" ? "readonly" : "license";
+}
+
+export const LEGACY_READONLY_NOTICE =
+  "자료 보존 모드 — 이 PC 기존 계정으로 로그인했습니다. 기존 고객 자료 조회와 내보내기만 할 수 있습니다. 새 등록·수정·분석·AI 기능은 모아둠 계정으로 로그인해야 합니다.";
 export const SERVER_UNREACHABLE_MESSAGE =
   "인증 서버에 연결할 수 없고, 오프라인 사용 가능 기간도 지났습니다. 앱을 다시 시작하거나 다시 로그인하세요. 이용 기간 만료가 아니며 고객 자료는 그대로 있습니다.";

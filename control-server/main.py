@@ -159,6 +159,11 @@ def require_local_recovery(request: Request) -> None:
     if not _local_recovery_enabled():
         print(f"local-recovery denied: peer={peer} reason=flag", file=sys.stderr)
         raise HTTPException(status_code=404)
+    if _central_url():
+        # 중앙 회원 빌드: 이 PC 계정은 '자료 보존 모드'(조회·내보내기) 로그인 근거가 되므로, 인증 없는 로컬
+        # 비밀번호 재설정으로 남의 PC 계정을 열 수 없게 막는다. 비밀번호를 잊었으면 모아둠 계정으로 로그인한다.
+        print(f"local-recovery denied: peer={peer} reason=central", file=sys.stderr)
+        raise HTTPException(status_code=404)
     if any(h in request.headers for h in _FWD_HEADERS):
         print(f"local-recovery denied: peer={peer} reason=forwarded", file=sys.stderr)
         raise HTTPException(status_code=404)

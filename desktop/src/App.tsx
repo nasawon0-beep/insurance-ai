@@ -22,9 +22,12 @@ import {
   removeDevice,
   resolveLicense,
   resolveLicenseStatus,
+  resolveLegacyReadonlySession,
   rrnEnabled,
 } from "./auth";
-import { fmtKst, licenseNotice, licenseRows, type LicenseState } from "./licenseStatus";
+import { appAccessMode, fmtKst, licenseNotice, licenseRows, type LicenseState } from "./licenseStatus";
+import { centralEnabled } from "./centralConfig";
+import LegacyReadonlyView from "./LegacyReadonlyView";
 import CentralAccountPanel from "./CentralAccountPanel";
 import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
@@ -2420,7 +2423,8 @@ function StartupScreen({ state, onRetry, onRelaunch }: { state: StartupState; on
 }
 
 function App() {
-  const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
+  const [auth, setAuth] = useState<"checking" | "in" | "out" | "readonly">("checking");
+  const [readonlyEmail, setReadonlyEmail] = useState("");
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => localStorage.getItem("iai.ollamaOnboardingDone") !== "1" && localStorage.getItem("iai.ollamaOnboardingSkipped") !== "1",
   );
@@ -2580,6 +2584,24 @@ function App() {
       track("app_open");
       if (!isSignedIn()) {
         setAuth("out");
+        setStartup({
+          status: "ready",
+          message: "시작 완료",
+          steps: [
+            { label: "백엔드 연결 완료", done: true },
+            { label: "데이터 로딩 완료", done: true },
+            { label: "시작 완료", done: true },
+          ],
+          logPath,
+        });
+        return;
+      }
+      if (appAccessMode(centralEnabled(), getAuthProvider()) === "readonly") {
+        // 중앙 회원 빌드 + 이 PC 기존 계정: 이용권 판정 없이 '자료 보존 모드'(조회·내보내기)만. 세션은 control-server가 확인.
+        const ro = await resolveLegacyReadonlySession();
+        setAuthNotice(ro.kind === "readonly" ? null : ro.message);
+        if (ro.kind === "readonly") setReadonlyEmail(ro.user.email);
+        setAuth(ro.kind === "readonly" ? "readonly" : "out");
         setStartup({
           status: "ready",
           message: "시작 완료",
@@ -2813,6 +2835,9 @@ function App() {
         <LoginScreen onLogin={boot} />
       </>
     );
+  }
+  if (auth === "readonly") {
+    return <LegacyReadonlyView email={readonlyEmail} onLogout={() => { logout(); setAuth("out"); }} />;
   }
   if (needsOnboarding) {
     return <OnboardingScreen onComplete={() => void finishOnboardingAndConnectEngine()} onOllamaInstalled={() => undefined} />;

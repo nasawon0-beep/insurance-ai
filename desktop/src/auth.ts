@@ -15,6 +15,7 @@ import { formatErrorDetail } from "./errorDetail";
 import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature";
 import {
+  appAccessMode,
   CENTRAL_ACCOUNT_REQUIRED_MESSAGE,
   type LicenseResolution,
   type LicenseState,
@@ -241,9 +242,16 @@ export async function authenticate(
   provider: AuthProvider = centralEnabled() ? "central" : "local",
 ): Promise<AuthenticateResult> {
   if (provider === "central") return authenticateCentral(mode, email, password);
-  // 중앙 회원 빌드: 이 PC 기존 계정만으로는 로그인 세션을 만들지 않는다(로컬 이용권 우회 차단).
-  // 기존 계정 연결은 모아둠 계정 로그인 후 linkLocalAccount()에서만 로컬 비밀번호를 확인한다.
-  if (!localSessionAllowed(centralEnabled())) throw new Error(CENTRAL_ACCOUNT_REQUIRED_MESSAGE);
+  // 중앙 회원 빌드: 이 PC 기존 계정은 이용권 근거가 아니다(로컬 이용권 우회 차단).
+  // 로그인만 허용해 '자료 보존 모드'(기존 자료 조회·내보내기) 세션을 만든다. 가입·기기 등록·이용권 발급 없음.
+  if (!localSessionAllowed(centralEnabled())) {
+    if (mode !== "login") throw new Error(CENTRAL_ACCOUNT_REQUIRED_MESSAGE);
+    const legacy = await call("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+    localStorage.setItem(LS.provider, "local");
+    localStorage.setItem(LS.token, legacy.token);
+    localStorage.setItem(LS.user, JSON.stringify(legacy.user));
+    return { user: legacy.user as User, requiresEmailConfirmation: false };
+  }
   const r = await call(`/auth/${mode}`, {
     method: "POST",
     body: JSON.stringify({ email, password }),
@@ -376,6 +384,28 @@ export async function resolveLicense(): Promise<{
 } | null> {
   const r = await resolveLicenseStatus();
   return r.kind === "ok" ? { state: r.state, offline: r.offline } : null;
+}
+
+/** 중앙 회원 빌드의 '자료 보존 모드' 세션 확인(이 PC 계정). 이용권을 만들지 않고, 로컬 자료는 건드리지 않는다. */
+export async function resolveLegacyReadonlySession(): Promise<
+  { kind: "readonly"; user: User } | { kind: "login_required"; message: string } | { kind: "server_unreachable"; message: string }
+> {
+  // 자료 보존 모드: control-server가 이 PC 계정 세션(로컬 비밀번호 로그인 결과)을 지금 다시 확인한 경우만.
+  // 저장된 사용자 정보·로컬 이용권 캐시만으로는 열지 않는다.
+  if (appAccessMode(centralEnabled(), getAuthProvider()) !== "readonly" || !getToken()) {
+    return { kind: "login_required", message: CENTRAL_ACCOUNT_REQUIRED_MESSAGE };
+  }
+  try {
+    await waitForControlServer(5000);
+    const me = await call("/auth/me");
+    if (!me?.user?.id) return { kind: "login_required", message: LOGIN_REQUIRED_MESSAGE };
+    return { kind: "readonly", user: { id: me.user.id, email: me.user.email } as User };
+  } catch (e) {
+    if (e instanceof ControlHttpError && (e.status === 401 || e.status === 403)) {
+      return { kind: "login_required", message: LOGIN_REQUIRED_MESSAGE };
+    }
+    return { kind: "server_unreachable", message: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** 만료/로그인 필요/서버 연결 실패를 구분해서 돌려준다. 어떤 경우에도 로컬 자료는 건드리지 않는다. */
