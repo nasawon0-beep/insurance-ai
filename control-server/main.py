@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sys
 import uuid
@@ -220,6 +221,9 @@ def _issue(conn, row) -> dict:
 
 @app.post("/auth/register")
 def register(body: Credentials, conn=Depends(get_conn)):
+    if _central_url():
+        # 중앙 회원(모아둠 계정)이 설정된 빌드는 이 PC 전용 신규 가입을 열지 않는다(가입 체계 하나).
+        raise HTTPException(status_code=403, detail="새 가입은 모아둠 계정으로 해 주세요. 기존 이 PC 계정 로그인은 그대로 됩니다.")
     email = body.email.strip().lower()
     if conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
         raise HTTPException(status_code=409, detail="이미 가입된 이메일입니다.")
@@ -342,6 +346,17 @@ def _license_state(conn, uid: str) -> dict:
 
 @app.get("/license")
 def get_license(user=Depends(current_user), conn=Depends(get_conn)):
+    if _central_url():
+        # 중앙 회원 빌드: 이용권은 모아둠 계정(Ed25519 서명)으로만 판정한다. 이 PC 기존 계정의 로컬 서명
+        # 이용권을 내주면 중앙 이용권을 우회하므로 발급하지 않는다. 계정·고객 자료는 그대로 두고,
+        # 로컬 비밀번호 확인(/auth/login)은 '모아둠 계정 로그인 후 연결'에만 쓰인다.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "central_account_required",
+                "message": "이 PC 기존 계정만으로는 사용할 수 없습니다. 모아둠 계정으로 로그인하세요. 고객 자료는 그대로 있습니다.",
+            },
+        )
     state = _license_state(conn, user["sub"])
     # 오프라인 유예용 서명 블롭 동봉 — 클라이언트가 저장해두고 오프라인 시 사용
     return {**state, "signed": sign_license({**state, "user_id": user["sub"]})}
@@ -425,6 +440,81 @@ def delete_device(did: str, user=Depends(current_user), conn=Depends(get_conn)):
     conn.commit()
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="기기를 찾을 수 없습니다.")
+
+
+# ---------- central account link (모아둠 계정 ↔ 이 PC 기존 계정) ----------
+# 양쪽을 각각 서버가 확인한다: 로컬 계정은 이 서버의 JWT(비밀번호 로그인 결과), 중앙 계정은
+# Supabase Auth /auth/v1/user 응답. 이메일 문자열만으로 연결하지 않는다. 고객 자료는 이동하지 않는다.
+
+def _central_url() -> str:
+    url = os.environ.get("CONTROL_CENTRAL_URL", "").strip().rstrip("/")
+    if url.startswith("https://"):
+        return url
+    # 공식 QA 프로필(앱이 INSURANCE_AI_QA_MODE=1을 줄 때)에서만 로컬 대역 서버 허용
+    if os.environ.get("INSURANCE_AI_QA_MODE") == "1" and re.fullmatch(r"http://127\.0\.0\.1:\d+", url):
+        return url
+    return ""
+
+
+def _verify_central_token(token: str) -> dict:
+    import urllib.error
+    import urllib.request
+
+    url = _central_url()
+    key = os.environ.get("CONTROL_CENTRAL_PUBLISHABLE_KEY", "").strip()
+    if not url or not key:
+        raise HTTPException(status_code=503, detail="중앙 회원 설정이 없는 빌드입니다.")
+    req = urllib.request.Request(
+        f"{url}/auth/v1/user", headers={"apikey": key, "Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            data = json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise HTTPException(status_code=401, detail="모아둠 계정 로그인이 만료되었습니다. 다시 로그인하세요.")
+        raise HTTPException(status_code=502, detail="모아둠 계정 서버 확인에 실패했습니다.")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise HTTPException(status_code=503, detail="모아둠 계정 서버에 연결할 수 없습니다.")
+    uid, email = str(data.get("id") or ""), str(data.get("email") or "")
+    if not uid or not email:
+        raise HTTPException(status_code=502, detail="모아둠 계정 정보를 확인할 수 없습니다.")
+    if not data.get("email_confirmed_at"):
+        raise HTTPException(status_code=403, detail="모아둠 계정의 이메일 확인이 필요합니다.")
+    return {"id": uid, "email": email.lower()}
+
+
+@app.post("/central-link")
+def central_link(body: dict, user=Depends(current_user), conn=Depends(get_conn)):
+    token = str(body.get("central_access_token") or "")
+    if not token:
+        raise HTTPException(status_code=422, detail="모아둠 계정 로그인이 필요합니다.")
+    central = _verify_central_token(token)
+    local_id = user["sub"]
+    row = conn.execute("SELECT * FROM central_links WHERE local_user_id = ?", (local_id,)).fetchone()
+    if row and row["central_user_id"] != central["id"]:
+        raise HTTPException(status_code=409, detail="이 PC 계정은 이미 다른 모아둠 계정에 연결되어 있습니다.")
+    other = conn.execute(
+        "SELECT local_user_id FROM central_links WHERE central_user_id = ?", (central["id"],)
+    ).fetchone()
+    if other and other["local_user_id"] != local_id:
+        raise HTTPException(status_code=409, detail="이 모아둠 계정은 이미 이 PC의 다른 계정에 연결되어 있습니다.")
+    if not row:
+        conn.execute(
+            "INSERT INTO central_links (local_user_id, central_user_id, central_email, linked_at) VALUES (?, ?, ?, ?)",
+            (local_id, central["id"], central["email"], _now()),
+        )
+        conn.commit()
+    local_email = conn.execute("SELECT email FROM users WHERE id = ?", (local_id,)).fetchone()["email"]
+    return {"linked": True, "local_email": local_email, "central_email": central["email"]}
+
+
+@app.get("/central-link")
+def central_link_status(user=Depends(current_user), conn=Depends(get_conn)):
+    row = conn.execute(
+        "SELECT central_email, linked_at FROM central_links WHERE local_user_id = ?", (user["sub"],)
+    ).fetchone()
+    return {"link": dict(row) if row else None}
 
 
 # ---------- update ----------

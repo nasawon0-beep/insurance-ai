@@ -14,6 +14,18 @@ import { engineFetch } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature";
+import {
+  CENTRAL_ACCOUNT_REQUIRED_MESSAGE,
+  type LicenseResolution,
+  type LicenseState,
+  LOGIN_REQUIRED_MESSAGE,
+  localSessionAllowed,
+  SERVER_UNREACHABLE_MESSAGE,
+} from "./licenseStatus";
+import { CENTRAL_ACCOUNT_URL, CENTRAL_LICENSE_ENDPOINT, CENTRAL_LICENSE_PUBLIC_KEYS, CENTRAL_PUBLISHABLE_KEY, CENTRAL_RESET_URL, CENTRAL_SIGNUP_OPEN, centralEnabled } from "./centralConfig";
+import { centralClient } from "./centralClient";
+import { type LicenseFetchResult, resolveCentralLicenseWith } from "./centralLicenseFlow";
+import type { SignedCentralLicense } from "./licenseToken";
 
 export { CONTROL_URL };
 
@@ -26,20 +38,43 @@ type NativeControlResponse = {
 };
 
 type User = { id: string; email: string };
-type LicenseState = {
-  plan: string;
-  device_limit: number;
-  expiry: string | null;
-  status: string;
-  days_left: number | null;
-};
+
+/** control-server HTTP 오류 — 상태코드로 로그인 필요(401)와 서버 오류를 구분한다. */
+export class ControlHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ControlHttpError";
+    this.status = status;
+  }
+}
 const LS = {
   token: "iai.token",
   user: "iai.user",
   license: "iai.license.signed",
   deviceId: "iai.device_id",
   mono: "iai.mono_ts", // 단조 증가 타임스탬프 (초)
+  provider: "iai.auth_provider", // "central" | "local"
+  centralLicense: "moadoom.central.license",
 };
+
+export type AuthProvider = "central" | "local";
+
+/** 현재 로그인 방식. 기존 설치본의 로컬 세션은 명시적으로 바꾸기 전까지 그대로 로컬로 본다. */
+export function getAuthProvider(): AuthProvider | null {
+  const v = localStorage.getItem(LS.provider);
+  if (v === "central" && centralEnabled()) return "central";
+  if (v === "local") return "local";
+  return localStorage.getItem(LS.token) ? "local" : null;
+}
+
+/** 부팅 시 로그인 화면을 건너뛸 수 있는지(세션 또는 오프라인 판정 근거가 있는지). */
+export function isSignedIn(): boolean {
+  const provider = getAuthProvider();
+  if (provider === "local") return !!localStorage.getItem(LS.token);
+  if (provider === "central") return !!getUser();
+  return false;
+}
 
 function nowSec() {
   return Math.floor(Date.now() / 1000);
@@ -116,12 +151,22 @@ async function call(path: string, init?: RequestInit) {
       status: res.status,
       detail: b?.detail ?? null,
     });
-    throw new Error(formatErrorDetail(b?.detail) ?? `HTTP ${res.status}`);
+    throw new ControlHttpError(formatErrorDetail(b?.detail) ?? `HTTP ${res.status}`, res.status);
   }
   return res.status === 204 ? null : res.json();
 }
 
 export async function changePassword(current_password: string, new_password: string) {
+  if (getAuthProvider() === "central") {
+    const sb = centralClient();
+    const me = getUser();
+    // 현재 비밀번호 재확인 후 변경
+    const check = await sb.auth.signInWithPassword({ email: me?.email ?? "", password: current_password });
+    if (check.error) throw new Error("현재 비밀번호가 올바르지 않습니다.");
+    const { error } = await sb.auth.updateUser({ password: new_password });
+    if (error) throw new Error(error.message);
+    return { changed: true };
+  }
   return call("/auth/change-password", {
     method: "POST",
     body: JSON.stringify({ current_password, new_password }),
@@ -150,15 +195,60 @@ export async function resetLocalPassword(email: string, new_password: string) {
 }
 
 export async function fetchMe(): Promise<{ id: string; email: string; created_at?: string }> {
+  if (getAuthProvider() === "central") {
+    const { data, error } = await centralClient().auth.getUser();
+    if (error || !data.user?.email) throw new Error(error?.message ?? "회원 정보를 확인할 수 없습니다.");
+    return { id: data.user.id, email: data.user.email, created_at: data.user.created_at };
+  }
   const r = await call("/auth/me");
   return r.user;
 }
 
-export async function authenticate(mode: "login" | "register", email: string, password: string) {
+export type AuthenticateResult = { user: User | null; requiresEmailConfirmation: boolean };
+
+/** 중앙(모아둠 계정) 로그인/가입. 가입은 확인 메일을 거쳐야 로그인된다. */
+async function authenticateCentral(mode: "login" | "register", email: string, password: string): Promise<AuthenticateResult> {
+  const sb = centralClient();
+  if (mode === "register") {
+    if (!CENTRAL_SIGNUP_OPEN) throw new Error("모아둠 계정 신규 가입은 아직 열리지 않았습니다. 기존 계정으로 로그인하세요.");
+    const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: CENTRAL_ACCOUNT_URL } });
+    if (error) throw new Error(error.message);
+    if (!data.session) return { user: null, requiresEmailConfirmation: true };
+  } else {
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      if (/email not confirmed/i.test(error.message)) {
+        throw new Error("이메일 확인이 끝나지 않았습니다. 가입 확인 메일의 링크를 누른 뒤 다시 로그인하세요.");
+      }
+      throw new Error(/invalid login credentials/i.test(error.message) ? "이메일 또는 비밀번호가 올바르지 않습니다." : error.message);
+    }
+  }
+  // 로컬 캐시가 아니라 Auth 서버가 확인한 사용자 정보를 쓴다.
+  const { data, error } = await sb.auth.getUser();
+  if (error || !data.user?.email) throw new Error("회원 정보를 확인할 수 없습니다.");
+  const user = { id: data.user.id, email: data.user.email };
+  const previous = getUser();
+  if (previous?.id !== user.id) localStorage.removeItem(LS.centralLicense); // 다른 회원의 캐시 재사용 금지
+  localStorage.setItem(LS.provider, "central");
+  localStorage.setItem(LS.user, JSON.stringify(user));
+  return { user, requiresEmailConfirmation: false };
+}
+
+export async function authenticate(
+  mode: "login" | "register",
+  email: string,
+  password: string,
+  provider: AuthProvider = centralEnabled() ? "central" : "local",
+): Promise<AuthenticateResult> {
+  if (provider === "central") return authenticateCentral(mode, email, password);
+  // 중앙 회원 빌드: 이 PC 기존 계정만으로는 로그인 세션을 만들지 않는다(로컬 이용권 우회 차단).
+  // 기존 계정 연결은 모아둠 계정 로그인 후 linkLocalAccount()에서만 로컬 비밀번호를 확인한다.
+  if (!localSessionAllowed(centralEnabled())) throw new Error(CENTRAL_ACCOUNT_REQUIRED_MESSAGE);
   const r = await call(`/auth/${mode}`, {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+  localStorage.setItem(LS.provider, "local");
   localStorage.setItem(LS.token, r.token);
   localStorage.setItem(LS.user, JSON.stringify(r.user));
   // 기기 등록 (실패해도 로그인은 유지 — 초과 시 메시지만)
@@ -174,11 +264,84 @@ export async function authenticate(mode: "login" | "register", email: string, pa
   } catch (e) {
     console.warn("device register:", e);
   }
-  return r.user as User;
+  return { user: r.user as User, requiresEmailConfirmation: false };
 }
 
+/** 로그아웃: 세션/캐시만 지운다. 고객 자료(local-engine DB/PDF)는 건드리지 않는다. */
 export function logout() {
-  [LS.token, LS.user, LS.license, "iai.settings"].forEach((k) => localStorage.removeItem(k));
+  if (getAuthProvider() === "central") {
+    void centralClient().auth.signOut({ scope: "local" }).catch(() => undefined);
+  }
+  [LS.token, LS.user, LS.license, LS.provider, LS.centralLicense, "iai.settings"].forEach((k) => localStorage.removeItem(k));
+}
+
+/** 비밀번호 재설정 메일 요청(중앙 계정). 메일의 링크는 사이트 재설정 화면으로 간다. */
+export async function requestCentralPasswordReset(email: string): Promise<void> {
+  const { error } = await centralClient().auth.resetPasswordForEmail(email, { redirectTo: CENTRAL_RESET_URL });
+  if (error) throw new Error(error.message);
+}
+
+async function fetchCentralLicense(accessToken: string): Promise<LicenseFetchResult> {
+  let res: Response;
+  try {
+    res = await fetch(CENTRAL_LICENSE_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        apikey: CENTRAL_PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (e) {
+    return { kind: "network", message: e instanceof Error ? e.message : String(e) };
+  }
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.license) return { kind: "http", status: res.status, error: body?.error };
+  return { kind: "ok", license: body.license as SignedCentralLicense };
+}
+
+function resolveCentralLicense(): Promise<LicenseResolution> {
+  return resolveCentralLicenseWith({
+    async getSession() {
+      const sb = centralClient();
+      const { data } = await sb.auth.getSession();
+      const s = data.session;
+      if (!s?.access_token || !s.user?.email) return null;
+      return { accessToken: s.access_token, userId: s.user.id, email: s.user.email };
+    },
+    fetchLicense: fetchCentralLicense,
+    cachedUser: () => getUser(),
+    readCache() {
+      try {
+        return JSON.parse(localStorage.getItem(LS.centralLicense) || "null");
+      } catch {
+        return null;
+      }
+    },
+    writeCache: (license) => localStorage.setItem(LS.centralLicense, JSON.stringify(license)),
+    publicKeys: CENTRAL_LICENSE_PUBLIC_KEYS,
+    nowSec,
+    clockRolledBack,
+  });
+}
+
+/** 이 PC의 기존 로컬 계정을 중앙 계정에 연결(양쪽 비밀번호/세션을 각각 서버가 확인). 자료는 이동하지 않는다. */
+export async function linkLocalAccount(localEmail: string, localPassword: string): Promise<{ linked: boolean; local_email: string }> {
+  const { data } = await centralClient().auth.getSession();
+  const centralToken = data.session?.access_token;
+  if (!centralToken) throw new Error("모아둠 계정으로 먼저 로그인하세요.");
+  const local = await call("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: localEmail.trim().toLowerCase(), password: localPassword }),
+  });
+  return call("/central-link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${local.token}` },
+    body: JSON.stringify({ central_access_token: centralToken }),
+  });
 }
 
 /** control-server가 뜰 때까지 최대 maxMs 동안 대기 */
@@ -206,20 +369,34 @@ async function waitForControlServer(maxMs = 5000, intervalMs = 500): Promise<boo
   return false;
 }
 
-/** 온라인이면 서버 라이선스, 오프라인이면 저장된 서명 블롭(유예 내) */
+/** 온라인이면 서버 라이선스, 오프라인이면 저장된 서명 블롭(유예 내). 실패는 null(구 호출부 호환). */
 export async function resolveLicense(): Promise<{
   state: LicenseState;
   offline: boolean;
 } | null> {
+  const r = await resolveLicenseStatus();
+  return r.kind === "ok" ? { state: r.state, offline: r.offline } : null;
+}
+
+/** 만료/로그인 필요/서버 연결 실패를 구분해서 돌려준다. 어떤 경우에도 로컬 자료는 건드리지 않는다. */
+export async function resolveLicenseStatus(): Promise<LicenseResolution> {
+  if (getAuthProvider() === "central") return resolveCentralLicense();
+  // 중앙 회원 빌드에 남아 있는 이전 로컬 세션/캐시(고정 개발 비밀로 서명된 로컬 이용권 포함)는 사용 근거로 쓰지 않는다.
+  // 세션·고객 자료는 지우지 않고 로그인 화면으로 보낸다.
+  if (!localSessionAllowed(centralEnabled())) return { kind: "login_required", message: CENTRAL_ACCOUNT_REQUIRED_MESSAGE };
   let onlineError: unknown = null;
   try {
     // control-server 준비 대기 (앱 시작 직후 타이밍 문제 방지)
     await waitForControlServer(5000);
     const lic = await call("/license");
     localStorage.setItem(LS.license, JSON.stringify(lic.signed));
-    return { state: lic, offline: false };
+    return { kind: "ok", state: lic, offline: false };
   } catch (e) {
     onlineError = e;
+    if (e instanceof ControlHttpError && e.status === 401) {
+      // 서버가 응답했고 세션이 무효 — 오프라인 캐시로 덮지 않는다.
+      return { kind: "login_required", message: LOGIN_REQUIRED_MESSAGE };
+    }
     console.warn("license refresh failed; trying cached offline license", {
       controlUrl: CONTROL_URL,
       errorName: e instanceof Error ? e.name : typeof e,
@@ -228,14 +405,14 @@ export async function resolveLicense(): Promise<{
     const raw = localStorage.getItem(LS.license);
     if (!raw) {
       console.warn("offline license unavailable: no cached signed license", { controlUrl: CONTROL_URL });
-      return null;
+      return { kind: "server_unreachable", message: SERVER_UNREACHABLE_MESSAGE };
     }
     let blob: SignedLicenseBlob;
     try {
       blob = JSON.parse(raw) as SignedLicenseBlob;
     } catch {
       console.warn("offline license unavailable: cached signed license is not valid JSON", { controlUrl: CONTROL_URL });
-      return null;
+      return { kind: "server_unreachable", message: SERVER_UNREACHABLE_MESSAGE };
     }
     const licenseSecret =
       (import.meta as any).env?.VITE_LICENSE_SECRET || "dev-license-secret-change-me";
@@ -247,11 +424,11 @@ export async function resolveLicense(): Promise<{
       currentUserId = getUser()?.id;
     } catch {
       console.warn("offline license unavailable: cached user is not readable", { controlUrl: CONTROL_URL });
-      return null;
+      return { kind: "login_required", message: LOGIN_REQUIRED_MESSAGE };
     }
     if (!(await verifyLicenseForUser(blob, licenseSecret, currentUserId))) {
       console.warn("offline license unavailable: signature or user check failed", { controlUrl: CONTROL_URL });
-      return null;
+      return { kind: "server_unreachable", message: SERVER_UNREACHABLE_MESSAGE };
     }
     const ageDays = (nowSec() - blob.signed_at) / 86400;
     const rolledBack = clockRolledBack();
@@ -263,13 +440,14 @@ export async function resolveLicense(): Promise<{
         clockRolledBack: rolledBack,
         onlineError: onlineError instanceof Error ? onlineError.message : String(onlineError),
       });
-      return null;
+      return { kind: "server_unreachable", message: SERVER_UNREACHABLE_MESSAGE };
     }
-    return { state: blob.license as LicenseState, offline: true };
+    return { kind: "ok", state: blob.license as LicenseState, offline: true };
   }
 }
 
 export async function listDevices() {
+  if (getAuthProvider() === "central") return [] as any[]; // 중앙 이용권은 기기 등록을 쓰지 않음(정책 미결)
   return (await call("/devices")).devices as any[];
 }
 export async function removeDevice(id: string) {

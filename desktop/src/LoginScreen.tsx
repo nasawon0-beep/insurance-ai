@@ -1,10 +1,13 @@
 import { useCallback, useState } from "react";
 import {
   authenticate,
+  type AuthProvider,
   listLocalAccounts,
   localRecoveryStatus,
+  requestCentralPasswordReset,
   resetLocalPassword,
 } from "./auth";
+import { CENTRAL_SIGNUP_OPEN, centralEnabled } from "./centralConfig";
 import { loadRememberedEmail, saveRememberedEmail } from "./rememberEmail";
 
 interface LoginScreenProps {
@@ -12,6 +15,9 @@ interface LoginScreenProps {
 }
 
 export default function LoginScreen({ onLogin }: LoginScreenProps) {
+  const central = centralEnabled();
+  // 중앙 설정이 있는 빌드는 모아둠 계정이 기본. 기존 이 PC 계정은 연결 전까지 계속 로그인 가능.
+  const [provider, setProvider] = useState<AuthProvider>(central ? "central" : "local");
   const [mode, setMode] = useState<"login" | "register">("login");
   const rememberedEmail = loadRememberedEmail();
   const [email, setEmail] = useState(rememberedEmail);
@@ -28,6 +34,21 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [msg, setMsg] = useState<string | null>(null);
 
   const openRecovery = useCallback(async () => {
+    if (provider === "central") {
+      setErr(null);
+      setMsg(null);
+      if (!email.trim()) {
+        setErr("비밀번호를 재설정할 모아둠 계정 이메일을 먼저 입력하세요.");
+        return;
+      }
+      try {
+        await requestCentralPasswordReset(email.trim().toLowerCase());
+        setMsg("비밀번호 재설정 메일을 보냈습니다. 메일의 링크에서 새 비밀번호를 정한 뒤 로그인하세요.");
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
     setShowRecovery(true);
     setRecoveryErr(null);
     setMsg(null);
@@ -42,7 +63,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     } catch {
       setRecoveryErr("복구 중 오류가 발생했습니다.");
     }
-  }, []);
+  }, [provider, email]);
 
   const submitRecovery = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,7 +81,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
       setShowRecovery(false);
       setMode("login");
       setErr(null);
-      setMsg("새 비밀번호를 설정했습니다. 로그인해 주세요.");
+      setMsg(central ? "새 비밀번호를 설정했습니다. 모아둠 계정으로 로그인한 뒤 설정에서 이 PC 계정을 연결하세요." : "새 비밀번호를 설정했습니다. 로그인해 주세요.");
     } catch (e) {
       setRecoveryErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -78,8 +99,14 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     setErr(null);
     try {
       const normalizedEmail = email.trim().toLowerCase();
-      await authenticate(mode, normalizedEmail, pw);
+      const result = await authenticate(mode, normalizedEmail, pw, provider);
       saveRememberedEmail(normalizedEmail, rememberEmail);
+      if (result.requiresEmailConfirmation) {
+        setPw("");
+        setMode("login");
+        setMsg("확인 메일을 보냈습니다. 메일의 링크를 누른 뒤 여기서 로그인하세요. 이용권은 관리자가 발급합니다.");
+        return;
+      }
       onLogin();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -101,6 +128,20 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
       <div className="card animate-slide-up">
         <div className="card-body">
+          {central && (
+            <div className="flex gap-2 mb-3" role="tablist" aria-label="로그인 방식">
+              <button type="button" role="tab" aria-selected={provider === "central"}
+                onClick={() => { setProvider("central"); if (!CENTRAL_SIGNUP_OPEN) setMode("login"); setErr(null); setMsg(null); setShowRecovery(false); }}
+                className={provider === "central" ? "btn btn-secondary" : "btn btn-ghost"} style={{ flex: 1, fontSize: "var(--text-sm)" }}>
+                모아둠 계정
+              </button>
+              <button type="button" role="tab" aria-selected={provider === "local"}
+                onClick={() => { setProvider("local"); setMode("login"); setErr(null); setMsg(null); }}
+                className={provider === "local" ? "btn btn-secondary" : "btn btn-ghost"} style={{ flex: 1, fontSize: "var(--text-sm)" }}>
+                이 PC 기존 계정
+              </button>
+            </div>
+          )}
           {/* 탭 전환 */}
           <div className="flex gap-2 mb-4">
             <button
@@ -114,18 +155,35 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             >
               로그인
             </button>
-            <button
-              onClick={() => {
-                setMode("register");
-                setErr(null);
-                setMsg(null);
-              }}
-              className={mode === "register" ? "btn btn-primary" : "btn btn-ghost"}
-              style={{ flex: 1 }}
-            >
-              회원가입
-            </button>
+            {/* 중앙 빌드에서는 이 PC 전용 신규 가입을 열지 않는다(가입 체계는 모아둠 계정 하나).
+                모아둠 계정 신규 가입도 안내 메일 발송 준비 전에는 닫는다(VITE_MOADOOM_SIGNUP_OPEN). */}
+            {!(central && provider === "local") && !(central && provider === "central" && !CENTRAL_SIGNUP_OPEN) && (
+              <button
+                onClick={() => {
+                  setMode("register");
+                  setErr(null);
+                  setMsg(null);
+                }}
+                className={mode === "register" ? "btn btn-primary" : "btn btn-ghost"}
+                style={{ flex: 1 }}
+              >
+                회원가입
+              </button>
+            )}
           </div>
+
+          {central && provider === "central" && !CENTRAL_SIGNUP_OPEN && (
+            <p className="text-secondary" style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-3)" }}>
+              지금은 기존 모아둠 계정 로그인만 가능합니다. 신규 가입은 안내 메일 발송 준비 후 열립니다.
+            </p>
+          )}
+
+          {central && provider === "local" && (
+            <p className="text-secondary" role="note" style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-3)" }}>
+              이 PC 기존 계정만으로는 로그인할 수 없습니다. 모아둠 계정으로 로그인한 뒤 설정 &gt; '이 PC 기존 계정 연결'에서 연결하세요.
+              고객 자료는 이 PC에 그대로 있습니다. 연결할 계정의 비밀번호를 잊었다면 아래 '비밀번호를 잊으셨나요?'로 재설정할 수 있습니다.
+            </p>
+          )}
 
           {/* 로그인/회원가입 폼 */}
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -169,7 +227,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
               이메일 기억하기
             </label>
 
-            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy}>
+            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy || (central && provider === "local")}>
               {busy ? "처리 중..." : mode === "login" ? "로그인" : "가입하고 시작"}
             </button>
           </form>
@@ -270,7 +328,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
       {/* 보안 안내 */}
       <div className="text-center mt-6 text-sm text-secondary">
         <p>🔒 고객 정보는 100% 본인 PC에만 저장됩니다.</p>
-        <p>클라우드 전송 없음 · 완전한 프라이버시</p>
+        <p>{central ? "서버에는 계정·이용권 정보만 확인합니다 · 고객 자료 전송 없음" : "클라우드 전송 없음 · 완전한 프라이버시"}</p>
       </div>
     </div>
   );

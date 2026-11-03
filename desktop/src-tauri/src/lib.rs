@@ -526,6 +526,15 @@ fn qa_runtime_profile(
     })
 }
 
+/// QA 전용 WebView2 원격 디버깅 포트: 공식 QA 프로필일 때만, 1024 이상 포트만 허용.
+#[cfg_attr(not(all(windows, debug_assertions)), allow(dead_code))]
+fn qa_cdp_port(qa: bool, raw: Option<String>) -> Option<u16> {
+    if !qa {
+        return None;
+    }
+    raw?.trim().parse::<u16>().ok().filter(|port| *port >= 1024)
+}
+
 fn production_runtime_profile(config_dir: PathBuf, data_dir: PathBuf) -> RuntimeProfile {
     RuntimeProfile {
         qa: false,
@@ -1388,6 +1397,15 @@ mod tests {
     }
 
     #[test]
+    fn qa_cdp_port_is_only_for_official_qa_profile() {
+        assert_eq!(qa_cdp_port(false, Some("9341".into())), None);
+        assert_eq!(qa_cdp_port(true, None), None);
+        assert_eq!(qa_cdp_port(true, Some("80".into())), None);
+        assert_eq!(qa_cdp_port(true, Some("x".into())), None);
+        assert_eq!(qa_cdp_port(true, Some(" 9341 ".into())), Some(9341));
+    }
+
+    #[test]
     fn qa_launch_is_opt_in_and_partial_args_fail_closed() {
         let normal = parse_qa_launch_args([OsString::from("app.exe")]).expect("parse default");
         assert!(normal.is_none());
@@ -1892,6 +1910,17 @@ pub fn run() {
                 .env("CONTROL_PORT", profile.control_port.to_string())
                 // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
                 .env("APP_LOCK_FILE", profile.lock_path());
+            // 중앙 회원(모아둠 계정) 설정 — 빌드 시점 값(공개 URL·publishable 키만). 없으면 기존 로컬 동작.
+            if let (Some(url), Some(key)) = (
+                option_env!("VITE_MOADOOM_SUPABASE_URL"),
+                option_env!("VITE_MOADOOM_SUPABASE_PUBLISHABLE_KEY"),
+            ) {
+                if !url.trim().is_empty() && key.trim().starts_with("sb_publishable_") {
+                    control_command = control_command
+                        .env("CONTROL_CENTRAL_URL", url.trim())
+                        .env("CONTROL_CENTRAL_PUBLISHABLE_KEY", key.trim());
+                }
+            }
             if profile.qa {
                 control_command = control_command
                     .env("INSURANCE_AI_QA_MODE", "1")
@@ -1986,6 +2015,15 @@ pub fn run() {
                 builder.data_directory(webview_dir.clone())
             } else {
                 builder
+            };
+            // 디버그 빌드 + 공식 QA 프로필에서만: 자동 UI 검증용 WebView2 원격 디버깅 포트(loopback).
+            // release 빌드와 운영 프로필에는 컴파일/적용되지 않는다.
+            #[cfg(all(windows, debug_assertions))]
+            let builder = match qa_cdp_port(profile.qa, std::env::var("INSURANCE_AI_QA_CDP_PORT").ok()) {
+                Some(port) => builder.additional_browser_args(&format!(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+                )),
+                None => builder,
             };
             builder.build()?;
             Ok(())

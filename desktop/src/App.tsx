@@ -13,15 +13,19 @@ import MobileConnectionPanel from "./components/MobileConnectionPanel";
 import {
   changePassword,
   fetchMe,
-  getToken,
+  isSignedIn,
+  getAuthProvider,
   getUser,
   listDevices,
   loadEngineSettings,
   logout,
   removeDevice,
   resolveLicense,
+  resolveLicenseStatus,
   rrnEnabled,
 } from "./auth";
+import { fmtKst, licenseNotice, licenseRows, type LicenseState } from "./licenseStatus";
+import CentralAccountPanel from "./CentralAccountPanel";
 import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
 import { invoke } from "@tauri-apps/api/core";
@@ -1931,9 +1935,11 @@ function DataAnalysisScreen({
 function DiagnosticsScreen({
   onOpenCustomer,
   onRestartOnboarding,
+  visible = true,
 }: {
   onOpenCustomer: (id: string) => void;
   onRestartOnboarding: () => void;
+  visible?: boolean;
 }) {
   const [d, setD] = useState<Record<string, any> | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1998,6 +2004,18 @@ function DiagnosticsScreen({
   useEffect(() => {
     load();
   }, [load]);
+  // 화면은 항상 마운트돼 있으므로, 설정 화면을 다시 열 때 이용권 표시를 새로 확인한다(관리자 발급/연장/회수 반영).
+  const licenseShownOnce = useRef(false);
+  useEffect(() => {
+    if (!visible) return;
+    if (!licenseShownOnce.current) {
+      licenseShownOnce.current = true;
+      return;
+    }
+    void resolveLicense()
+      .then((r) => setLic(r ? { ...r.state, offline: r.offline } : null))
+      .catch(() => undefined);
+  }, [visible]);
 
 
 
@@ -2198,7 +2216,7 @@ function DiagnosticsScreen({
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>내 계정</b></div>
             {kv("이메일", me?.email ?? getUser()?.email ?? "-")}
-            {kv("가입일", me?.created_at ? me.created_at.slice(0, 10) : "-")}
+            {kv("가입일", me?.created_at ? fmtKst(me.created_at).slice(0, 10) : "-")}
             <details ref={passwordDetails} style={{ marginTop: 8 }}>
               <summary style={{ cursor: "pointer", fontSize: "0.875rem" }}>비밀번호 변경</summary>
               <form onSubmit={submitPassword} style={{ marginTop: 8 }}>
@@ -2232,16 +2250,17 @@ function DiagnosticsScreen({
                 {passwordErr && <p style={{ fontSize: "0.75rem", color: "#b00", margin: "6px 0 0" }}>{passwordErr}</p>}
               </form>
             </details>
+            <CentralAccountPanel lic={lic as (LicenseState & { offline?: boolean }) | null} />
           </div>
 
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>라이선스 · 기기</b></div>
             {lic ? (
               <>
-                {kv("플랜", `${lic.plan}${lic.offline ? " (오프라인 확인)" : ""}`)}
-                {kv("상태", lic.status === "expired" ? "만료됨 ❌" : "활성 ✅")}
-                {kv("만료일", lic.expiry ?? "무기한")}
-                {kv("등록 기기", `${devices.length} / ${lic.device_limit}대`)}
+                {licenseRows(lic as LicenseState & { offline?: boolean }).map(([k, v]) => (
+                  <div key={k}>{kv(k, v)}</div>
+                ))}
+                {lic.device_limit > 0 && kv("등록 기기", `${devices.length} / ${lic.device_limit}대`)}
                 {devices.map((v) => (
                   <div key={v.id} style={{ fontSize: "0.75rem", paddingLeft: 130 }}>
                     · {v.name || v.device_id.slice(0, 8)} ({v.app_version || "?"}){" "}
@@ -2406,6 +2425,7 @@ function App() {
     () => localStorage.getItem("iai.ollamaOnboardingDone") !== "1" && localStorage.getItem("iai.ollamaOnboardingSkipped") !== "1",
   );
   const [licenseErr, setLicenseErr] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const initialView = (import.meta as any).env?.VITE_INITIAL_VIEW as View | undefined;
   const [view, setView] = useState<View>(
     initialView && ["home", "customers", "capture", "coverage", "assistant", "settings"].includes(initialView)
@@ -2558,7 +2578,7 @@ function App() {
       }));
       void loadEngineSettings();
       track("app_open");
-      if (!getToken()) {
+      if (!isSignedIn()) {
         setAuth("out");
         setStartup({
           status: "ready",
@@ -2572,9 +2592,10 @@ function App() {
         });
         return;
       }
-      const lic = await resolveLicense();
-      if (!lic) {
-        // 토큰은 있으나 서버도 못 붙고 유예도 끝남 → 재로그인
+      const lic = await resolveLicenseStatus();
+      if (lic.kind !== "ok") {
+        // 세션 무효(로그인 필요) 또는 서버 연결 실패+유예 종료 → 재로그인. 만료와 구분해 안내만 한다(자료 삭제 없음).
+        setAuthNotice(lic.message);
         setAuth("out");
         setStartup({
           status: "ready",
@@ -2588,7 +2609,8 @@ function App() {
         });
         return;
       }
-      setLicenseErr(lic.state.status === "expired" ? "라이선스가 만료되었습니다. 관리자에게 문의하세요." : null);
+      setAuthNotice(null);
+      setLicenseErr(licenseNotice(lic.state, lic.offline));
       setAuth("in");
       setStartup({
         status: "ready",
@@ -2722,6 +2744,34 @@ function App() {
   }, [auth, needsOnboarding]);
 
   useEffect(() => {
+    if (auth !== "in" || getAuthProvider() !== "central") return;
+    // 중앙 이용권: 관리자 연장/회수가 앱 재시작 없이 반영되도록 창 포커스 때와 10분마다 다시 확인한다.
+    // 배너 문구만 바꾼다 — 로그아웃/기능 차단/자료 변경 없음.
+    let alive = true;
+    let busy = false;
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const r = await resolveLicenseStatus();
+        if (alive) setLicenseErr(r.kind === "ok" ? licenseNotice(r.state, r.offline) : r.message);
+      } catch {
+        /* 다음 주기에 다시 확인 */
+      } finally {
+        busy = false;
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 10 * 60 * 1000);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [auth]);
+
+  useEffect(() => {
     // 앱 실행(프로세스) 당 1회만. 앱 시작 3초 뒤 백그라운드에서 자동 확인한다.
     // 실제 manifest/서명 검증은 패키지된 Tauri 앱에서만 동작할 수 있다.
     if (updateCheckStartedRef.current) return;
@@ -2753,7 +2803,16 @@ function App() {
     return <p style={{ textAlign: "center", marginTop: 80, color: "#888" }}>확인 중…</p>;
   }
   if (auth === "out") {
-    return <LoginScreen onLogin={boot} />;
+    return (
+      <>
+        {authNotice && (
+          <div role="status" style={{ background: "#fff7e6", color: "#7a4b00", fontSize: 13, padding: "8px 12px", borderBottom: "1px solid #f0d9a8" }}>
+            {authNotice}
+          </div>
+        )}
+        <LoginScreen onLogin={boot} />
+      </>
+    );
   }
   if (needsOnboarding) {
     return <OnboardingScreen onComplete={() => void finishOnboardingAndConnectEngine()} onOllamaInstalled={() => undefined} />;
@@ -2879,7 +2938,7 @@ function App() {
           </div>
         )}
         {licenseErr && (
-          <div style={{ background: "#fde8e8", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }}>
+          <div style={licenseErr.startsWith("무료체험 중") ? { background: "var(--color-bg-surface)", color: "var(--color-text-primary)", fontSize: 12, padding: "4px 12px", borderBottom: "1px solid var(--color-border-default)" } : { background: "#fde8e8", color: "#8a4b00", fontSize: 12, padding: "4px 12px" }} role="status">
             {licenseErr}
           </div>
         )}
@@ -2978,6 +3037,7 @@ function App() {
         </div>
         <div style={{ display: view === "diagnostics" ? "block" : "none" }} aria-hidden={view !== "diagnostics"}>
           <DiagnosticsScreen
+            visible={view === "diagnostics"}
             onOpenCustomer={openCustomer}
             onRestartOnboarding={() => {
               localStorage.removeItem("iai.ollamaOnboardingDone");

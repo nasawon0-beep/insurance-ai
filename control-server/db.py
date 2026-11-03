@@ -68,9 +68,20 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+CENTRAL_LINK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS central_links (
+    local_user_id   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    central_user_id TEXT NOT NULL UNIQUE,   -- Supabase auth.users UUID (서버 확인값)
+    central_email   TEXT NOT NULL,
+    linked_at       TEXT NOT NULL
+);
+"""
+
+
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
     if "session_version" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0")
+    conn.executescript(CENTRAL_LINK_SCHEMA)  # 추가 테이블만 — 기존 행 변경 없음
     conn.commit()

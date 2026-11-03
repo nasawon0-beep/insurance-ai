@@ -109,6 +109,10 @@ jobs:
           node scripts/check-version-sync.mjs
           test "$(node -p "require('./desktop/package.json').version")" = "${{ steps.version.outputs.VERSION }}"
 
+      - name: Load moadoom central public build config
+        shell: bash
+        run: node scripts/build-moadoom-live.mjs github-env
+
       - name: Validate release candidate
         shell: bash
         run: |
