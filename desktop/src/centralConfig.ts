@@ -17,7 +17,7 @@ export const CENTRAL_PUBLISHABLE_KEY = clean(env.VITE_MOADOOM_SUPABASE_PUBLISHAB
 export const CENTRAL_LICENSE_PUBLIC_KEYS = parsePublicKeys(env.VITE_MOADOOM_LICENSE_PUBLIC_KEYS);
 export const CENTRAL_SITE_URL = (clean(env.VITE_MOADOOM_SITE_URL) ||
   "https://nasawon0-beep.github.io/insurance-ai-updates/").replace(/\/?$/, "/");
-// 모아둠 계정 신규 가입 열기(안내 메일 발송 설정 후 "true"). 기본은 닫힘 — 기존 계정 로그인만.
+// 모아둠 계정 신규 가입 열기("true"). 값이 없거나 "true"가 아니면 닫힘 — 기존 계정 로그인만(롤백용).
 export const CENTRAL_SIGNUP_OPEN = clean(env.VITE_MOADOOM_SIGNUP_OPEN) === "true";
 
 export function isPublishableKey(key: string): boolean {

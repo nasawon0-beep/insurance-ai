@@ -174,7 +174,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
           {central && provider === "central" && !CENTRAL_SIGNUP_OPEN && (
             <p className="text-secondary" style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-3)" }}>
-              지금은 기존 모아둠 계정 로그인만 가능합니다. 신규 가입은 안내 메일 발송 준비 후 열립니다.
+              지금은 기존 모아둠 계정 로그인만 가능합니다. 신규 가입은 모아둠 사이트에서 안내합니다.
             </p>
           )}
 

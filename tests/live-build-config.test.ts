@@ -11,7 +11,7 @@ test("live public config is valid and contains only public values", () => {
   assert.equal(cfg.VITE_MOADOOM_SUPABASE_URL, "https://fhdushntttxbfwkxylhz.supabase.co");
   assert.deepEqual(JSON.parse(cfg.VITE_MOADOOM_LICENSE_PUBLIC_KEYS), { "moadoom-20261103": "A9f5O+g778LZrvn73WCntWNGIPCzeUpP4fDDjdfKENc=" });
   assert.equal(cfg.VITE_MOADOOM_SITE_URL, "https://nasawon0-beep.github.io/insurance-ai-updates/");
-  assert.equal(cfg.VITE_MOADOOM_SIGNUP_OPEN, "false");
+  assert.equal(cfg.VITE_MOADOOM_SIGNUP_OPEN, "true");
 });
 
 test("validator rejects secret keys, extra keys and malformed public keys", () => {
