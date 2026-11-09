@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { mobileStatusPollMs, pairingQrCloseReason } from "./mobileSyncPolicy.ts";
+import { createFirewallPoller, firewallApplyError, firewallQrAllowed, type MobileFirewallStatus } from "./mobileFirewallPolicy.ts";
 
 type MobileSyncStatus = {
   running: boolean;
@@ -52,6 +53,51 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
   const [restoreOnAppStart, setRestoreOnAppStart] = useState(false);
   const [qr, setQr] = useState<(PairingQr & { activeAtIssue: number }) | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
+  const [firewallStatus, setFirewallStatus] = useState<MobileFirewallStatus | null>(null);
+  const [firewallError, setFirewallError] = useState<string | null>(null);
+  const [firewallBusy, setFirewallBusy] = useState(false);
+  const firewallPoller = useRef<ReturnType<typeof createFirewallPoller> | null>(null);
+  const qrAllowed = visible && firewallQrAllowed(status.running, firewallStatus) && !firewallBusy;
+  const pairingGeneration = useRef(0);
+  const invalidatePairing = useCallback(() => {
+    pairingGeneration.current++;
+    setQr(null);
+    setPairing(null);
+    setRecovery(null);
+  }, []);
+
+  // Reject pending credentials even if readiness returns before they resolve.
+  // Layout cleanup also fences unmount and context changes before painting.
+  useLayoutEffect(() => {
+    invalidatePairing();
+    return () => { pairingGeneration.current++; };
+  }, [visible, status.host, status.url, status.certificateFingerprint, status.running, qrAllowed, invalidatePairing]);
+
+  // PowerShell is independent of the fast server poll. Never elevate on a timer.
+  useEffect(() => {
+    setFirewallStatus(null);
+    if (!visible || firewallBusy) return;
+    const poller = createFirewallPoller(
+      () => invoke<MobileFirewallStatus>("mobile_sync_firewall_status"),
+      (next) => { setFirewallStatus(next); setFirewallError(next.lastError); },
+      (message) => { setFirewallStatus(null); setFirewallError(message); },
+    );
+    firewallPoller.current = poller;
+    const networkRefresh = () => { invalidatePairing(); setFirewallStatus(null); poller.refresh(true); };
+    poller.refresh();
+    const timer = window.setInterval(() => poller.refresh(), 15000);
+    window.addEventListener("online", networkRefresh);
+    window.addEventListener("offline", networkRefresh);
+    window.addEventListener("focus", networkRefresh);
+    return () => {
+      poller.dispose();
+      firewallPoller.current = null;
+      window.clearInterval(timer);
+      window.removeEventListener("online", networkRefresh);
+      window.removeEventListener("offline", networkRefresh);
+      window.removeEventListener("focus", networkRefresh);
+    };
+  }, [visible, status.host, status.running, firewallBusy, invalidatePairing]);
 
   const refresh = useCallback(async () => {
     const next = await invoke<MobileSyncStatus>("mobile_sync_status");
@@ -130,12 +176,19 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
     setNotice("모바일 연결 서버를 중지했습니다.");
   });
   const createCode = () => run(async () => {
-    setPairing(await invoke<PairingCode>("mobile_sync_create_pairing_code"));
+    if (!qrAllowed) throw new Error("Private 네트워크 방화벽 설정을 먼저 확인하세요.");
+    const generation = pairingGeneration.current;
+    const next = await invoke<PairingCode>("mobile_sync_create_pairing_code");
+    if (generation !== pairingGeneration.current) return;
+    setPairing(next);
     setRecovery(null);
     setQr(null);
   });
   const createQr = () => run(async () => {
+    if (!qrAllowed) throw new Error("Private 네트워크 방화벽 설정을 먼저 확인하세요.");
+    const generation = pairingGeneration.current;
     const next = await invoke<PairingQr>("mobile_sync_create_pairing_qr");
+    if (generation !== pairingGeneration.current) return;
     setNowSeconds(Math.floor(Date.now() / 1000));
     setQr({ ...next, activeAtIssue: activeDevices });
     setPairing(null);
@@ -146,8 +199,12 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
     setNotice("QR을 닫았습니다. 이미 만든 코드는 5분 안에 한 번만 쓸 수 있고 그 뒤 자동으로 만료됩니다.");
   };
   const createRecoveryCode = (device: MobileDevice) => run(async () => {
+    if (!qrAllowed) throw new Error("Private 네트워크 방화벽 설정을 먼저 확인하세요.");
     if (!window.confirm(`‘${device.name}’ 기기를 기존 등록 정보와 미전송 자료를 유지한 채 다시 연결할까요?`)) return;
-    setRecovery(await invoke<PairingCode>("mobile_sync_create_recovery_code", { deviceId: device.id, confirmed: true }));
+    const generation = pairingGeneration.current;
+    const next = await invoke<PairingCode>("mobile_sync_create_recovery_code", { deviceId: device.id, confirmed: true });
+    if (generation !== pairingGeneration.current) return;
+    setRecovery(next);
     setPairing(null);
     setNotice("선택한 기기 전용 복구 코드를 만들었습니다. 모바일에서 ‘기존 연결 복구’에 입력하세요.");
   });
@@ -162,12 +219,26 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
     setNotice("기기 연결을 해제했습니다. 기존 인증 정보로는 더 이상 동기화할 수 없습니다.");
   });
   const firewall = (enable: boolean) => run(async () => {
+    if (!firewallStatus?.supported || firewallStatus.qa || (enable && (!status.running || !firewallStatus.canApply))) {
+      throw new Error("현재 환경에서는 방화벽 변경을 승인할 수 없습니다. QA에서는 실제 규칙을 변경하지 않습니다.");
+    }
     const message = enable
-      ? "같은 Wi-Fi/핫스팟의 모바일 연결을 위해 Windows Private 네트워크에 한해 전용 포트를 허용할까요? 관리자 승인이 표시됩니다."
-      : "모아둠 모바일 연결용 Windows 방화벽 규칙만 제거할까요?";
+      ? "Windows 관리자 승인(UAC)을 요청할까요? 설치된 local-engine.exe의 TCP 18443만 Private / LocalSubnet(같은 서브넷)에 허용합니다. Public·회사 Domain 프로필과 네트워크 종류는 변경하지 않습니다. 휴대폰 연결 성공을 보장하지 않습니다."
+      : "모아둠 모바일 연결용 Windows 방화벽 규칙을 비활성화할까요? 규칙을 삭제하지 않습니다. 관리자 승인(UAC)이 필요합니다.";
     if (!window.confirm(message)) return;
-    await invoke("mobile_sync_firewall_apply", { enable, confirmed: true });
-    setNotice(enable ? "Private 네트워크 방화벽 규칙을 적용했습니다." : "모바일 연결 방화벽 규칙을 제거했습니다.");
+    firewallPoller.current?.dispose();
+    setFirewallBusy(true);
+    setFirewallStatus(null);
+    setFirewallError(null);
+    try {
+      const result = await invoke<MobileFirewallStatus>("mobile_sync_firewall_apply", { enable, confirmed: true });
+      setFirewallStatus(result);
+      const failure = firewallApplyError(result, enable);
+      if (failure) throw new Error(failure);
+      setNotice(enable ? "Private / LocalSubnet 방화벽 설정을 확인했습니다. 이제 QR로 연결하세요. 실제 휴대폰 연결은 아직 확인되지 않았습니다." : "모바일 연결 방화벽 규칙을 비활성화했습니다(삭제 아님).");
+    } finally {
+      setFirewallBusy(false);
+    }
   });
 
   const row = (label: string, value: React.ReactNode) => (
@@ -183,7 +254,23 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
       <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>
         본인의 모바일과 이 PC를 같은 Wi-Fi 또는 핫스팟에서만 연결합니다. 팀 공유·인터넷 원격 동기화 기능이 아닙니다.
       </p>
-      {row("상태", status.running ? "실행 중 ✅" : status.starting ? "시작 중…" : "중지됨")}
+      <p style={{ fontSize: "0.875rem" }}>1. 연결 시작 → 2. 방화벽 승인·설정 확인 → 3. QR로 폰 연결</p>
+      {row("서버 상태", status.running ? "실행 중 (휴대폰 연결 확인 아님)" : status.starting ? "시작 중…" : "중지됨")}
+      {row("네트워크 종류", firewallStatus?.networkCategory ?? "확인 중 / 알 수 없음")}
+      {row("방화벽 설정", firewallBusy ? "관리자 승인·설정 확인 중…" : firewallQrAllowed(true, firewallStatus) ? "Private / LocalSubnet 규칙 확인됨" : "미확인 또는 허용되지 않음")}
+      {row("휴대폰 연결", "아직 확인되지 않음 — 서버 실행·방화벽 규칙만으로 실제 연결을 판단하지 않습니다.")}
+      {firewallStatus?.qa && <p role="status">QA 모드: 실제 방화벽 변경은 금지됩니다. 읽기 전용 상태/테스트 fixture로 화면을 확인합니다.</p>}
+      <p style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+        Public·Domain 네트워크를 강제로 Private로 바꾸지 않습니다. 신뢰할 수 있는 개인 Wi-Fi/핫스팟에서만 진행하세요.
+        게스트 Wi-Fi·회사망은 기기 간 통신이 격리되어 같은 Wi-Fi여도 연결되지 않을 수 있습니다.
+      </p>
+      <details style={{ fontSize: "0.75rem", marginBottom: 8 }}>
+        <summary>연결 시간 초과 / QR을 찍어도 연결되지 않나요?</summary>
+        <p>폰과 PC의 Wi-Fi/핫스팟, PC 주소, Private 네트워크와 방화벽 상태를 확인하세요. 게스트·회사망 격리, VPN, 보안 프로그램이 통신을 막을 수 있습니다. 신뢰할 수 있는 개인 핫스팟에서 다시 시도하거나 관리자에게 문의하세요. 방화벽 전체를 끄지 마세요. QR 만료 시 새 QR을 만드세요.</p>
+        {row("규칙 상태", firewallStatus?.ruleState ?? "unknown")}
+        {row("프로그램", firewallStatus?.programPath ?? "-")}
+        {row("규칙 이름", firewallStatus?.ruleName ?? "-")}
+      </details>
       {row("PC 주소", status.url ?? "연결을 시작하면 표시됩니다")}
       {row("인증서 지문", status.certificateFingerprint ?? "-")}
       {row("인증서 만료", formattedTime(status.certificateExpiresAt))}
@@ -200,14 +287,15 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
         Windows 부팅 서비스는 만들지 않습니다. ‘연결 중지’를 누르면 자동 복원도 함께 꺼집니다.
       </p>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-        <button disabled={busy || status.running} onClick={() => void start()}>연결 시작</button>
+        <button disabled={busy || status.running || status.starting} onClick={() => void start()}>연결 시작</button>
         <button disabled={busy || !status.running} onClick={() => void stop()}>연결 중지</button>
-        <button disabled={busy || !status.running} onClick={() => void createQr()}>QR로 폰 연결</button>
-        <button disabled={busy || !status.running} onClick={() => void createCode()}>새 기기 등록 코드</button>
-        <button disabled={busy} onClick={() => void firewall(true)}>Private 방화벽 허용</button>
-        <button disabled={busy} onClick={() => void firewall(false)}>방화벽 규칙 제거</button>
+        <button disabled={busy || !status.running || !firewallStatus?.canApply || firewallStatus?.qa} onClick={() => void firewall(true)}>Private 방화벽 승인 (UAC)</button>
+        <button disabled={busy || !qrAllowed} onClick={() => void createQr()}>QR로 폰 연결</button>
+        <button disabled={busy || !qrAllowed} onClick={() => void createCode()}>새 기기 등록 코드</button>
+        <button disabled={busy || !firewallStatus?.supported || firewallStatus?.qa} onClick={() => void firewall(false)}>방화벽 규칙 비활성화</button>
+        <button disabled={firewallBusy} onClick={() => firewallPoller.current?.refresh()}>방화벽 상태 새로고침</button>
       </div>
-      {qr && (
+      {qr && qrAllowed && (
         <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6, background: "#fff" }}>
           <div style={{ fontSize: "0.875rem", marginBottom: 6 }}><b>폰의 모아둠 앱 → PC 동기화 → ‘PC QR 스캔’으로 찍어 주세요</b></div>
           <img
@@ -227,7 +315,7 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
           <button style={{ marginTop: 6 }} onClick={closeQr}>QR 닫기</button>
         </div>
       )}
-      {pairing && (
+      {pairing && qrAllowed && (
         <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6 }}>
           <div>1회용 연결 코드: <strong style={{ fontSize: "1.25rem", letterSpacing: 3 }}>{pairing.code}</strong></div>
           <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>만료: {formattedTime(pairing.expiresAt)}</div>
@@ -235,7 +323,7 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
           <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>모바일에서 PC 주소와 인증서 지문을 함께 확인하세요.</div>
         </div>
       )}
-      {recovery && (
+      {recovery && qrAllowed && (
         <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6 }}>
           <div>기존 연결 복구 코드: <strong style={{ fontSize: "1.25rem", letterSpacing: 3 }}>{recovery.code}</strong></div>
           <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>만료: {formattedTime(recovery.expiresAt)}</div>
@@ -255,10 +343,11 @@ export default function MobileConnectionPanel({ visible = true }: { visible?: bo
       {devices.filter((device) => device.revoked_at).map((device) => (
         <div key={device.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "5px 0", fontSize: "0.75rem" }}>
           <span>{device.name} · 해제 {formattedTime(device.revoked_at)}</span>
-          <button disabled={busy || !status.running} onClick={() => void createRecoveryCode(device)}>이 기기 다시 연결</button>
+          <button disabled={busy || !qrAllowed} onClick={() => void createRecoveryCode(device)}>이 기기 다시 연결</button>
         </div>
       ))}
       {(error || status.lastError) && <p role="alert" style={{ color: "#b00", fontSize: "0.75rem" }}>오류: {error ?? status.lastError}</p>}
+      {firewallError && <p role="alert" style={{ color: "#b00", fontSize: "0.75rem" }}>방화벽 상태 확인 오류: {firewallError}</p>}
       {notice && <p role="status" style={{ color: "#176b2c", fontSize: "0.75rem" }}>{notice}</p>}
     </div>
   );

@@ -1,3 +1,4 @@
+mod mobile_firewall;
 mod mobile_sync;
 mod ollama;
 
@@ -1859,6 +1860,7 @@ pub fn run() {
             mobile_sync::mobile_sync_list_devices,
             mobile_sync::mobile_sync_revoke_device,
             mobile_sync::mobile_sync_firewall_apply,
+            mobile_sync::mobile_sync_firewall_status,
         ])
         .setup(|app| {
             let production_config_dir = app.path().app_config_dir()?;

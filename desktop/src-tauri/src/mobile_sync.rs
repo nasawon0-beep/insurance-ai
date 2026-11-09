@@ -4,14 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
 const MOBILE_SYNC_PORT: u16 = 18443;
-const MOBILE_SYNC_RULE: &str = "MoaDoom Personal Mobile Sync";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_SERVICE_TYPE: &str = "_moadoom-sync._tcp.local.";
@@ -1102,67 +1100,32 @@ pub(crate) async fn mobile_sync_revoke_device(
     Ok(())
 }
 
-fn sidecar_executable() -> Result<PathBuf, String> {
-    let parent = std::env::current_exe()
-        .map_err(|error| format!("앱 실행 경로 확인 실패: {error}"))?
-        .parent()
-        .ok_or("앱 실행 폴더를 확인할 수 없습니다")?
-        .to_path_buf();
-    Ok(parent.join("local-engine.exe"))
-}
-
-fn firewall_netsh_args(enable: bool, program: &Path, port: u16) -> Vec<String> {
-    if enable {
-        vec![
-            "advfirewall".into(),
-            "firewall".into(),
-            "add".into(),
-            "rule".into(),
-            format!("name={MOBILE_SYNC_RULE}"),
-            "dir=in".into(),
-            "action=allow".into(),
-            format!("program={}", program.to_string_lossy()),
-            "protocol=TCP".into(),
-            format!("localport={port}"),
-            "profile=private".into(),
-            "enable=yes".into(),
-        ]
-    } else {
-        vec![
-            "advfirewall".into(),
-            "firewall".into(),
-            "delete".into(),
-            "rule".into(),
-            format!("name={MOBILE_SYNC_RULE}"),
-            format!("program={}", program.to_string_lossy()),
-            "protocol=TCP".into(),
-            format!("localport={port}"),
-        ]
-    }
+#[tauri::command]
+pub(crate) async fn mobile_sync_firewall_status(
+    profile: tauri::State<'_, RuntimeProfile>,
+) -> Result<crate::mobile_firewall::FirewallStatus, String> {
+    let qa = profile.qa;
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = detected_private_ipv4().ok();
+        crate::mobile_firewall::status(qa, host.as_deref())
+    })
+    .await
+    .map_err(|error| format!("방화벽 상태 확인 실패: {error}"))
 }
 
 #[tauri::command]
-pub(crate) fn mobile_sync_firewall_apply(enable: bool, confirmed: bool) -> Result<(), String> {
-    if !confirmed {
-        return Err("사용자 확인 전에는 방화벽을 변경하지 않습니다".into());
-    }
-    let arguments = firewall_netsh_args(enable, &sidecar_executable()?, MOBILE_SYNC_PORT);
-    let escaped = arguments
-        .iter()
-        .map(|argument| format!("'{}'", argument.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(",");
-    let script = format!(
-        "$p=Start-Process -FilePath \"$env:SystemRoot\\System32\\netsh.exe\" -Verb RunAs -Wait -PassThru -ArgumentList @({escaped}); exit $p.ExitCode"
-    );
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .status()
-        .map_err(|error| format!("방화벽 UAC 실행 실패: {error}"))?;
-    if !status.success() {
-        return Err("방화벽 변경이 취소되었거나 실패했습니다".into());
-    }
-    Ok(())
+pub(crate) async fn mobile_sync_firewall_apply(
+    profile: tauri::State<'_, RuntimeProfile>,
+    enable: bool,
+    confirmed: bool,
+) -> Result<crate::mobile_firewall::FirewallStatus, String> {
+    let qa = profile.qa;
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = detected_private_ipv4().ok();
+        crate::mobile_firewall::apply(qa, confirmed, enable, host.as_deref())
+    })
+    .await
+    .map_err(|error| format!("방화벽 변경 작업 실패: {error}"))
 }
 
 pub(crate) fn terminate(app: &tauri::AppHandle) {
@@ -1274,31 +1237,6 @@ mod tests {
         assert!(directory.is_dir());
         assert_eq!(secret_path, directory.join("admin-api.secret"));
         std::fs::remove_dir_all(directory).expect("remove test directory");
-    }
-
-    #[test]
-    fn firewall_rule_is_private_program_and_port_scoped() {
-        let args = firewall_netsh_args(
-            true,
-            Path::new(r"C:\Program Files\MoaDoom\local-engine.exe"),
-            18443,
-        );
-        let joined = args.join(" ");
-        assert!(joined.contains("profile=private"));
-        assert!(joined.contains("program=C:\\Program Files\\MoaDoom\\local-engine.exe"));
-        assert!(joined.contains("localport=18443"));
-        assert!(joined.contains("protocol=TCP"));
-        assert!(!joined.contains("profile=any"));
-    }
-
-    #[test]
-    fn firewall_remove_targets_only_the_product_rule() {
-        let args = firewall_netsh_args(false, Path::new(r"C:\MoaDoom\local-engine.exe"), 18443);
-        assert_eq!(args[2], "delete");
-        assert!(args
-            .iter()
-            .any(|value| value == &format!("name={MOBILE_SYNC_RULE}")));
-        assert!(args.iter().any(|value| value == "localport=18443"));
     }
 
     #[test]
