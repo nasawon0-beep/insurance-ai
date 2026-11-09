@@ -1849,6 +1849,7 @@ pub fn run() {
             mobile_sync::mobile_sync_status,
             mobile_sync::mobile_sync_start,
             mobile_sync::mobile_sync_stop,
+            mobile_sync::mobile_sync_pause_for_logout,
             mobile_sync::mobile_sync_startup_preference,
             mobile_sync::mobile_sync_set_startup_preference,
             mobile_sync::mobile_sync_restore_if_enabled,

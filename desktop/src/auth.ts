@@ -277,6 +277,12 @@ export async function authenticate(
 
 /** 로그아웃: 세션/캐시만 지운다. 고객 자료(local-engine DB/PDF)는 건드리지 않는다. */
 export function logout() {
+  // 로그아웃하면 모바일 연결 서버와 네트워크 변경 자동 재시작도 멈춘다('시작 시 복원' 설정은 다음 로그인용으로 유지).
+  try {
+    void invoke("mobile_sync_pause_for_logout").catch(() => undefined);
+  } catch {
+    /* Tauri 밖(테스트)에서는 무시 */
+  }
   if (getAuthProvider() === "central") {
     void centralClient().auth.signOut({ scope: "local" }).catch(() => undefined);
   }

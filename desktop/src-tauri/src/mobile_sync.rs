@@ -75,9 +75,41 @@ struct MobileSyncInner {
     shutdown_file: Option<PathBuf>,
     last_error: Option<String>,
     discovery: Option<MobileDiscoveryAdvertisement>,
-    // 사용자가 켠 모바일 연결이 따라갈 PC 주소. 수동 중지 때만 비운다(네트워크 변경 자동 재시작용).
+    // 사용자가 켠 모바일 연결이 따라갈 PC 주소. 수동 중지·로그아웃 때만 비운다(네트워크 변경 자동 재시작용).
     follow_host: Option<String>,
+    // 사용자 의도(시작/중지/로그아웃)가 바뀔 때마다 증가. 자동 재시작은 시작 시점 세대와 같을 때만 진행·확정한다.
+    intent_generation: u64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StartIntent {
+    User,
+    Follow(u64),
+}
+
+/// 시작 진입 시 의도 확인. 사용자 시작은 새 세대를 만들고, 자동 재시작은 세대가 그대로이고 follow가 켜져 있을 때만 허용.
+fn begin_start_intent(inner: &mut MobileSyncInner, intent: StartIntent) -> Result<u64, String> {
+    match intent {
+        StartIntent::User => {
+            inner.intent_generation = inner.intent_generation.wrapping_add(1);
+            Ok(inner.intent_generation)
+        }
+        StartIntent::Follow(generation)
+            if generation == inner.intent_generation && inner.follow_host.is_some() =>
+        {
+            Ok(generation)
+        }
+        StartIntent::Follow(_) => Err(FOLLOW_CANCELLED.into()),
+    }
+}
+
+/// 수동 중지·로그아웃: 진행 중인 자동 재시작이 이 의도를 뒤집지 못하게 세대를 올리고 follow를 끈다.
+fn end_user_intent(inner: &mut MobileSyncInner) {
+    inner.intent_generation = inner.intent_generation.wrapping_add(1);
+    inner.follow_host = None;
+}
+
+const FOLLOW_CANCELLED: &str = "사용자가 모바일 연결을 중지해 자동 재시작을 취소했습니다";
 
 const NETWORK_FOLLOW_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -110,9 +142,9 @@ pub(crate) fn spawn_network_follow(app: tauri::AppHandle) {
             let Some(runtime) = app.try_state::<MobileSyncRuntime>() else {
                 continue;
             };
-            let (follow, starting) = {
+            let (follow, starting, generation) = {
                 let inner = runtime.0.lock().expect("mobile sync state lock");
-                (inner.follow_host.clone(), inner.starting)
+                (inner.follow_host.clone(), inner.starting, inner.intent_generation)
             };
             if follow.is_none() {
                 continue;
@@ -123,23 +155,39 @@ pub(crate) fn spawn_network_follow(app: tauri::AppHandle) {
             else {
                 continue;
             };
-            runtime.0.lock().expect("mobile sync state lock").follow_host = Some(next.clone());
-            let _ = mobile_sync_stop_internal(&runtime);
             let Some(profile) = app.try_state::<RuntimeProfile>() else {
                 continue;
             };
-            if let Err(message) = mobile_sync_start(app.clone(), profile, runtime).await {
+            // 사용자 시작과 자동 재시작을 직렬화한다(중지 명령은 세대값으로 우선).
+            let rt: &MobileSyncRuntime = runtime.inner();
+            let _lifecycle = rt.1.lock().await;
+            {
+                let mut inner = runtime.0.lock().expect("mobile sync state lock");
+                if inner.intent_generation != generation || inner.follow_host != follow || inner.starting {
+                    continue; // 그 사이 사용자가 중지·시작·로그아웃함
+                }
+                inner.follow_host = Some(next.clone()); // 새 주소마다 한 번만 시도
+            }
+            if let Err(message) = mobile_sync_stop_internal(&runtime) {
+                // 옛 서버를 못 끄면 새로 띄우지 않는다(두 서버 공존·포트 충돌 방지).
+                runtime.0.lock().expect("mobile sync state lock").last_error =
+                    Some(format!("네트워크 변경 후 자동 재시작 보류: {message}"));
+                continue;
+            }
+            if let Err(message) =
+                start_with_intent(app.clone(), profile, runtime, StartIntent::Follow(generation)).await
+            {
                 eprintln!("[mobile-sync] 네트워크 변경 후 자동 재시작 실패 ({next}): {message}");
             }
         }
     });
 }
 
-pub(crate) struct MobileSyncRuntime(Mutex<MobileSyncInner>);
+pub(crate) struct MobileSyncRuntime(Mutex<MobileSyncInner>, tokio::sync::Mutex<()>);
 
 impl Default for MobileSyncRuntime {
     fn default() -> Self {
-        Self(Mutex::new(MobileSyncInner::default()))
+        Self(Mutex::new(MobileSyncInner::default()), tokio::sync::Mutex::new(()))
     }
 }
 
@@ -439,6 +487,18 @@ pub(crate) async fn mobile_sync_start(
     profile: tauri::State<'_, RuntimeProfile>,
     state: tauri::State<'_, MobileSyncRuntime>,
 ) -> Result<MobileSyncStatus, String> {
+    let rt: &MobileSyncRuntime = state.inner();
+    let _lifecycle = rt.1.lock().await;
+    start_with_intent(app, profile, state, StartIntent::User).await
+}
+
+async fn start_with_intent(
+    app: tauri::AppHandle,
+    profile: tauri::State<'_, RuntimeProfile>,
+    state: tauri::State<'_, MobileSyncRuntime>,
+    intent: StartIntent,
+) -> Result<MobileSyncStatus, String> {
+    let generation;
     {
         let mut inner = state.0.lock().expect("mobile sync state lock");
         let status = current_status(&inner);
@@ -447,6 +507,7 @@ pub(crate) async fn mobile_sync_start(
             StartGate::RejectStarting => return Err("모바일 연결 서버가 이미 시작 중입니다".into()),
             StartGate::Proceed => {}
         }
+        generation = begin_start_intent(&mut inner, intent)?;
         if inner.child.is_some() {
             if let Some(child) = inner.child.take() {
                 let _ = child.kill();
@@ -634,6 +695,12 @@ pub(crate) async fn mobile_sync_start(
             MobileStartDecision::Ready => {
                 let mut inner = state.0.lock().expect("mobile sync state lock");
                 inner.starting = false;
+                if inner.intent_generation != generation {
+                    // 시작 도중 사용자가 중지·로그아웃했다 → 그 의도를 따른다.
+                    drop(inner);
+                    let _ = mobile_sync_stop_internal(&state);
+                    return Err(FOLLOW_CANCELLED.into());
+                }
                 inner.follow_host = Some(host.clone());
                 match MobileDiscoveryAdvertisement::start(&host, &instance_id) {
                     Ok(discovery) => inner.discovery = Some(discovery),
@@ -756,7 +823,16 @@ pub(crate) fn mobile_sync_stop(
     preference.record_manual_stop();
     write_mobile_startup_preference(&profile, &preference)?;
     // 사용자가 끈 연결은 네트워크가 바뀌어도 다시 켜지 않는다.
-    state.0.lock().expect("mobile sync state lock").follow_host = None;
+    end_user_intent(&mut state.0.lock().expect("mobile sync state lock"));
+    mobile_sync_stop_internal(&state)
+}
+
+/// 로그아웃: 서버를 내리고 자동 추종을 끈다. '시작 시 복원' 설정은 유지해 다음 로그인 때만 다시 켠다.
+#[tauri::command]
+pub(crate) fn mobile_sync_pause_for_logout(
+    state: tauri::State<'_, MobileSyncRuntime>,
+) -> Result<MobileSyncStatus, String> {
+    end_user_intent(&mut state.0.lock().expect("mobile sync state lock"));
     mobile_sync_stop_internal(&state)
 }
 
@@ -1165,12 +1241,58 @@ mod tests {
         let source = include_str!("mobile_sync.rs");
         let ready = source.find("MobileStartDecision::Ready => {").expect("ready branch");
         let follow_set = source[ready..].find("inner.follow_host = Some(host.clone());").expect("follow set");
-        assert!(follow_set < 260);
+        assert!(follow_set < 700);
         let stop = source.find("pub(crate) fn mobile_sync_stop(").expect("manual stop");
-        let follow_clear = source[stop..].find("follow_host = None;").expect("follow clear");
+        let follow_clear = source[stop..].find("end_user_intent(").expect("follow clear");
         assert!(follow_clear < 600);
+        let pause = source.find("pub(crate) fn mobile_sync_pause_for_logout(").expect("logout pause");
+        assert!(source[pause..].find("end_user_intent(").expect("pause clears") < 300);
         let lib = include_str!("lib.rs");
         assert!(lib.contains("mobile_sync::spawn_network_follow(app.handle().clone());"));
+    }
+
+    #[test]
+    fn manual_stop_or_logout_cannot_be_overridden_by_pending_follow_restart() {
+        let mut inner = MobileSyncInner::default();
+        // 사용자 시작 → 세대 1, Ready에서 follow 설정
+        let user = begin_start_intent(&mut inner, StartIntent::User).expect("user start");
+        inner.follow_host = Some("192.168.0.73".into());
+        // 모니터가 세대 1을 읽은 뒤 사용자가 중지(또는 로그아웃)
+        let observed = inner.intent_generation;
+        assert_eq!(observed, user);
+        end_user_intent(&mut inner);
+        assert!(inner.follow_host.is_none());
+        // 지연된 자동 재시작은 진입에서 거부
+        assert_eq!(
+            begin_start_intent(&mut inner, StartIntent::Follow(observed)),
+            Err(FOLLOW_CANCELLED.to_string())
+        );
+        // follow가 다시 켜져 있어도(이후 사용자 재시작) 옛 세대의 자동 재시작은 거부
+        let again = begin_start_intent(&mut inner, StartIntent::User).expect("user restart");
+        inner.follow_host = Some("172.20.10.4".into());
+        assert!(again > observed);
+        assert!(begin_start_intent(&mut inner, StartIntent::Follow(observed)).is_err());
+        // 현재 세대의 자동 재시작은 허용(사용자 의도가 그대로일 때)
+        assert_eq!(begin_start_intent(&mut inner, StartIntent::Follow(again)), Ok(again));
+        // 중지 상태(follow 없음)에서는 같은 세대라도 자동 재시작 불가
+        inner.follow_host = None;
+        assert!(begin_start_intent(&mut inner, StartIntent::Follow(again)).is_err());
+    }
+
+    #[test]
+    fn follow_restart_is_serialized_and_rechecks_intent_and_stop_failure() {
+        let source = include_str!("mobile_sync.rs");
+        let follow = source.find("pub(crate) fn spawn_network_follow(").expect("follow loop");
+        let body = &source[follow..];
+        let lock = body.find("rt.1.lock().await").expect("lifecycle lock");
+        let recheck = body.find("inner.intent_generation != generation").expect("recheck");
+        let stop = body.find("if let Err(message) = mobile_sync_stop_internal(&runtime)").expect("stop checked");
+        let start = body.find("StartIntent::Follow(generation)").expect("follow start");
+        assert!(lock < recheck && recheck < stop && stop < start);
+        let user = source.find("pub(crate) async fn mobile_sync_start(").expect("user start");
+        assert!(source[user..].find("rt.1.lock().await").expect("user lock") < 360);
+        let ready = source.find("MobileStartDecision::Ready => {").expect("ready");
+        assert!(source[ready..].find("inner.intent_generation != generation").expect("ready recheck") < 200);
     }
 
     #[test]
