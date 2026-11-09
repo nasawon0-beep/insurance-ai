@@ -59,6 +59,8 @@ interface DiscoveredAddressActions {
 class PcAutoReconnectCoordinator(
     private val actions: DiscoveredAddressActions,
     private val discovery: PcDiscovery,
+    // NSD가 막힌 네트워크(폰 핫스팟 등)용 대체 탐색. 후보는 이미 신뢰한 PC 키로 TLS를 먼저 증명한 주소만 낸다.
+    private val fallbackDiscovery: PcDiscovery? = null,
 ) {
     private val mutex = Mutex()
 
@@ -67,27 +69,38 @@ class PcAutoReconnectCoordinator(
         try {
             val expected = actions.registeredPcInstanceId()
             val candidates = runCatching { discovery.discover().distinct() }.getOrDefault(emptyList())
-            for (candidate in candidates.take(8)) {
-                if (!mayProbeDiscoveredCandidate(expected, candidate)) continue
-                val verified = runCatching { actions.verifyAndUpdateDiscoveredAddress(candidate) }
-                if (verified.isSuccess) return AutoReconnectResult.CONNECTED
-                if (verified.exceptionOrNull()?.isCertificateReconnectRejection() == true) continue
-                if (verified.exceptionOrNull()?.isFailClosedReconnectFailure() == true) {
-                    return AutoReconnectResult.AUTHENTICATION_FAILED
-                }
-            }
+            tryCandidates(expected, candidates.take(8))?.let { return it }
             val fallback = runCatching { actions.verifyCurrentAddress() }
             if (fallback.getOrDefault(false)) return AutoReconnectResult.VERIFIED_EXISTING_ENDPOINT
-            return if (fallback.exceptionOrNull()?.isFailClosedReconnectFailure() == true) {
-                AutoReconnectResult.AUTHENTICATION_FAILED
-            } else {
-                AutoReconnectResult.DISCOVERY_FAILED
+            if (fallback.exceptionOrNull()?.isFailClosedReconnectFailure() == true) {
+                return AutoReconnectResult.AUTHENTICATION_FAILED
             }
+            val scan = fallbackDiscovery
+            if (scan != null && expected != null) {
+                val scanned = runCatching { scan.discover().distinct() }.getOrDefault(emptyList())
+                tryCandidates(expected, scanned.take(MAX_FALLBACK_CANDIDATES))?.let { return it }
+            }
+            return AutoReconnectResult.DISCOVERY_FAILED
         } finally {
             mutex.unlock()
         }
     }
+
+    private suspend fun tryCandidates(expected: String?, candidates: List<DiscoveredPc>): AutoReconnectResult? {
+        for (candidate in candidates) {
+            if (!mayProbeDiscoveredCandidate(expected, candidate)) continue
+            val verified = runCatching { actions.verifyAndUpdateDiscoveredAddress(candidate) }
+            if (verified.isSuccess) return AutoReconnectResult.CONNECTED
+            if (verified.exceptionOrNull()?.isCertificateReconnectRejection() == true) continue
+            if (verified.exceptionOrNull()?.isFailClosedReconnectFailure() == true) {
+                return AutoReconnectResult.AUTHENTICATION_FAILED
+            }
+        }
+        return null
+    }
 }
+
+private const val MAX_FALLBACK_CANDIDATES = 4
 
 private fun Throwable.isCertificateReconnectRejection(): Boolean {
     var current: Throwable? = this

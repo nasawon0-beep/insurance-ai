@@ -182,6 +182,51 @@ class PcDiscoveryTest {
         }
     }
 
+    @Test
+    fun nsdFailureThenUnreachableCurrentAddressUsesPinnedLanFallbackThroughSameVerification() = runTest {
+        val scanned = DiscoveredPc("https://172.20.10.9:18443", instance)
+        val actions = FakeActions(instance, existingEndpointFailure = java.net.SocketTimeoutException("old address gone"))
+        val result = PcAutoReconnectCoordinator(actions, FakeDiscovery(emptyList()), FakeDiscovery(listOf(scanned)))
+            .reconnectWithResult()
+        assertEquals(AutoReconnectResult.CONNECTED, result)
+        assertEquals(listOf(scanned), actions.probed) // 기존 인증·identity 검증 경로로만 확정
+        assertEquals(1, actions.existingEndpointProbes)
+    }
+
+    @Test
+    fun lanFallbackIsNotUsedAfterFailClosedOrForUnregisteredPc() = runTest {
+        var scans = 0
+        val counting = object : PcDiscovery {
+            override suspend fun discover(): List<DiscoveredPc> { scans++; return emptyList() }
+        }
+        val revoked = FakeActions(instance, existingEndpointFailure = LanSyncHttpException(401))
+        assertEquals(
+            AutoReconnectResult.AUTHENTICATION_FAILED,
+            PcAutoReconnectCoordinator(revoked, FakeDiscovery(emptyList()), counting).reconnectWithResult(),
+        )
+        val unregistered = FakeActions(null, existingEndpointFailure = java.io.IOException("offline"))
+        assertEquals(
+            AutoReconnectResult.DISCOVERY_FAILED,
+            PcAutoReconnectCoordinator(unregistered, FakeDiscovery(emptyList()), counting).reconnectWithResult(),
+        )
+        assertEquals(0, scans)
+    }
+
+    @Test
+    fun lanFallbackCandidateWithOtherInstanceOrRevocationFailsClosed() = runTest {
+        val other = DiscoveredPc("https://172.20.10.5:18443", "fedcba9876543210fedcba9876543210")
+        val same = DiscoveredPc("https://172.20.10.9:18443", instance)
+        val actions = FakeActions(
+            instance,
+            firstFailure = LanSyncHttpException(401),
+            existingEndpointFailure = java.io.IOException("old address gone"),
+        )
+        val result = PcAutoReconnectCoordinator(actions, FakeDiscovery(emptyList()), FakeDiscovery(listOf(other, same)))
+            .reconnectWithResult()
+        assertEquals(AutoReconnectResult.AUTHENTICATION_FAILED, result) // 해제 기기는 새 주소에서도 자동 복귀 없음
+        assertEquals(listOf(same), actions.probed) // 다른 PC identity 후보는 시도조차 안 함
+    }
+
     private class FakeDiscovery(private val values: List<DiscoveredPc>) : PcDiscovery {
         override suspend fun discover(): List<DiscoveredPc> = values
     }

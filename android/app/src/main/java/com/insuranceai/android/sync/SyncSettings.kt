@@ -139,6 +139,18 @@ class SyncSettings(
 
     fun registeredPcInstanceId(): String? = prefs.getString("pc_instance_id")
 
+    /** 대체 탐색용 신뢰 값(토큰 복호화 없음). 활성 등록 + SPKI 바인딩 완료일 때만. */
+    fun scanTrust(): ScanTrust? {
+        if (registrationState() != ConnectionRegistrationState.ACTIVE) return null
+        if (tlsBindingState() != TlsBindingState.READY) return null
+        return scanTrustFrom(
+            prefs.getString("endpoint"),
+            prefs.getString("certificate_sha256"),
+            prefs.getString("tls_identity_spki_sha256"),
+            prefs.getString("pc_instance_id"),
+        )
+    }
+
     fun tlsBindingState(): TlsBindingState = when (prefs.getString("tls_binding_state")) {
         TlsBindingState.PENDING.name -> TlsBindingState.PENDING
         TlsBindingState.READY.name -> TlsBindingState.READY

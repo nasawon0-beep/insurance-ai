@@ -18,6 +18,7 @@ import com.insuranceai.android.sync.PostCommitSyncDispatcher
 import com.insuranceai.android.sync.SyncResumeCoordinator
 import com.insuranceai.android.sync.AndroidNsdPcDiscovery
 import com.insuranceai.android.sync.PcAutoReconnectCoordinator
+import com.insuranceai.android.sync.PinnedLanScanDiscovery
 import com.insuranceai.android.sync.ForegroundSyncLifecycleCoordinator
 
 class InsuranceAiApplication : Application() {
@@ -61,7 +62,11 @@ class AppContainer(application: Application) {
         SyncRepository(database, encryptionService, syncSettings)
     }
     val pcAutoReconnectCoordinator: PcAutoReconnectCoordinator by lazy {
-        PcAutoReconnectCoordinator(syncRepository, AndroidNsdPcDiscovery(application))
+        PcAutoReconnectCoordinator(
+            syncRepository,
+            AndroidNsdPcDiscovery(application),
+            PinnedLanScanDiscovery(trust = syncSettings::scanTrust),
+        )
     }
     val foregroundSyncLifecycleCoordinator: ForegroundSyncLifecycleCoordinator by lazy {
         ForegroundSyncLifecycleCoordinator(
