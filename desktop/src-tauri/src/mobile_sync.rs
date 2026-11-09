@@ -75,6 +75,64 @@ struct MobileSyncInner {
     shutdown_file: Option<PathBuf>,
     last_error: Option<String>,
     discovery: Option<MobileDiscoveryAdvertisement>,
+    // 사용자가 켠 모바일 연결이 따라갈 PC 주소. 수동 중지 때만 비운다(네트워크 변경 자동 재시작용).
+    follow_host: Option<String>,
+}
+
+const NETWORK_FOLLOW_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Debug, PartialEq)]
+enum NetworkFollowAction {
+    Keep,
+    Restart(String),
+}
+
+/// Wi-Fi↔핫스팟 전환·DHCP 변경으로 PC 주소가 바뀌면 같은 신뢰 identity로 서버를 새 주소에서 다시 띄운다.
+/// 주소가 잡히지 않는 순간(전환 중)·시작 중·사용자가 끈 상태에서는 아무것도 하지 않는다.
+/// 새 주소마다 한 번만 시도한다(실패 시 반복하지 않고 오류를 화면에 남김).
+fn network_follow_action(
+    follow_host: Option<&str>,
+    starting: bool,
+    detected: Option<&str>,
+) -> NetworkFollowAction {
+    match (follow_host, detected) {
+        (Some(follow), Some(now)) if !starting && follow != now => {
+            NetworkFollowAction::Restart(now.to_owned())
+        }
+        _ => NetworkFollowAction::Keep,
+    }
+}
+
+pub(crate) fn spawn_network_follow(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(NETWORK_FOLLOW_INTERVAL).await;
+            let Some(runtime) = app.try_state::<MobileSyncRuntime>() else {
+                continue;
+            };
+            let (follow, starting) = {
+                let inner = runtime.0.lock().expect("mobile sync state lock");
+                (inner.follow_host.clone(), inner.starting)
+            };
+            if follow.is_none() {
+                continue;
+            }
+            let detected = detected_private_ipv4().ok();
+            let NetworkFollowAction::Restart(next) =
+                network_follow_action(follow.as_deref(), starting, detected.as_deref())
+            else {
+                continue;
+            };
+            runtime.0.lock().expect("mobile sync state lock").follow_host = Some(next.clone());
+            let _ = mobile_sync_stop_internal(&runtime);
+            let Some(profile) = app.try_state::<RuntimeProfile>() else {
+                continue;
+            };
+            if let Err(message) = mobile_sync_start(app.clone(), profile, runtime).await {
+                eprintln!("[mobile-sync] 네트워크 변경 후 자동 재시작 실패 ({next}): {message}");
+            }
+        }
+    });
 }
 
 pub(crate) struct MobileSyncRuntime(Mutex<MobileSyncInner>);
@@ -576,6 +634,7 @@ pub(crate) async fn mobile_sync_start(
             MobileStartDecision::Ready => {
                 let mut inner = state.0.lock().expect("mobile sync state lock");
                 inner.starting = false;
+                inner.follow_host = Some(host.clone());
                 match MobileDiscoveryAdvertisement::start(&host, &instance_id) {
                     Ok(discovery) => inner.discovery = Some(discovery),
                     Err(error) => inner.last_error = Some(error),
@@ -696,6 +755,8 @@ pub(crate) fn mobile_sync_stop(
     let mut preference = read_mobile_startup_preference(&profile);
     preference.record_manual_stop();
     write_mobile_startup_preference(&profile, &preference)?;
+    // 사용자가 끈 연결은 네트워크가 바뀌어도 다시 켜지 않는다.
+    state.0.lock().expect("mobile sync state lock").follow_host = None;
     mobile_sync_stop_internal(&state)
 }
 
@@ -1070,6 +1131,46 @@ mod tests {
             &[("CUSTOMER_DB_KEYFILE_ONLY", "1")]
         );
         assert!(mobile_keyfile_environment(false).is_empty());
+    }
+
+    #[test]
+    fn network_follow_restarts_once_per_new_private_address_only_when_user_enabled() {
+        // 사용자가 켠 적 없거나 수동 중지 → 아무것도 안 함
+        assert_eq!(network_follow_action(None, false, Some("192.168.0.73")), NetworkFollowAction::Keep);
+        // 주소 그대로 → 유지
+        assert_eq!(
+            network_follow_action(Some("192.168.0.73"), false, Some("192.168.0.73")),
+            NetworkFollowAction::Keep
+        );
+        // Wi-Fi↔핫스팟 전환 중 주소 없음 → 기다림(서버 중지·인증서 변경 없음)
+        assert_eq!(network_follow_action(Some("192.168.0.73"), false, None), NetworkFollowAction::Keep);
+        // 시작 진행 중 → 중복 시작 안 함
+        assert_eq!(
+            network_follow_action(Some("192.168.0.73"), true, Some("172.20.10.4")),
+            NetworkFollowAction::Keep
+        );
+        // 새 주소 → 그 주소로 한 번 재시작(호출 측이 follow_host를 새 주소로 바꿔 반복 시도 차단)
+        assert_eq!(
+            network_follow_action(Some("192.168.0.73"), false, Some("172.20.10.4")),
+            NetworkFollowAction::Restart("172.20.10.4".into())
+        );
+        assert_eq!(
+            network_follow_action(Some("172.20.10.4"), false, Some("172.20.10.4")),
+            NetworkFollowAction::Keep
+        );
+    }
+
+    #[test]
+    fn network_follow_is_wired_to_user_start_and_manual_stop() {
+        let source = include_str!("mobile_sync.rs");
+        let ready = source.find("MobileStartDecision::Ready => {").expect("ready branch");
+        let follow_set = source[ready..].find("inner.follow_host = Some(host.clone());").expect("follow set");
+        assert!(follow_set < 260);
+        let stop = source.find("pub(crate) fn mobile_sync_stop(").expect("manual stop");
+        let follow_clear = source[stop..].find("follow_host = None;").expect("follow clear");
+        assert!(follow_clear < 600);
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("mobile_sync::spawn_network_follow(app.handle().clone());"));
     }
 
     #[test]

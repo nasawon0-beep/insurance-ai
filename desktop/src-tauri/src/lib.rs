@@ -1893,6 +1893,7 @@ pub fn run() {
             app.manage(AppLock(lock_file));
             app.manage(profile.clone());
             app.manage(mobile_sync::MobileSyncRuntime::default());
+            mobile_sync::spawn_network_follow(app.handle().clone());
 
             #[cfg(windows)]
             let sidecar_job = SidecarJob::new()?;

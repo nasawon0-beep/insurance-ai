@@ -761,10 +761,10 @@ fun SyncScreen(
                         if (advanced) {
                             Text("PC 주소 · $connectionLabel")
                             Text(when (tlsBindingState) {
-                                TlsBindingState.READY -> "인증서 신뢰 이전 준비 완료"
-                                TlsBindingState.PENDING -> "인증서 신뢰 이전 준비 중"
-                                TlsBindingState.FAILED -> "인증서 신뢰 이전 준비 실패 · 연결은 유지됩니다"
-                                TlsBindingState.NOT_REQUIRED -> "인증서 신뢰 이전 정보 미등록"
+                                TlsBindingState.READY -> "자동 주소 전환 준비 완료"
+                                TlsBindingState.PENDING -> "자동 주소 전환 준비 중 · 다른 활성 기기도 업데이트가 필요할 수 있습니다"
+                                TlsBindingState.FAILED -> "자동 주소 전환 준비 실패 · 연결은 유지되며 다시 동기화해 주세요"
+                                TlsBindingState.NOT_REQUIRED -> "자동 주소 전환 정보 미등록"
                             })
                         }
                     }
