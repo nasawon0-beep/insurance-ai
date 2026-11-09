@@ -104,6 +104,8 @@ def create_app(
     @app.post("/v1/sync")
     async def sync(request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         ctx = auth(authorization)
+        if store.business_sync_held():
+            raise HTTPException(status_code=409, detail='business_reset_sync_hold')
         body = await request.json()
         try:
             requested_schema = body.get("schema_version", 1)
@@ -140,7 +142,7 @@ def create_app(
                 "conflicts": store.list_conflicts(ctx),
             }
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=409 if str(exc) == 'business_reset_sync_hold' else 422, detail=str(exc)) from exc
 
     @app.post("/v1/continuity")
     async def continuity(authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -167,12 +169,14 @@ def create_app(
         try:
             store.bind_tls_identity(ctx, candidate)
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=409 if str(exc) == 'business_reset_sync_hold' else 422, detail=str(exc)) from exc
         return {"status": "bound", "tls_identity_spki_sha256": candidate}
 
     @app.post("/v1/conflicts/{conflict_id}/resolve")
     async def resolve(conflict_id: str, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         ctx = auth(authorization)
+        if store.business_sync_held():
+            raise HTTPException(status_code=409, detail='business_reset_sync_hold')
         body = await request.json()
         try:
             return store.resolve_conflict(
@@ -184,7 +188,7 @@ def create_app(
                 refresh_callback=bridge.refresh if bridge is not None else None,
             )
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=409 if str(exc) == 'business_reset_sync_hold' else 422, detail=str(exc)) from exc
 
     @app.on_event("shutdown")
     def shutdown() -> None:

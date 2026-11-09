@@ -90,15 +90,21 @@ class SyncRunGate {
 data class WorkerFailure(val status: String, val retry: Boolean)
 
 const val MAX_SYNC_RUN_ATTEMPTS = 3
+const val CONNECTION_FAILURE_GUIDANCE = "연결하지 못했습니다. 휴대폰 핫스팟이나 다른 Wi-Fi에 PC와 휴대폰을 연결한 뒤 다시 시도해 주세요."
+const val RESET_SYNC_HOLD_STATUS = "PC 초기화 후 동기화가 중지되어 있습니다. 휴대폰 자료와 등록은 유지됩니다. 자동으로 재개하지 않습니다."
 
 fun workerFailure(error: Throwable, runAttemptCount: Int = 0): WorkerFailure =
     if (error.requiresUserAuthentication()) {
         WorkerFailure("재인증 필요 · 앱 잠금 해제 후 자동 동기화를 재개합니다", retry = false)
     } else if (error is LanSyncHttpException && error.statusCode == 401) {
         WorkerFailure("이 기기는 PC에서 등록 해제되었거나 인증 정보가 만료되었습니다 · 자동 재시도를 중단합니다", retry = false)
+    } else if (error is LanSyncHttpException && error.statusCode == 409) {
+        WorkerFailure(RESET_SYNC_HOLD_STATUS, retry = false)
+    } else if (error is javax.net.ssl.SSLException || error is java.security.cert.CertificateException) {
+        WorkerFailure("PC TLS 인증서를 확인해 주세요. 인증서 검증을 끄지 마세요.", retry = false)
     } else if (runAttemptCount >= MAX_SYNC_RUN_ATTEMPTS - 1) {
         WorkerFailure(
-            "PC 연결 실패 · 자동 재시도 ${MAX_SYNC_RUN_ATTEMPTS}회 종료 · 앱을 다시 열거나 사용자가 다시 시도하면 재개합니다 (${error.javaClass.simpleName})",
+            "$CONNECTION_FAILURE_GUIDANCE 자동 재시도 ${MAX_SYNC_RUN_ATTEMPTS}회 종료 (${error.javaClass.simpleName})",
             retry = false,
         )
     } else {

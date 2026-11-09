@@ -8,6 +8,7 @@ export type MobileFirewallStatus = {
   programPath: string | null;
   ruleName: string | null;
   connectivityVerified: false;
+
   lastError: string | null;
   applyOutcome: null | 'applied' | 'failed' | 'blocked' | 'qaRejected' | 'notConfirmed';
 };
@@ -62,7 +63,16 @@ export function firewallApplyError(status: MobileFirewallStatus, enable: boolean
   return null;
 }
 
-export function firewallQrAllowed(running: boolean, status: MobileFirewallStatus | null): boolean {
-  return running && !!status?.supported && status.networkCategory === 'private'
+export function firewallQrAllowed(running: boolean, status: MobileFirewallStatus | null, publicConfirmed = false): boolean {
+  return running && !!status?.supported && (status.networkCategory === 'private'
+    || (status.networkCategory === 'public' && publicConfirmed && !status.qa))
     && status.ruleReady && !status.lastError;
+}
+
+export function mobileConnectionFailure(message: string): string {
+  if (/UAC|승인|notConfirmed|qaRejected/i.test(message)) return 'Windows 승인이 취소·거부되었거나 완료되지 않았습니다. 상태를 확인한 뒤 다시 시도해 주세요.';
+  if (/TLS|SSL|certificate|인증서/i.test(message)) return '보안 연결을 확인하지 못했습니다. PC 주소와 인증서 정보를 확인해 주세요. 인증서 검증을 끄지 마세요.';
+  if (/401|인증 정보|revoked/i.test(message)) return '휴대폰 인증 정보를 확인해야 합니다. 기존 자료를 유지한 채 다시 연결해 주세요.';
+  if (/timeout|timed out|시간 초과|connect|network|연결.*못/i.test(message)) return '연결하지 못했습니다. 휴대폰 핫스팟이나 다른 Wi-Fi에 PC와 휴대폰을 연결한 뒤 다시 시도해 주세요.';
+  return '요청을 완료하지 못했습니다. 연결 문제 해결 · 상세 정보를 확인해 주세요.';
 }

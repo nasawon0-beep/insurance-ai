@@ -59,6 +59,9 @@ def main() -> None:
     revoke = sub.add_parser("revoke")
     revoke.add_argument("device_id")
     sub.add_parser("list-devices")
+    hide = sub.add_parser("hide-revoked-device")
+    hide.add_argument("device_id")
+    hide.add_argument("--confirmed", action="store_true", required=True)
     certificate = sub.add_parser("ensure-certificate")
     certificate.add_argument("--state-dir", required=True)
     certificate.add_argument("--host", action="append", required=True)
@@ -96,6 +99,9 @@ def main() -> None:
             print("revoked")
         elif args.action == "list-devices":
             print(json.dumps(store.list_devices(), ensure_ascii=False))
+        elif args.action == "hide-revoked-device":
+            store.hide_revoked_device(args.device_id)
+            print("hidden-from-list")
 
     finally:
         store.close()

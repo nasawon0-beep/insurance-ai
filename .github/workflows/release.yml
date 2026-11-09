@@ -81,7 +81,7 @@ jobs:
             throw 'local-engine onedir executable/runtime is incomplete'
           }
           & local-engine/.venv/Scripts/python.exe -m PyInstaller.utils.cliutils.archive_viewer -l -r -b $Exe > local-engine-archive.txt
-          foreach ($Module in @('runtime_paths', 'database.coverage', 'database.coverage_analysis_parser', 'database.coverage_mapping', 'database.family')) {
+          foreach ($Module in @('runtime_paths', 'database.coverage', 'database.coverage_analysis_parser', 'database.coverage_mapping', 'database.family', 'database.business_reset', 'database.reset_router', 'database.reset_activity', 'lan_sync.store')) {
             if (-not (Select-String -LiteralPath local-engine-archive.txt -SimpleMatch $Module -Quiet)) {
               throw "required local-engine module missing: $Module"
             }
@@ -117,12 +117,18 @@ jobs:
         shell: bash
         run: |
           local-engine/.venv/Scripts/python.exe -m pytest -q tests/test_policy_coverages.py tests/test_main_coverage_recalculate_api.py tests/test_coverage_analysis_api.py tests/test_coverage_analysis_parser.py tests/test_coverage_mapping.py
+          local-engine/.venv/Scripts/python.exe -m pytest -q tests/test_business_reset.py tests/test_business_restore.py tests/test_crypto_key_safety.py tests/test_lan_sync*.py tests/test_public_simple_consent.py tests/test_mobile_release_readiness.py tests/test_mobile_device_list_hide.py
           npm test
           cd desktop
           node --test --experimental-strip-types tests/*.test.ts tests/*.test.mjs
           npm run build
           cd src-tauri
           TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo check
+          TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo test --lib
+
+      - name: Validate scoped firewall offline mocks (not OS connectivity)
+        shell: pwsh
+        run: '& desktop/src-tauri/src/mobile_firewall.tests.ps1'
 
       - name: Build Windows signed bundles from onedir candidate
         run: |

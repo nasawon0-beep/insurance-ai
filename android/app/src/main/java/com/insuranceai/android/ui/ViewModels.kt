@@ -302,8 +302,14 @@ fun syncFailureStatus(error: Throwable): String =
         "앱 잠금 해제 후 동기화를 다시 시도합니다"
     } else if (error is com.insuranceai.android.sync.LanSyncHttpException && error.statusCode == 401) {
         "PC에서 연결이 해제되었거나 인증 정보를 다시 확인해야 합니다 · 기존 자료는 그대로입니다"
+    } else if (error is com.insuranceai.android.sync.LanSyncHttpException && error.statusCode == 409) {
+        com.insuranceai.android.sync.RESET_SYNC_HOLD_STATUS
+    } else if (error is javax.net.ssl.SSLException || error is java.security.cert.CertificateException) {
+        "PC TLS 인증서를 확인해 주세요. 인증서 검증을 끄지 마세요."
     } else if (error is java.net.SocketTimeoutException) {
-        "PC 응답 시간 초과 · 네트워크 연결을 확인해 주세요"
+        "PC 응답 시간 초과 · ${com.insuranceai.android.sync.CONNECTION_FAILURE_GUIDANCE}"
+    } else if (error is java.net.ConnectException || error is java.net.NoRouteToHostException || error is java.net.UnknownHostException) {
+        com.insuranceai.android.sync.CONNECTION_FAILURE_GUIDANCE
     } else {
         "실패: ${error.message ?: error.javaClass.simpleName}"
     }

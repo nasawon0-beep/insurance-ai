@@ -27,8 +27,8 @@ Assert (Test-Path -LiteralPath $source) 'Missing portable firewall implementatio
 # script scope; a child file invocation can bind those references elsewhere.
 # This is a harness-only correction; no real NetSecurity cmdlet is invoked.
 $policy = [scriptblock]::Create((Get-Content -LiteralPath $source -Raw))
-function Invoke-TestPolicy($Operation='query', $Qa=$false) {
-    & $policy -Program "C:\Program Files\Moa'Doom\local-engine.exe" -HostAddress '192.0.2.2' -Operation $Operation -Qa $Qa | ConvertFrom-Json
+function Invoke-TestPolicy($Operation='query', $Qa=$false, $Scope='Auto') {
+    & $policy -Program "C:\Program Files\Moa'Doom\local-engine.exe" -HostAddress '192.0.2.2' -Operation $Operation -Qa $Qa -Scope $Scope | ConvertFrom-Json
 }
 $s = Invoke-TestPolicy
 Assert ($null -ne $s -and $null -eq $s.lastError) 'Initial query must return a status without a policy exception'
@@ -53,8 +53,16 @@ Assert $s.ruleReady 'Updated program is ready'
 $before = $script:Writes.Count
 $script:Category = 'Public'
 $s = Invoke-TestPolicy
-Assert ($s.networkCategory -eq 'public' -and -not $s.canApply) 'Public category is not eligible'
+Assert ($s.networkCategory -eq 'public' -and $s.canApply -and -not $s.ruleReady) 'Public query is separate from Private and consent'
 Assert ($script:Writes.Count -eq $before) 'Public query has no mutations'
+$s = Invoke-TestPolicy 'enable' $false 'Public'
+Assert ($s.ruleReady -and $script:Rules.Count -eq 2) 'Public enable creates separate owned rule'
+Assert ($script:Rules[0].Profile -eq 'Private' -and $script:Rules[1].Profile -eq 'Public') 'Private rule preserved'
+$s = Invoke-TestPolicy 'enable' $false 'Public'
+Assert ($script:Rules.Count -eq 2) 'Public enable is idempotent'
+$script:Category = 'Private'
+$s = Invoke-TestPolicy 'disable' $false 'Public'
+Assert ($s.ruleState -eq 'disabled' -and $script:Rules[0].Enabled -eq 'True') 'Public can be disabled after network change without touching Private'
 $script:Category = 'Unknown'
 $s = Invoke-TestPolicy
 Assert ($s.networkCategory -eq 'unavailable' -and -not $s.canApply) 'Unavailable profile fails closed'

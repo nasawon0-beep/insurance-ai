@@ -108,11 +108,23 @@ class SyncStore:
     def close(self) -> None:
         self.conn.close()
 
+    def business_sync_held(self) -> bool:
+        from database.business_reset import sync_is_held
+        return sync_is_held(self.conn)
+
+    def _ensure_business_sync(self) -> None:
+        if self.business_sync_held():
+            raise ValidationError('business_reset_sync_hold')
+
     def initialize(self) -> None:
         self.conn.executescript("""
         CREATE TABLE IF NOT EXISTS sync_devices(
           id TEXT PRIMARY KEY, name TEXT NOT NULL, token_digest TEXT NOT NULL UNIQUE,
           revoked_at INTEGER, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sync_device_list_hidden(
+          device_id TEXT PRIMARY KEY, hidden_at INTEGER NOT NULL,
+          FOREIGN KEY(device_id) REFERENCES sync_devices(id)
         );
         CREATE TABLE IF NOT EXISTS sync_pairing_codes(
           digest TEXT PRIMARY KEY, salt TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -328,6 +340,7 @@ class SyncStore:
                         ).rowcount
                         if updated != 1 or activated != 1:
                             raise AuthError("invalid, expired, or already-used recovery code")
+                        self.conn.execute("DELETE FROM sync_device_list_hidden WHERE device_id=?", (expected_device_id,))
                         self.conn.execute("COMMIT")
                 except Exception:
                     if self.conn.in_transaction:
@@ -477,6 +490,17 @@ class SyncStore:
         if self.conn.execute("UPDATE sync_devices SET revoked_at=? WHERE id=?", (int(time.time()), device_id)).rowcount != 1:
             raise ValidationError("unknown device")
 
+    def hide_revoked_device(self, device_id: str) -> None:
+        """Hide an operator list row only; never erase credentials, queues or revocation."""
+        row = self.conn.execute("SELECT revoked_at FROM sync_devices WHERE id=?", (device_id,)).fetchone()
+        if row is None or row["revoked_at"] is None:
+            raise ValidationError("only revoked devices can be removed from the list")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sync_device_list_hidden(device_id,hidden_at) "
+            "SELECT id,? FROM sync_devices WHERE id=? AND revoked_at IS NOT NULL",
+            (int(self._clock()), device_id),
+        )
+
     def list_devices(self) -> list[dict[str, Any]]:
         """Return operator-visible metadata without token material."""
         return [
@@ -487,7 +511,10 @@ class SyncStore:
                 "revoked_at": row["revoked_at"],
             }
             for row in self.conn.execute(
-                "SELECT id,name,created_at,revoked_at FROM sync_devices ORDER BY created_at DESC,id"
+                "SELECT id,name,created_at,revoked_at FROM sync_devices "
+                "WHERE revoked_at IS NULL OR NOT EXISTS "
+                "(SELECT 1 FROM sync_device_list_hidden h WHERE h.device_id=sync_devices.id) "
+                "ORDER BY created_at DESC,id"
             ).fetchall()
         ]
 
@@ -536,6 +563,7 @@ class SyncStore:
         try:
             if owns_transaction:
                 self.conn.execute("BEGIN IMMEDIATE")
+            self._ensure_business_sync()
             for (entity_type, entity_id), payload in snapshots.items():
                 data = json.dumps(payload, ensure_ascii=False, sort_keys=True)
                 current = self.conn.execute(
@@ -621,6 +649,7 @@ class SyncStore:
             raise ValidationError("operation batch must contain 1..500 items")
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            self._ensure_business_sync()
             if refresh_callback is not None:
                 refresh_callback()
             results: list[PushResult] = []
@@ -742,6 +771,7 @@ class SyncStore:
         self._ensure_active(auth)
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            self._ensure_business_sync()
             if refresh_callback is not None:
                 refresh_callback()
             row = self.conn.execute(
@@ -837,6 +867,7 @@ class SyncStore:
 
     def pull(self, auth: AuthContext, cursor: int, limit: int = 200) -> PullResult:
         self._ensure_active(auth)
+        self._ensure_business_sync()
         if cursor < 0 or limit < 1 or limit > 500:
             raise ValidationError("invalid cursor or limit")
         rows = self.conn.execute(
@@ -850,6 +881,7 @@ class SyncStore:
             "payload": json.loads(row["payload"]), "deleted": bool(row["deleted"]), "revision": row["revision"],
         } for row in rows]
         next_cursor = int(rows[-1]["cursor"]) if rows else cursor
+        self._ensure_business_sync()
         return PullResult(items, next_cursor, has_more)
 
     def ack_tombstones(self, auth: AuthContext, cursors: Iterable[int]) -> None:

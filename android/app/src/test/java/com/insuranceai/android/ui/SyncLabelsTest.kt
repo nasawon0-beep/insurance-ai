@@ -11,6 +11,14 @@ import org.junit.Test
 
 class SyncLabelsTest {
     @Test
+    fun resetHoldDoesNotDeletePhoneDataOrRetryAutomatically() {
+        val error = LanSyncHttpException(409)
+        assertTrue(syncFailureStatus(error).contains("자료와 등록은 유지"))
+        assertFalse(com.insuranceai.android.sync.workerFailure(error).retry)
+        assertTrue(syncFailureStatus(java.net.ConnectException()).contains("휴대폰 핫스팟이나 다른 Wi-Fi"))
+        assertTrue(syncFailureStatus(javax.net.ssl.SSLHandshakeException("secret")).contains("인증서"))
+    }
+    @Test
     fun consultationSyncLabelShowsPendingAndDrainedStates() {
         assertEquals("PC 전송 대기", consultationSyncLabel(1))
         assertEquals("동기화 완료", consultationSyncLabel(0))

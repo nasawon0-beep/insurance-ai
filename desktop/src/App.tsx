@@ -10,6 +10,8 @@ import { StatCard } from "./components/DashboardCards";
 import OnboardingScreen from "./components/OnboardingScreen";
 import { ThemeToggle, ThemeSelector } from "./components/ThemeToggle";
 import MobileConnectionPanel from "./components/MobileConnectionPanel";
+import BusinessResetPanel from "./components/BusinessResetPanel";
+import BusinessRestorePanel from "./components/BusinessRestorePanel";
 import {
   changePassword,
   fetchMe,
@@ -1631,6 +1633,7 @@ const pboxStyle: React.CSSProperties = {
 };
 
 function BackupBox() {
+  const [resetHold, setResetHold] = useState(true);
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -1691,6 +1694,7 @@ function BackupBox() {
   return (
     <div style={pboxStyle}>
       <b>백업</b>
+      <BusinessRestorePanel onHoldChange={setResetHold} />
       <p style={{ fontSize: 12, color: "#888", margin: "4px 0" }}>
         고객 DB 스냅샷. 앱 시작 시 하루 1회 자동 백업되고, 최신 20개를 보관합니다.
       </p>
@@ -1711,7 +1715,7 @@ function BackupBox() {
               {it.kind === "safety" && <span style={{ color: "#8a4b00" }}> (안전 사본)</span>}
             </span>
             <button style={{ fontSize: 11 }} onClick={() => revealPath(it.path)}>폴더 열기</button>
-            <button style={{ fontSize: 11 }} disabled={busy} onClick={() => restore(it.filename)}>복구</button>
+            <button style={{ fontSize: 11 }} disabled={busy || resetHold} onClick={() => restore(it.filename)}>복구</button>
           </div>
         ))}
       </div>
@@ -2145,6 +2149,7 @@ function DiagnosticsScreen({
           </div>
 
           <MobileConnectionPanel visible={visible} />
+          <BusinessResetPanel visible={visible} />
 
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>음성 인식 (Whisper)</b></div>

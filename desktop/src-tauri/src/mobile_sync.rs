@@ -1101,6 +1101,28 @@ pub(crate) async fn mobile_sync_revoke_device(
 }
 
 #[tauri::command]
+pub(crate) async fn mobile_sync_hide_revoked_device(
+    app: tauri::AppHandle,
+    profile: tauri::State<'_, RuntimeProfile>,
+    device_id: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    if !confirmed {
+        return Err("목록에서 삭제하려면 확인이 필요합니다".into());
+    }
+    if device_id.is_empty() || device_id.len() > 64
+        || !device_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err("올바르지 않은 기기 식별자입니다".into());
+    }
+    admin_output(&app, &profile, vec![
+        "--lan-sync-admin".into(), "--db".into(),
+        mobile_database(&profile).to_string_lossy().into_owned(),
+        "hide-revoked-device".into(), device_id, "--confirmed".into(),
+    ]).await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn mobile_sync_firewall_status(
     profile: tauri::State<'_, RuntimeProfile>,
 ) -> Result<crate::mobile_firewall::FirewallStatus, String> {
@@ -1118,15 +1140,17 @@ pub(crate) async fn mobile_sync_firewall_apply(
     profile: tauri::State<'_, RuntimeProfile>,
     enable: bool,
     confirmed: bool,
+    public_rule: Option<bool>,
 ) -> Result<crate::mobile_firewall::FirewallStatus, String> {
     let qa = profile.qa;
     tauri::async_runtime::spawn_blocking(move || {
         let host = detected_private_ipv4().ok();
-        crate::mobile_firewall::apply(qa, confirmed, enable, host.as_deref())
+        crate::mobile_firewall::apply(qa, confirmed, enable, host.as_deref(), public_rule.unwrap_or(false))
     })
     .await
     .map_err(|error| format!("방화벽 변경 작업 실패: {error}"))
 }
+
 
 pub(crate) fn terminate(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<MobileSyncRuntime>() {

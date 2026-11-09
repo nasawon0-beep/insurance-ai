@@ -1859,6 +1859,7 @@ pub fn run() {
             mobile_sync::mobile_sync_create_recovery_code,
             mobile_sync::mobile_sync_list_devices,
             mobile_sync::mobile_sync_revoke_device,
+            mobile_sync::mobile_sync_hide_revoked_device,
             mobile_sync::mobile_sync_firewall_apply,
             mobile_sync::mobile_sync_firewall_status,
         ])

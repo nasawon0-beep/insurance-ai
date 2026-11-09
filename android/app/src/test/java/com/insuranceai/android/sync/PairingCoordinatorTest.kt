@@ -128,9 +128,8 @@ class PairingCoordinatorTest {
         coordinator.pair(request) { true }
         val status = coordinator.state.value.status
         assertTrue(status.contains("시간 초과"))
-        assertTrue(status.contains("신뢰할 수 있는 사설 네트워크"))
-        assertTrue(status.contains("방화벽"))
-        assertTrue(status.contains("게스트·회사"))
+        assertTrue(status.contains("연결하지 못했습니다. 휴대폰 핫스팟이나 다른 Wi-Fi에 PC와 휴대폰을 연결한 뒤 다시 시도해 주세요."))
+        assertFalse(status.contains("공유기 차단"))
         assertFalse(status.contains("인증서"))
         assertFalse(status.contains("새 일회용 코드"))
         assertFalse(status.contains("secret"))
@@ -150,7 +149,7 @@ class PairingCoordinatorTest {
             java.io.IOException("secret", java.net.SocketTimeoutException("secret")) to "시간 초과",
             javax.net.ssl.SSLHandshakeException("secret").apply {
                 initCause(java.net.SocketTimeoutException("secret"))
-            } to "시간 초과",
+            } to "TLS",
             javax.net.ssl.SSLHandshakeException("secret") to "TLS",
             javax.net.ssl.SSLPeerUnverifiedException("secret") to "TLS",
             java.security.cert.CertificateException("secret") to "TLS",

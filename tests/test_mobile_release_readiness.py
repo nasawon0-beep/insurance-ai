@@ -409,8 +409,10 @@ def test_android_continuity_ui_exposes_recovery_confirmation_and_binding_state()
 def test_pc_ui_separates_revoked_device_recovery_from_first_pairing():
     panel = (ROOT / "desktop" / "src" / "components" / "MobileConnectionPanel.tsx").read_text(encoding="utf-8")
 
-    assert "연결 해제된 모바일" in panel
-    assert "이 기기 다시 연결" in panel
+    assert "해제된 휴대폰" in panel
+    assert ">다시 연결</button>" in panel
+    assert "목록에서 삭제" in panel
+    assert "mobile_sync_hide_revoked_device" in panel
     assert "기존 기기와 미전송 자료를 유지" in panel
     assert "mobile_sync_create_recovery_code" in panel
     assert "token" not in panel.lower()

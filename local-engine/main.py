@@ -355,6 +355,10 @@ app.include_router(rag_router)
 app.include_router(customer_router)
 app.include_router(whisper_router)
 app.include_router(auth_router)
+from database.reset_router import router as business_reset_router
+from database.reset_activity import BusinessResetActivityMiddleware
+app.include_router(business_reset_router)
+app.add_middleware(BusinessResetActivityMiddleware)
 
 
 def _allow_private_network_preflight(request: Request, response):

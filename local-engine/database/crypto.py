@@ -155,7 +155,7 @@ class FieldCipher:
 _cipher: Optional[FieldCipher] = None
 
 
-def get_cipher() -> FieldCipher:
+def get_cipher(*, create_if_missing: bool = True) -> FieldCipher:
     global _cipher
     if _cipher is not None:
         return _cipher
@@ -171,6 +171,8 @@ def get_cipher() -> FieldCipher:
         key = _keyfile_get()
         source = "keyfile"
     if key is None:
+        if not create_if_missing:
+            raise RuntimeError("복원에 필요한 기존 암호화 키가 없습니다. 새 키를 만들지 않았습니다.")
         if _database_has_encrypted_values():
             raise RuntimeError(
                 "고객 DB에 암호문(enc:v1:)이 있지만 기존 암호화 키를 찾을 수 없습니다. "

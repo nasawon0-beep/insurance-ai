@@ -2248,6 +2248,9 @@ def get_backups():
 
 @router.post("/backups/restore")
 async def post_backup_restore(request: Request, conn=Depends(get_conn)):
+    from .business_reset import sync_is_held
+    if sync_is_held(conn):
+        raise HTTPException(status_code=409, detail="초기화 상태에서는 백업 영역의 초기화 전 업무 복원을 사용해 주세요.")
     try:
         raw = await request.json()
     except Exception:

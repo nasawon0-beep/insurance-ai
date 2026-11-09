@@ -15,7 +15,7 @@ test('technical information and revoked devices are in collapsed sections', () =
 
 test('public network guidance is conditional, offers safe choices and never changes Windows settings', () => {
   const panel = fs.readFileSync(new URL('../src/components/MobileConnectionPanel.tsx', import.meta.url), 'utf8');
-  for (const text of ['핫스팟 연결 방법', '집·개인 Wi-Fi를 사용 중이에요', '나중에 연결', '네트워크 다시 확인', '카페·공공 Wi-Fi라면']) assert.ok(panel.includes(text), text);
+  for (const text of ['공용 네트워크에서 연결할까요?', '무시하고 연결', '연결하지 않기', '공용 네트워크 허용 해제', '목록에서 삭제']) assert.ok(panel.includes(text), text);
   assert.match(panel, /networkCategory === "public"/);
   assert.doesNotMatch(panel, /Set-NetConnectionProfile|netsh|shell\.open/);
 });

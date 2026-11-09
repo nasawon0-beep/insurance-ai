@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 const POLICY: &str = include_str!("mobile_firewall.ps1");
 
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FirewallStatus {
@@ -19,6 +20,7 @@ pub(crate) struct FirewallStatus {
     pub connectivity_verified: bool,
     pub last_error: Option<String>,
     pub apply_outcome: Option<String>,
+
 }
 
 impl FirewallStatus {
@@ -35,6 +37,7 @@ impl FirewallStatus {
             connectivity_verified: false,
             last_error: Some(error),
             apply_outcome: None,
+
         }
     }
 }
@@ -144,8 +147,9 @@ fn installed_program() -> Result<PathBuf, String> {
     Ok(program)
 }
 
-fn query_at(program: &Path, host: Option<&str>, qa: bool) -> FirewallStatus {
-    let result = run_script(&policy_script(program, host, qa, "query")).and_then(|output| {
+fn query_at(program: &Path, host: Option<&str>, qa: bool, scope: &str) -> FirewallStatus {
+    let script = format!("{} -Scope {}", policy_script(program, host, qa, "query"), ps_literal(scope));
+    let result = run_script(&script).and_then(|output| {
         if !output.status.success() {
             return Err("Windows firewall query failed".into());
         }
@@ -157,7 +161,7 @@ fn query_at(program: &Path, host: Option<&str>, qa: bool) -> FirewallStatus {
 
 pub(crate) fn status(qa: bool, host: Option<&str>) -> FirewallStatus {
     match installed_program() {
-        Ok(program) => query_at(&program, host, qa),
+        Ok(program) => query_at(&program, host, qa, "Auto"),
         Err(e) => FirewallStatus::unavailable(qa, e),
     }
 }
@@ -168,10 +172,11 @@ fn elevation_script(executable: &Path, payload: &str) -> String {
     format!("$ErrorActionPreference='Stop'; try {{ $p=Start-Process -FilePath {} -Verb RunAs -Wait -PassThru -ArgumentList '-NoLogo -NoProfile -NonInteractive -EncodedCommand {}'; exit $p.ExitCode }} catch {{ exit 1 }}", ps_literal(&executable.to_string_lossy()), encoded_command(payload))
 }
 
-pub(crate) fn apply(qa: bool, confirmed: bool, enable: bool, host: Option<&str>) -> FirewallStatus {
+pub(crate) fn apply(qa: bool, confirmed: bool, enable: bool, host: Option<&str>, public_rule: bool) -> FirewallStatus {
+    let scope = if public_rule { "Public" } else { "Private" };
     // No UAC or script execution before both gates pass. Rejection still returns a read-only snapshot.
     if let Err(reason) = mutation_gate(qa, confirmed) {
-        let mut snapshot = status(qa, host);
+        let mut snapshot = FirewallStatus::unavailable(qa, "Explicit non-QA confirmation required".into());
         snapshot.apply_outcome = Some(reason.into());
         snapshot.last_error = Some(
             if qa {
@@ -191,13 +196,13 @@ pub(crate) fn apply(qa: bool, confirmed: bool, enable: bool, host: Option<&str>)
             return s;
         }
     };
-    let before = query_at(&program, host, qa);
+    let before = query_at(&program, host, qa, scope);
     if before.last_error.is_some() || (enable && !before.can_apply) {
         let mut snapshot = before;
         snapshot.apply_outcome = Some("blocked".into());
         if snapshot.last_error.is_none() {
             snapshot.last_error = Some(
-                "A verified Private network is required; network categories are never changed"
+                "The requested network profile must be verified; network categories are never changed"
                     .into(),
             );
         }
@@ -206,16 +211,16 @@ pub(crate) fn apply(qa: bool, confirmed: bool, enable: bool, host: Option<&str>)
     let result = powershell_path().and_then(|exe| {
         run_script(&elevation_script(
             &exe,
-            &policy_script(
+            &format!("{} -Scope {}", policy_script(
                 &program,
                 host,
                 qa,
                 if enable { "enable" } else { "disable" },
-            ),
+            ), ps_literal(scope)),
         ))
     });
     // Always reread, including launch failure/UAC denial/partial application.
-    let mut after = query_at(&program, host, qa);
+    let mut after = query_at(&program, host, qa, scope);
     let success = result.as_ref().map(|o| o.status.success()).unwrap_or(false)
         && after.last_error.is_none()
         && if enable {
@@ -235,7 +240,8 @@ mod tests {
     use super::*;
     #[test]
     fn firewall_rule_is_private_program_and_port_scoped() {
-        assert!(POLICY.contains("Profile='Private'"));
+        assert!(POLICY.contains("Profile=$profile"));
+        assert!(POLICY.contains("[ValidateSet('Auto','Private','Public')]"));
         assert!(POLICY.contains("Protocol='TCP'; LocalPort=18443"));
         assert!(POLICY.contains("LocalAddress='Any'; RemoteAddress='LocalSubnet'"));
         assert!(!POLICY.contains("Set-NetConnectionProfile"));
@@ -248,6 +254,9 @@ mod tests {
         assert_eq!(mutation_gate(true, false), Err("qaRejected"));
         assert_eq!(mutation_gate(false, false), Err("notConfirmed"));
         assert_eq!(mutation_gate(false, true), Ok(()));
+        assert_eq!(apply(true, true, true, None, true).apply_outcome.as_deref(), Some("qaRejected"));
+        assert_eq!(apply(false, false, true, None, true).apply_outcome.as_deref(), Some("notConfirmed"));
+        assert!(!POLICY.contains("Register-ScheduledTask"));
     }
     #[test]
     fn firewall_powershell_encoding_is_utf16le_and_data_is_literal() {

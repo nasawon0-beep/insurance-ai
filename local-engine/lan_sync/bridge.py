@@ -52,6 +52,8 @@ class ProductionBridge:
         return {field: source.get(field) for field in fields}
 
     def refresh(self) -> None:
+        if self.store.business_sync_held():
+            return
         snapshots: dict[tuple[str, str], dict[str, Any]] = {}
         customer_ids = [row[0] for row in self.conn.execute("SELECT id FROM customers ORDER BY id")]
         for customer_id in customer_ids:

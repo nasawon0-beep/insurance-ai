@@ -78,3 +78,12 @@ test('QR requires running server and verified Private rule; QA fixtures can exer
   assert.equal(policy.firewallQrAllowed(true, { ...ready, lastError: 'query failed' }), false);
   assert.equal(policy.firewallQrAllowed(true, { ...ready, qa: true }), true);
 });
+test('Public requires explicit warning consent AND verified OS rule; neither bypasses errors or QA', () => {
+  const status={...ready,networkCategory:'public' as const};
+  assert.equal(policy.firewallQrAllowed(true,status),false);
+  assert.equal(policy.firewallQrAllowed(true,status,true),true);
+  assert.equal(policy.firewallQrAllowed(true,{...status,ruleReady:false},true),false);
+  assert.equal(policy.firewallQrAllowed(true,{...status,lastError:'query failed'},true),false);
+  assert.equal(policy.firewallQrAllowed(true,{...status,qa:true},true),false);
+  assert.equal(policy.firewallQrAllowed(true,{...status,networkCategory:'unavailable'},true),false);
+});

@@ -135,14 +135,14 @@ class PairingCoordinator(private val actions: PairingActions) {
     private fun pairingFailureStatus(error: Throwable): String {
         // Follow wrapped transport causes, bounded even for malformed cyclic cause chains.
         val causes = generateSequence(error) { it.cause }.take(16).toList()
-        val networkChecks = "PC와 휴대폰이 같은 신뢰할 수 있는 사설 네트워크에 있는지, PC 앱 실행과 방화벽 허용, 게스트·회사 네트워크의 기기 간 통신 차단 여부를 확인한 뒤 다시 시도하세요"
+        val networkChecks = CONNECTION_FAILURE_GUIDANCE
         return when {
+            causes.any { it is javax.net.ssl.SSLException || it is java.security.cert.CertificateException } ->
+                "PC TLS 보안 연결 실패 · PC 화면의 주소와 인증서 지문을 확인하세요. 인증서 검증을 끄지 마세요"
             causes.any { it is java.net.SocketTimeoutException } ->
                 "PC 응답 시간 초과 · $networkChecks"
             causes.any { it is java.net.ConnectException || it is java.net.NoRouteToHostException || it is java.net.UnknownHostException } ->
                 "PC에 연결할 수 없습니다 · $networkChecks"
-            causes.any { it is javax.net.ssl.SSLException || it is java.security.cert.CertificateException } ->
-                "PC TLS 보안 연결 실패 · PC 화면의 주소와 인증서 지문을 확인하세요. 인증서 검증을 끄지 마세요"
             causes.any { it is LanSyncHttpException && it.statusCode == 401 } ->
                 "PC가 페어링 요청을 거부했습니다 · PC에서 새 일회용 코드를 발급받아 다시 시도하세요"
             else -> "PC 페어링 요청 실패 (${safeType(error)}). 주소·인증서 지문·새 일회용 코드를 확인하세요"
