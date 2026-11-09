@@ -1,5 +1,9 @@
 package com.insuranceai.android.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,6 +41,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +57,15 @@ import com.insuranceai.android.data.local.SyncConflictEntity
 import com.insuranceai.android.sync.ConnectionRegistrationState
 import com.insuranceai.android.sync.RecoveryUiState
 import com.insuranceai.android.sync.TlsBindingState
+import androidx.core.content.ContextCompat
+import com.insuranceai.android.sync.PairingQr
+import com.insuranceai.android.sync.PairingQrInvite
+import com.insuranceai.android.sync.QrScanMessages
+import com.insuranceai.android.sync.QrScanOutcome
+import com.insuranceai.android.sync.qrScanOutcome
+import com.insuranceai.android.sync.shortFingerprint
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 import java.text.NumberFormat
 import java.util.Locale
@@ -727,6 +741,47 @@ fun SyncScreen(
     var movedPin by remember { mutableStateOf("") }
     var movedPinConfirmed by remember { mutableStateOf(false) }
     var advanced by remember { mutableStateOf(false) }
+    // QR 최초 등록: 스캔 → 내용 검증 → 사용자가 PC 주소·지문 확인 → 기존 TLS 핀 페어링. 코드는 메모리에만 둔다.
+    var qrInvite by remember { mutableStateOf<PairingQrInvite?>(null) }
+    var qrMessage by remember { mutableStateOf<String?>(null) }
+    var manualEntry by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        when (val outcome = qrScanOutcome(result.contents, System.currentTimeMillis() / 1000)) {
+            is QrScanOutcome.Confirm -> {
+                qrInvite = outcome.invite
+                qrMessage = null
+            }
+            is QrScanOutcome.Message -> {
+                qrInvite = null
+                qrMessage = outcome.text
+            }
+        }
+    }
+    val launchScan = {
+        scanLauncher.launch(
+            ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt("PC 설정 화면의 ‘QR로 폰 연결’ QR을 비춰 주세요")
+                .setBeepEnabled(false)
+                .setOrientationLocked(false),
+        )
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) launchScan() else qrMessage = QrScanMessages.CAMERA_DENIED
+    }
+    val startQrScan = {
+        qrMessage = null
+        qrInvite = null
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchScan()
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+    LaunchedEffect(pairingState.inFlight) {
+        if (!pairingState.inFlight) qrInvite = null
+    }
     LaunchedEffect(pairingState.codeConsumed) {
         if (pairingState.codeConsumed) code = ""
     }
@@ -771,6 +826,41 @@ fun SyncScreen(
                 } else Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("처음 PC 등록", fontWeight = FontWeight.Bold)
+                        Text("PC 모아둠 → 설정·진단 → 모바일 연결 → ‘QR로 폰 연결’을 누른 뒤 아래 버튼으로 QR을 찍으세요.")
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !pairingState.inFlight,
+                            onClick = { startQrScan() },
+                        ) { Text("PC QR 스캔") }
+                        qrMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        qrInvite?.let { invite ->
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("이 PC와 연결할까요?", fontWeight = FontWeight.Bold)
+                                    Text("PC 주소 · ${invite.endpoint}")
+                                    Text("인증서 지문 · ${shortFingerprint(invite.certificatePin)} …")
+                                    Text("PC 화면의 주소·지문과 같은지 확인하세요. 연결은 이 지문으로 검증된 PC와만 이루어집니다.")
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            enabled = !pairingState.inFlight,
+                                            onClick = {
+                                                if (PairingQr.isExpired(invite, System.currentTimeMillis() / 1000)) {
+                                                    qrInvite = null
+                                                    qrMessage = "QR이 만료되었습니다. PC에서 ‘QR로 폰 연결’을 다시 눌러 새 QR을 찍어 주세요."
+                                                } else {
+                                                    viewModel.pair(invite.endpoint, invite.certificatePin, invite.code, onAuthenticate)
+                                                }
+                                            },
+                                        ) { Text(if (pairingState.inFlight) "처리 중" else "이 PC와 연결") }
+                                        TextButton(enabled = !pairingState.inFlight, onClick = { qrInvite = null }) { Text("취소") }
+                                    }
+                                }
+                            }
+                        }
+                        TextButton(onClick = { manualEntry = !manualEntry }) {
+                            Text(if (manualEntry) "직접 입력 닫기" else "직접 입력(고급 · 카메라를 쓸 수 없을 때)")
+                        }
+                        if (manualEntry) {
                         Text("PC에 표시된 HTTPS 주소·인증서 SHA-256·일회용 코드를 직접 확인하세요.")
                         OutlinedTextField(endpoint, { endpoint = it }, enabled = !pairingState.inFlight, label = { Text("https://PC주소:18443") }, modifier = Modifier.fillMaxWidth())
                         OutlinedTextField(pin, { pin = it }, enabled = !pairingState.inFlight, label = { Text("인증서 SHA-256") }, modifier = Modifier.fillMaxWidth())
@@ -783,6 +873,7 @@ fun SyncScreen(
                             enabled = !pairingState.inFlight && !pairingState.requiresNewCode && code.matches(Regex("\\d{6}")),
                             onClick = { viewModel.pair(endpoint, pin, code, onAuthenticate) },
                         ) { Text(if (pairingState.inFlight) "처리 중" else "PC와 페어링") }
+                        }
                     }
                 }
             }

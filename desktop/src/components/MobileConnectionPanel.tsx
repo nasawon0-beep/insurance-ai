@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { mobileStatusPollMs, pairingQrCloseReason } from "./mobileSyncPolicy.ts";
 
 type MobileSyncStatus = {
   running: boolean;
@@ -13,6 +14,14 @@ type MobileSyncStatus = {
 };
 
 type PairingCode = { code: string; expiresAt: number };
+type PairingQr = {
+  svg: string;
+  code: string;
+  expiresAt: number;
+  payloadVersion: number;
+  url: string;
+  certificateFingerprint: string;
+};
 type MobileDevice = { id: string; name: string; created_at: number; revoked_at: number | null };
 type MobileStartupPreference = { restoreOnAppStart: boolean };
 
@@ -32,7 +41,7 @@ function formattedTime(timestamp: number | null): string {
   return new Date(timestamp * 1000).toLocaleString();
 }
 
-export default function MobileConnectionPanel() {
+export default function MobileConnectionPanel({ visible = true }: { visible?: boolean }) {
   const [status, setStatus] = useState<MobileSyncStatus>(emptyStatus);
   const [devices, setDevices] = useState<MobileDevice[]>([]);
   const [pairing, setPairing] = useState<PairingCode | null>(null);
@@ -41,6 +50,8 @@ export default function MobileConnectionPanel() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [restoreOnAppStart, setRestoreOnAppStart] = useState(false);
+  const [qr, setQr] = useState<(PairingQr & { activeAtIssue: number }) | null>(null);
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
 
   const refresh = useCallback(async () => {
     const next = await invoke<MobileSyncStatus>("mobile_sync_status");
@@ -55,8 +66,43 @@ export default function MobileConnectionPanel() {
   }, []);
 
   useEffect(() => {
+    if (!visible) return;
     void refresh().catch((reason) => setError(String(reason)));
-  }, [refresh]);
+  }, [refresh, visible]);
+
+  // 앱 시작 직후 자동 복원 중(starting)에 읽은 상태가 고정되지 않도록 화면이 보일 때 주기적으로 상태만 다시 읽는다.
+  const pollMs = mobileStatusPollMs(status, visible);
+  useEffect(() => {
+    if (pollMs === null) return;
+    const timer = window.setInterval(() => {
+      void invoke<MobileSyncStatus>("mobile_sync_status").then(setStatus).catch(() => undefined);
+    }, pollMs);
+    return () => window.clearInterval(timer);
+  }, [pollMs]);
+
+  // QR 표시 중: 1초마다 만료 확인, 4초마다 새 기기 등록 여부 확인.
+  useEffect(() => {
+    if (!qr) return;
+    const tick = window.setInterval(() => setNowSeconds(Math.floor(Date.now() / 1000)), 1000);
+    const devicesTimer = window.setInterval(() => {
+      void invoke<MobileDevice[]>("mobile_sync_list_devices").then(setDevices).catch(() => undefined);
+      void invoke<MobileSyncStatus>("mobile_sync_status").then(setStatus).catch(() => undefined);
+    }, 4000);
+    return () => {
+      window.clearInterval(tick);
+      window.clearInterval(devicesTimer);
+    };
+  }, [qr]);
+
+  const activeDevices = devices.filter((device) => !device.revoked_at).length;
+  useEffect(() => {
+    if (!qr) return;
+    const reason = pairingQrCloseReason(qr, status, nowSeconds, qr.activeAtIssue, activeDevices);
+    if (reason) {
+      setQr(null);
+      setNotice(reason);
+    }
+  }, [qr, status, nowSeconds, activeDevices]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -80,12 +126,25 @@ export default function MobileConnectionPanel() {
     setStatus(await invoke<MobileSyncStatus>("mobile_sync_stop"));
     setRestoreOnAppStart(false);
     setPairing(null);
+    setQr(null);
     setNotice("모바일 연결 서버를 중지했습니다.");
   });
   const createCode = () => run(async () => {
     setPairing(await invoke<PairingCode>("mobile_sync_create_pairing_code"));
     setRecovery(null);
+    setQr(null);
   });
+  const createQr = () => run(async () => {
+    const next = await invoke<PairingQr>("mobile_sync_create_pairing_qr");
+    setNowSeconds(Math.floor(Date.now() / 1000));
+    setQr({ ...next, activeAtIssue: activeDevices });
+    setPairing(null);
+    setRecovery(null);
+  });
+  const closeQr = () => {
+    setQr(null);
+    setNotice("QR을 닫았습니다. 이미 만든 코드는 5분 안에 한 번만 쓸 수 있고 그 뒤 자동으로 만료됩니다.");
+  };
   const createRecoveryCode = (device: MobileDevice) => run(async () => {
     if (!window.confirm(`‘${device.name}’ 기기를 기존 등록 정보와 미전송 자료를 유지한 채 다시 연결할까요?`)) return;
     setRecovery(await invoke<PairingCode>("mobile_sync_create_recovery_code", { deviceId: device.id, confirmed: true }));
@@ -143,10 +202,31 @@ export default function MobileConnectionPanel() {
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
         <button disabled={busy || status.running} onClick={() => void start()}>연결 시작</button>
         <button disabled={busy || !status.running} onClick={() => void stop()}>연결 중지</button>
+        <button disabled={busy || !status.running} onClick={() => void createQr()}>QR로 폰 연결</button>
         <button disabled={busy || !status.running} onClick={() => void createCode()}>새 기기 등록 코드</button>
         <button disabled={busy} onClick={() => void firewall(true)}>Private 방화벽 허용</button>
         <button disabled={busy} onClick={() => void firewall(false)}>방화벽 규칙 제거</button>
       </div>
+      {qr && (
+        <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6, background: "#fff" }}>
+          <div style={{ fontSize: "0.875rem", marginBottom: 6 }}><b>폰의 모아둠 앱 → PC 동기화 → ‘PC QR 스캔’으로 찍어 주세요</b></div>
+          <img
+            alt="모바일 연결 QR"
+            src={`data:image/svg+xml;base64,${btoa(qr.svg)}`}
+            style={{ width: 240, height: 240, display: "block", imageRendering: "pixelated" }}
+          />
+          <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+            남은 시간 {Math.max(0, qr.expiresAt - nowSeconds)}초 · 1회용 · 이 PC 주소와 인증서 지문만 담겨 있습니다.
+          </div>
+          <details style={{ fontSize: "0.75rem", marginTop: 6 }}>
+            <summary>카메라를 쓸 수 없을 때(직접 입력)</summary>
+            <div>주소: {qr.url}</div>
+            <div style={{ overflowWrap: "anywhere" }}>인증서 SHA-256: {qr.certificateFingerprint}</div>
+            <div>1회용 코드: <strong style={{ letterSpacing: 3 }}>{qr.code}</strong></div>
+          </details>
+          <button style={{ marginTop: 6 }} onClick={closeQr}>QR 닫기</button>
+        </div>
+      )}
       {pairing && (
         <div role="status" style={{ marginTop: 10, padding: 10, border: "1px solid var(--color-border-default)", borderRadius: 6 }}>
           <div>1회용 연결 코드: <strong style={{ fontSize: "1.25rem", letterSpacing: 3 }}>{pairing.code}</strong></div>

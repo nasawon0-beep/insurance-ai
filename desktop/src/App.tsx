@@ -2144,7 +2144,7 @@ function DiagnosticsScreen({
             {kv("키 보관", d.customer_db?.key_source)}
           </div>
 
-          <MobileConnectionPanel />
+          <MobileConnectionPanel visible={visible} />
 
           <div style={box}>
             <div style={{ marginBottom: 8 }}><b>음성 인식 (Whisper)</b></div>

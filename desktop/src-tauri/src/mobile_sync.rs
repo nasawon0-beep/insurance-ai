@@ -845,14 +845,133 @@ pub(crate) async fn mobile_sync_create_pairing_code(
     if !current_status(&state.0.lock().expect("mobile sync state lock")).running {
         return Err("모바일 연결 서버를 먼저 시작하세요".into());
     }
+    issue_pairing_code(&app, &profile).await
+}
+
+/// QR 최초 등록 payload 형식. 폰(Android PairingQr.kt)과 반드시 같은 값이어야 한다.
+const PAIRING_QR_KIND: &str = "moadoom-pair";
+const PAIRING_QR_VERSION: u8 = 1;
+
+/// QR에 담는 값: PC 주소(private IPv4 HTTPS), 공개 인증서 지문, 5분 1회용 코드, 만료시각, PC 발견 identity.
+/// 장기 토큰·개인키·고객정보는 넣지 않는다. 입력이 하나라도 형식에 맞지 않으면 QR을 만들지 않는다.
+fn pairing_qr_payload(
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+    code: &str,
+    expires_at: i64,
+    instance_id: &str,
+) -> Result<String, String> {
+    let address: Ipv4Addr = host
+        .parse()
+        .map_err(|_| "QR에 넣을 PC 주소가 IPv4가 아닙니다".to_owned())?;
+    if !address.is_private() || address.is_loopback() {
+        return Err("QR에는 같은 Wi-Fi/핫스팟의 private IPv4 주소만 넣을 수 있습니다".into());
+    }
+    let fingerprint_ok = fingerprint.len() == 64
+        && fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !fingerprint_ok {
+        return Err("QR에 넣을 인증서 지문 형식이 올바르지 않습니다".into());
+    }
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("QR에 넣을 1회용 코드 형식이 올바르지 않습니다".into());
+    }
+    if !is_valid_instance_id(instance_id) || expires_at <= 0 || port == 0 {
+        return Err("QR에 넣을 PC 정보가 올바르지 않습니다".into());
+    }
+    Ok(serde_json::json!({
+        "t": PAIRING_QR_KIND,
+        "v": PAIRING_QR_VERSION,
+        "u": format!("https://{host}:{port}"),
+        "f": fingerprint,
+        "c": code,
+        "e": expires_at,
+        "i": instance_id,
+    })
+    .to_string())
+}
+
+fn pairing_qr_code(payload: &str) -> Result<qrcode::QrCode, String> {
+    qrcode::QrCode::with_error_correction_level(payload.as_bytes(), qrcode::EcLevel::M)
+        .map_err(|error| format!("QR 생성 실패: {error}"))
+}
+
+/// 외부 서비스 없이 앱 안에서 SVG로 그린다.
+fn pairing_qr_svg(payload: &str) -> Result<String, String> {
+    Ok(pairing_qr_code(payload)?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(280, 280)
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairingQrOutput {
+    svg: String,
+    code: String,
+    expires_at: i64,
+    payload_version: u8,
+    url: String,
+    certificate_fingerprint: String,
+}
+
+#[tauri::command]
+pub(crate) async fn mobile_sync_create_pairing_qr(
+    app: tauri::AppHandle,
+    profile: tauri::State<'_, RuntimeProfile>,
+    state: tauri::State<'_, MobileSyncRuntime>,
+) -> Result<PairingQrOutput, String> {
+    let snapshot = || {
+        let inner = state.0.lock().expect("mobile sync state lock");
+        let status = current_status(&inner);
+        (status.running, inner.host.clone(), inner.fingerprint.clone())
+    };
+    let (running, host, fingerprint) = snapshot();
+    let (Some(host), Some(fingerprint), true) = (host, fingerprint, running) else {
+        return Err("모바일 연결이 준비된 뒤 QR을 만들 수 있습니다".into());
+    };
+    let instance_id = mobile_instance_id(&profile)?;
+    let issued = issue_pairing_code(&app, &profile).await?;
+    // 코드 발급 중 네트워크 추종으로 주소·인증서가 바뀌었으면 옛 주소 QR을 보여주지 않는다.
+    let (_, host_now, fingerprint_now) = snapshot();
+    if host_now.as_deref() != Some(host.as_str()) || fingerprint_now.as_deref() != Some(fingerprint.as_str()) {
+        return Err("PC 주소가 방금 바뀌었습니다. QR을 다시 만들어 주세요".into());
+    }
+    let payload = pairing_qr_payload(
+        &host,
+        MOBILE_SYNC_PORT,
+        &fingerprint,
+        &issued.code,
+        issued.expires_at,
+        &instance_id,
+    )?;
+    Ok(PairingQrOutput {
+        svg: pairing_qr_svg(&payload)?,
+        code: issued.code,
+        expires_at: issued.expires_at,
+        payload_version: PAIRING_QR_VERSION,
+        url: format!("https://{host}:{MOBILE_SYNC_PORT}"),
+        certificate_fingerprint: fingerprint,
+    })
+}
+
+async fn issue_pairing_code(
+    app: &tauri::AppHandle,
+    profile: &RuntimeProfile,
+) -> Result<PairingCodeOutput, String> {
     let computer = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "내 PC".into());
     let output = admin_output(
-        &app,
-        &profile,
+        app,
+        profile,
         vec![
             "--lan-sync-admin".into(),
             "--db".into(),
-            mobile_database(&profile).to_string_lossy().into_owned(),
+            mobile_database(profile).to_string_lossy().into_owned(),
             "create-code".into(),
             "--pc-name".into(),
             computer,
@@ -1055,6 +1174,88 @@ pub(crate) fn terminate(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const QR_FP: &str = "7502f13db142ce04e5caf9ebf36feb299ff1a25fc3796240979c48cef991b432";
+    const QR_INSTANCE: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn pairing_qr_payload_has_only_bootstrap_fields() {
+        let payload = pairing_qr_payload("192.168.0.73", 18443, QR_FP, "042917", 1_794_200_000, QR_INSTANCE)
+            .expect("payload");
+        let value: serde_json::Value = serde_json::from_str(&payload).expect("json");
+        let object = value.as_object().expect("object");
+        let mut keys: Vec<_> = object.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["c", "e", "f", "i", "t", "u", "v"]);
+        assert_eq!(value["t"], "moadoom-pair");
+        assert_eq!(value["v"], 1);
+        assert_eq!(value["u"], "https://192.168.0.73:18443");
+        assert_eq!(value["c"], "042917");
+        assert!(payload.len() < 300, "QR payload stays small: {}", payload.len());
+        for forbidden in ["token", "key", "secret", "BEGIN", "customer"] {
+            assert!(!payload.contains(forbidden), "{forbidden}");
+        }
+    }
+
+    #[test]
+    fn pairing_qr_payload_rejects_unsafe_inputs() {
+        let ok = |host: &str, fp: &str, code: &str| pairing_qr_payload(host, 18443, fp, code, 1, QR_INSTANCE);
+        assert!(ok("8.8.8.8", QR_FP, "123456").is_err());
+        assert!(ok("127.0.0.1", QR_FP, "123456").is_err());
+        assert!(ok("pc.example.com", QR_FP, "123456").is_err());
+        assert!(ok("192.168.0.73", &QR_FP[..63], "123456").is_err());
+        assert!(ok("192.168.0.73", &QR_FP.to_uppercase(), "123456").is_err());
+        assert!(ok("192.168.0.73", QR_FP, "12345").is_err());
+        assert!(ok("192.168.0.73", QR_FP, "12345a").is_err());
+        assert!(pairing_qr_payload("10.0.0.2", 18443, QR_FP, "123456", 0, QR_INSTANCE).is_err());
+        assert!(pairing_qr_payload("10.0.0.2", 18443, QR_FP, "123456", 1, "short").is_err());
+        assert!(ok("172.20.10.2", QR_FP, "123456").is_ok());
+    }
+
+    #[test]
+    fn pairing_qr_svg_is_local_self_contained_svg() {
+        let payload = pairing_qr_payload("192.168.0.73", 18443, QR_FP, "042917", 1_794_200_000, QR_INSTANCE)
+            .expect("payload");
+        let svg = pairing_qr_svg(&payload).expect("svg");
+        assert!(svg.contains("<svg"));
+        assert!(!svg.contains("http://") || svg.contains("http://www.w3.org/2000/svg"));
+        assert!(!svg.contains("042917"), "code must not appear as text in SVG");
+        assert!(!svg.contains("<script"));
+    }
+
+    /// QR_ROUNDTRIP_OUT가 있으면 실제 모듈 행렬을 PGM 이미지로 써서 외부 디코더(OpenCV, ZXing)로 검증한다.
+    #[test]
+    fn pairing_qr_exports_pgm_for_external_decoder_roundtrip() {
+        let Ok(directory) = std::env::var("QR_ROUNDTRIP_OUT") else { return };
+        let payload = pairing_qr_payload("192.168.0.73", 18443, QR_FP, "042917", 1_794_200_000, QR_INSTANCE)
+            .expect("payload");
+        let code = pairing_qr_code(&payload).expect("qr");
+        let width = code.width();
+        let colors = code.to_colors();
+        let (scale, quiet) = (4usize, 4usize);
+        let side = (width + quiet * 2) * scale;
+        let mut pixels = vec![255u8; side * side];
+        for y in 0..width {
+            for x in 0..width {
+                if colors[y * width + x] == qrcode::Color::Dark {
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let py = (y + quiet) * scale + dy;
+                            let px = (x + quiet) * scale + dx;
+                            pixels[py * side + px] = 0;
+                        }
+                    }
+                }
+            }
+        }
+        let mut image = format!("P5\n{side} {side}\n255\n").into_bytes();
+        image.extend_from_slice(&pixels);
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).expect("dir");
+        std::fs::write(directory.join("pairing-qr.pgm"), image).expect("pgm");
+        std::fs::write(directory.join("pairing-qr.payload.json"), &payload).expect("payload");
+        std::fs::write(directory.join("pairing-qr.svg"), pairing_qr_svg(&payload).expect("svg")).expect("svg");
+    }
 
     #[test]
     fn admin_secret_parent_exists_before_spawning_sidecar() {

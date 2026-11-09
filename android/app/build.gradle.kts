@@ -13,8 +13,8 @@ android {
         applicationId = "com.insuranceai.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.0.0-phase8"
+        versionCode = 9
+        versionName = "1.0.0-phase9"
 
         testInstrumentationRunner = "com.insuranceai.android.MoaDoomTestRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -71,6 +71,9 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // PC QR 최초 등록: 기기 안에서만 디코딩(네트워크·Google Play 서비스 불필요)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
