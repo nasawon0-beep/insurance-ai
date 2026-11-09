@@ -35,7 +35,12 @@ def tls_rollover_ready(db_path: str | Path, cert_path: str | Path) -> bool:
             """,
             (spki_sha256,),
         ).fetchone()
-        return int(active_count) > 0 and int(bound_count or 0) == int(active_count)
+        # 활성 기기가 하나도 없으면 옛 인증서(leaf)에 의존하는 연결이 없다. 키는 그대로 두고 주소만 바꿔
+        # 재발급해도 끊길 기기가 없으며, 해제된 기기는 PC 복구 코드 + PC 화면의 새 주소·인증서 SHA-256
+        # 직접 대조(모바일 복구 화면)로만 다시 연결된다.
+        if int(active_count) == 0:
+            return True
+        return int(bound_count or 0) == int(active_count)
     finally:
         connection.close()
 
