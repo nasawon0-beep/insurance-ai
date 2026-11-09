@@ -4,7 +4,7 @@ import { test } from 'node:test';
 const source = readFileSync(new URL('../src/components/MobileConnectionPanel.tsx', import.meta.url), 'utf8');
 
 test('panel separates server, verified firewall settings and unverified phone; guides start/approve/QR', () => {
-  for (const text of ['서버 상태', '방화벽 설정', '휴대폰 연결', '아직 확인되지 않음', '1. 연결 시작', '2. 방화벽 승인', '3. QR', 'LocalSubnet', '게스트', '회사', '시간 초과']) assert.ok(source.includes(text), text);
+  for (const text of ['서버 상태', '방화벽 설정', '휴대폰 연결', '현재 접속이나 동기화 완료를 뜻하지 않습니다', '같은 Wi-Fi 또는 핫스팟 연결 → 연결 시작 → QR로 폰 연결', '휴대폰 연결 허용', 'LocalSubnet', '게스트', '회사', '시간 초과']) assert.ok(source.includes(text), text);
   assert.ok(!source.includes('규칙 제거'));
   assert.ok(source.includes('규칙 비활성화'));
 });

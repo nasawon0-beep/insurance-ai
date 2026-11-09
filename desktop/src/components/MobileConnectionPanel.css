@@ -1,0 +1,51 @@
+.mobile-connection {
+  --mc-success: var(--secondary-800);
+  --mc-warning: var(--warning-800);
+  --mc-error: var(--accent-700);
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+[data-theme="dark"] .mobile-connection {
+  --mc-success: var(--secondary-300);
+  --mc-warning: var(--warning-300);
+  --mc-error: var(--accent-300);
+}
+.mobile-connection p { margin: 10px 0; }
+.mobile-connection .mc-registered { color: var(--mc-success); }
+.mobile-connection .mc-attention { color: var(--mc-warning); }
+.mobile-connection .mc-action { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.mobile-connection .mc-action > span { font-size: 0.9375rem; }
+.mobile-connection .mc-choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.mobile-connection button {
+  flex-shrink: 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  min-height: 40px;
+  padding: 7px 12px;
+  max-width: 100%;
+  white-space: normal;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-hover);
+}
+.mobile-connection button.mc-primary:not(:disabled) {
+  background: var(--primary-700);
+  border-color: var(--primary-700);
+  color: var(--color-text-inverse);
+}
+.mobile-connection button:disabled {
+  opacity: 1;
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+.mobile-connection button:focus-visible, .mobile-connection summary:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 3px;
+}
+.mobile-connection summary { cursor: pointer; min-height: 36px; line-height: 1.65; }
+.mobile-connection .mc-network { margin: 12px 0; }

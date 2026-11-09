@@ -1,4 +1,10 @@
 // 모바일 연결 패널의 순수 정책(화면 없이 node --test로 검증).
+/** 표시만 대체한다. 원본 기기 이름이나 등록 정보는 변경하지 않는다. */
+export function mobileDeviceDisplayName(name: string): string {
+  const text = name.trim();
+  return !text || /[\uFFFD\u0000-\u001F\u007F-\u009F]|\?{2,}/.test(text)
+    ? "Android 휴대폰" : text;
+}
 /** 시작 중에는 짧게, 실행/중지 상태에서는 길게 다시 읽는다(설정 화면은 항상 마운트돼 있어 1회 조회로는 갱신되지 않음). */
 export function mobileStatusPollMs(status: { starting: boolean }, visible: boolean): number | null {
   if (!visible) return null;
