@@ -121,11 +121,68 @@ class PairingCoordinatorTest {
         assertTrue(coordinator.state.value.paired)
     }
 
+    @Test
+    fun timeoutOffersNetworkChecksWithoutBlamingCertificateOrCode() = runTest {
+        val actions = FakeActions(pairFailure = java.net.SocketTimeoutException("secret 123456"))
+        val coordinator = PairingCoordinator(actions)
+        coordinator.pair(request) { true }
+        val status = coordinator.state.value.status
+        assertTrue(status.contains("시간 초과"))
+        assertTrue(status.contains("신뢰할 수 있는 사설 네트워크"))
+        assertTrue(status.contains("방화벽"))
+        assertTrue(status.contains("게스트·회사"))
+        assertFalse(status.contains("인증서"))
+        assertFalse(status.contains("새 일회용 코드"))
+        assertFalse(status.contains("secret"))
+        assertFalse(status.contains(request.code))
+        assertFalse(coordinator.state.value.paired)
+        assertFalse(coordinator.state.value.inFlight)
+        assertFalse(coordinator.state.value.requiresNewCode)
+        assertEquals(listOf("prepare", "pairAndSave"), actions.calls)
+    }
+
+    @Test
+    fun networkTlsAndUnauthorizedFailuresHaveDistinctSafeGuidance() = runTest {
+        val failures = listOf(
+            java.net.ConnectException("secret") to "PC에 연결할 수 없습니다",
+            java.net.NoRouteToHostException("secret") to "PC에 연결할 수 없습니다",
+            java.net.UnknownHostException("secret") to "PC에 연결할 수 없습니다",
+            java.io.IOException("secret", java.net.SocketTimeoutException("secret")) to "시간 초과",
+            javax.net.ssl.SSLHandshakeException("secret").apply {
+                initCause(java.net.SocketTimeoutException("secret"))
+            } to "시간 초과",
+            javax.net.ssl.SSLHandshakeException("secret") to "TLS",
+            javax.net.ssl.SSLPeerUnverifiedException("secret") to "TLS",
+            java.security.cert.CertificateException("secret") to "TLS",
+            LanSyncHttpException(401) to "일회용 코드",
+        )
+        for ((failure, expected) in failures) {
+            val coordinator = PairingCoordinator(FakeActions(pairFailure = failure))
+            coordinator.pair(request) { true }
+            val state = coordinator.state.value
+            assertTrue("${failure.javaClass.simpleName}: ${state.status}", state.status.contains(expected))
+            assertFalse(state.status.contains("secret"))
+            assertFalse(state.status.contains(request.code))
+            assertFalse(state.paired)
+            assertFalse(state.codeConsumed)
+            assertFalse(state.inFlight)
+            if (expected == "TLS") {
+                assertTrue(state.status.contains("인증서"))
+                assertFalse(state.status.contains("일회용 코드"))
+            }
+            if (failure is LanSyncHttpException) {
+                assertFalse(state.status.contains("인증서"))
+                assertFalse(state.status.contains("방화벽"))
+            }
+        }
+    }
+
     private class FakeActions(
         private var prepareAuthFailures: Int = 0,
         var localSaveFailure: Boolean = false,
         private val syncFailure: Throwable? = null,
         private val pairGate: CompletableDeferred<Unit>? = null,
+        private val pairFailure: Throwable? = null,
     ) : PairingActions {
         val calls = mutableListOf<String>()
 
@@ -140,6 +197,7 @@ class PairingCoordinatorTest {
         override suspend fun pairAndSave(request: PairingRequest) {
             calls += "pairAndSave"
             pairGate?.await()
+            pairFailure?.let { throw it }
             if (localSaveFailure) throw PairingLocalSaveException(IllegalStateException("token secret"))
         }
 

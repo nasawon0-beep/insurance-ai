@@ -13,8 +13,8 @@ android {
         applicationId = "com.insuranceai.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.0.0-phase11"
+        versionCode = 13
+        versionName = "1.0.0-phase13"
 
         testInstrumentationRunner = "com.insuranceai.android.MoaDoomTestRunner"
         vectorDrawables { useSupportLibrary = true }

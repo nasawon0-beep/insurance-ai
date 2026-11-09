@@ -3,7 +3,7 @@ package com.insuranceai.android
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+
 import java.net.URL
 
 /**
@@ -11,7 +11,8 @@ import java.net.URL
  *
  * Usage:
  *   val update = UpdateChecker(context).checkForUpdate()
- *   if (update != null) show an update dialog and pass update.downloadUrl to DownloadManager.
+ *   if (update != null) show a consent dialog, then open the validated HTTPS download in a browser.
+ *   Android requires the user to open the downloaded APK and approve installation.
  */
 data class UpdateInfo(
     val version: String,
@@ -22,29 +23,31 @@ data class UpdateInfo(
 
 /** Checks the published Android update JSON and returns only newer versions. */
 class UpdateChecker(private val context: Context) {
-    private val updateUrl = "https://nasangwon.github.io/insurance-ai-updates/api/android.json"
-
     suspend fun checkForUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
+        val connection = URL(UpdateMetadataPolicy.ENDPOINT).openConnection() as java.net.HttpURLConnection
         try {
-            val response = URL(updateUrl).readText()
-            val json = JSONObject(response)
-
-            val latestVersion = json.getString("latest_version")
-            val currentVersion = BuildConfig.VERSION_NAME
-
-            if (compareVersions(latestVersion, currentVersion) > 0) {
-                UpdateInfo(
-                    version = latestVersion,
-                    downloadUrl = json.getString("download_url"),
-                    changelog = json.optString("changelog", ""),
-                    required = json.optBoolean("required", false)
-                )
-            } else {
-                null
+            connection.connectTimeout = 8000
+            connection.readTimeout = 8000
+            connection.instanceFollowRedirects = false
+            connection.useCaches = false
+            if (connection.responseCode != 200) return@withContext null
+            val bytes = connection.inputStream.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(4096)
+                while (output.size() <= UpdateMetadataPolicy.MAX_BYTES) {
+                    val count = input.read(buffer, 0, minOf(buffer.size, UpdateMetadataPolicy.MAX_BYTES + 1 - output.size()))
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            if (bytes.size > UpdateMetadataPolicy.MAX_BYTES) return@withContext null
+            UpdateMetadataPolicy.parse(bytes.toString(Charsets.UTF_8), BuildConfig.VERSION_CODE)
+        } catch (_: Exception) {
+            // No raw network payload, token or exception is logged.
             null
+        } finally {
+            connection.disconnect()
         }
     }
 
