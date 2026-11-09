@@ -13,8 +13,8 @@ android {
         applicationId = "com.insuranceai.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.0.0-phase9"
+        versionCode = 11
+        versionName = "1.0.0-phase11"
 
         testInstrumentationRunner = "com.insuranceai.android.MoaDoomTestRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -69,6 +69,10 @@ dependencies {
     implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 
     implementation("androidx.biometric:biometric:1.1.0")
+    // biometric 1.1.0이 끌어오는 fragment 1.2.5의 FragmentActivity는 ActivityResultRegistry의 큰 requestCode를
+    // "Can only use lower 16 bits" 예외로 거부해, QR 스캔 카메라 권한 요청 순간 앱이 종료됐다(phase9 실폰/에뮬레이터 재현).
+    // fragment 1.3+는 registry를 그대로 사용한다.
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     // PC QR 최초 등록: 기기 안에서만 디코딩(네트워크·Google Play 서비스 불필요)

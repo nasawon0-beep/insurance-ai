@@ -7,7 +7,7 @@ class ReleaseIdentityTest {
     @Test
     fun revokedConnectionRecoveryHasMonotonicPackageVersion() {
         assertEquals("com.insuranceai.android", BuildConfig.APPLICATION_ID)
-        assertEquals(9, BuildConfig.VERSION_CODE)
-        assertEquals("1.0.0-phase9", BuildConfig.VERSION_NAME)
+        assertEquals(11, BuildConfig.VERSION_CODE)
+        assertEquals("1.0.0-phase11", BuildConfig.VERSION_NAME)
     }
 }
