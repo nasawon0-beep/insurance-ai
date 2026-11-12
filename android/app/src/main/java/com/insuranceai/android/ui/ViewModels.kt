@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-class CustomersViewModel(application: Application) : AndroidViewModel(application) {
+class CustomersViewModel(application: Application) : AndroidViewModel(application), CustomersModel {
     private val container = (application as InsuranceAiApplication).container
     private val repository = container.customerRepository
     private val syncRepository = container.syncRepository
@@ -39,31 +39,31 @@ class CustomersViewModel(application: Application) : AndroidViewModel(applicatio
     private val analysisRepository = container.coverageAnalysisRepository
     private val consultationRepository = container.consultationRepository
     private val familyRelationshipRepository = container.familyRelationshipRepository
-    val customers: StateFlow<List<CustomerEntity>> = repository.observeCustomers()
+    override val customers: StateFlow<List<CustomerEntity>> = repository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val pendingCount: StateFlow<Int> = syncRepository.observePendingCount()
+    override val pendingCount: StateFlow<Int> = syncRepository.observePendingCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
-    val pendingItems = syncRepository.observePendingItems()
+    override val pendingItems = syncRepository.observePendingItems()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val conflicts = syncRepository.observeConflicts()
+    override val conflicts = syncRepository.observeConflicts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val syncState: StateFlow<SyncStateEntity?> = syncRepository.observeState()
+    override val syncState: StateFlow<SyncStateEntity?> = syncRepository.observeState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-    val policies = policyRepository.observePolicies()
+    override val policies = policyRepository.observePolicies()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val analyses = analysisRepository.observeResults()
+    override val analyses = analysisRepository.observeResults()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val consultations = consultationRepository.observeConsultations()
+    override val consultations = consultationRepository.observeConsultations()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val familyRelationships = familyRelationshipRepository.observeRelationships()
+    override val familyRelationships = familyRelationshipRepository.observeRelationships()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val saveStatus = MutableStateFlow<String?>(null)
-    val saving = MutableStateFlow(false)
+    override val saveStatus = MutableStateFlow<String?>(null)
+    override val saving = MutableStateFlow(false)
 
-    fun editable(customer: CustomerEntity): CustomerEditableFields? =
+    override fun editable(customer: CustomerEntity): CustomerEditableFields? =
         container.authenticationGate.readOrNull { repository.editableFields(customer) }
 
-    fun saveAllowedEdit(
+    override fun saveAllowedEdit(
         customer: CustomerEntity,
         phone: String,
         address: String,
@@ -91,38 +91,38 @@ class CustomersViewModel(application: Application) : AndroidViewModel(applicatio
     }
 }
 
-class PoliciesViewModel(application: Application) : AndroidViewModel(application) {
+class PoliciesViewModel(application: Application) : AndroidViewModel(application), PoliciesModel {
     private val container = (application as InsuranceAiApplication).container
     private val repository = container.policyRepository
     private val customerRepository = container.customerRepository
-    val policies: StateFlow<List<PolicyEntity>> = repository.observePolicies()
+    override val policies: StateFlow<List<PolicyEntity>> = repository.observePolicies()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
+    override val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val coverages: StateFlow<List<PolicyCoverageEntity>> = repository.observePolicyCoverages()
+    override val coverages: StateFlow<List<PolicyCoverageEntity>> = repository.observePolicyCoverages()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun readableFields(policy: PolicyEntity): PolicyReadableFields? =
+    override fun readableFields(policy: PolicyEntity): PolicyReadableFields? =
         container.authenticationGate.readOrNull { repository.readableFields(policy) }
 }
 
-class ConsultationsViewModel(application: Application) : AndroidViewModel(application) {
+class ConsultationsViewModel(application: Application) : AndroidViewModel(application), ConsultationsModel {
     private val container = (application as InsuranceAiApplication).container
     private val repository = container.consultationRepository
     private val customerRepository = container.customerRepository
-    val consultations: StateFlow<List<ConsultationEntity>> = repository.observeConsultations()
+    override val consultations: StateFlow<List<ConsultationEntity>> = repository.observeConsultations()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
+    override val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val saveStatus = MutableStateFlow<String?>(null)
-    val saving = MutableStateFlow(false)
+    override val saveStatus = MutableStateFlow<String?>(null)
+    override val saving = MutableStateFlow(false)
 
-    fun content(consultation: ConsultationEntity): String? =
+    override fun content(consultation: ConsultationEntity): String? =
         container.authenticationGate.readOrNull {
             repository.content(consultation) ?: "상담 내용 없음"
         }
 
-    fun addConsultation(draft: ConsultationDraft, onSaved: () -> Unit) = viewModelScope.launch {
+    override fun addConsultation(draft: ConsultationDraft, onSaved: () -> Unit) = viewModelScope.launch {
         if (saving.value) return@launch
         if (customers.value.none { it.id == draft.customerId }) {
             saveStatus.value = "목록에서 고객을 다시 선택해 주세요"
@@ -154,41 +154,41 @@ class ConsultationsViewModel(application: Application) : AndroidViewModel(applic
     }
 }
 
-class CoverageAnalysisViewModel(application: Application) : AndroidViewModel(application) {
+class CoverageAnalysisViewModel(application: Application) : AndroidViewModel(application), CoverageModel {
     private val container = (application as InsuranceAiApplication).container
     private val repository = container.coverageAnalysisRepository
     private val customerRepository = container.customerRepository
-    val results: StateFlow<List<CoverageAnalysisEntity>> = repository.observeResults()
+    override val results: StateFlow<List<CoverageAnalysisEntity>> = repository.observeResults()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
+    override val customers: StateFlow<List<CustomerEntity>> = customerRepository.observeCustomers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    fun parsed(item: CoverageAnalysisEntity): UiCoverageAnalysis? =
+    override fun parsed(item: CoverageAnalysisEntity): UiCoverageAnalysis? =
         container.authenticationGate.readOrNull {
             parseCoverageAnalysis(repository.decrypt(item).summaryJson)
         }
 }
 
-class SyncViewModel(application: Application) : AndroidViewModel(application) {
+class SyncViewModel(application: Application) : AndroidViewModel(application), SyncModel {
     private val repository = (application as InsuranceAiApplication).container.syncRepository
     private val pairingCoordinator = PairingCoordinator(repository)
     private val recoveryCoordinator = RecoveryCoordinator(repository)
     private val conflictResolutionCoordinator = ConflictResolutionCoordinator(repository)
     private val addressContinuityCoordinator = AddressContinuityCoordinator(repository)
-    val conflicts: StateFlow<List<SyncConflictEntity>> = repository.observeConflicts()
+    override val conflicts: StateFlow<List<SyncConflictEntity>> = repository.observeConflicts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val status = MutableStateFlow("페어링 필요 또는 동기화 대기")
-    val pairingState = pairingCoordinator.state
-    val recoveryState = recoveryCoordinator.state
-    val conflictResolutionState = conflictResolutionCoordinator.state
-    val addressContinuityState = addressContinuityCoordinator.state
-    val registered = MutableStateFlow(repository.isConnectionConfigured())
-    val registrationState = MutableStateFlow(repository.connectionRegistrationState())
-    val tlsBindingState = MutableStateFlow(repository.tlsBindingState())
-    val stagedRecoveryAvailable = MutableStateFlow(repository.hasStagedRecovery())
-    val connectionLabel = MutableStateFlow(repository.connectionLabel())
-    val syncState: StateFlow<SyncStateEntity?> = repository.observeState()
+    override val status = MutableStateFlow("페어링 필요 또는 동기화 대기")
+    override val pairingState = pairingCoordinator.state
+    override val recoveryState = recoveryCoordinator.state
+    override val conflictResolutionState = conflictResolutionCoordinator.state
+    override val addressContinuityState = addressContinuityCoordinator.state
+    override val registered = MutableStateFlow(repository.isConnectionConfigured())
+    override val registrationState = MutableStateFlow(repository.connectionRegistrationState())
+    override val tlsBindingState = MutableStateFlow(repository.tlsBindingState())
+    override val stagedRecoveryAvailable = MutableStateFlow(repository.hasStagedRecovery())
+    override val connectionLabel = MutableStateFlow(repository.connectionLabel())
+    override val syncState: StateFlow<SyncStateEntity?> = repository.observeState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-    val pendingCount: StateFlow<Int> = repository.observePendingCount()
+    override val pendingCount: StateFlow<Int> = repository.observePendingCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     init {
@@ -206,7 +206,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun pair(
+    override fun pair(
         endpoint: String,
         pin: String,
         code: String,
@@ -227,7 +227,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         connectionLabel.value = repository.connectionLabel()
     }
 
-    fun recoverConnection(
+    override fun recoverConnection(
         code: String,
         endpoint: String,
         pin: String,
@@ -249,9 +249,9 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         connectionLabel.value = repository.connectionLabel()
     }
 
-    fun onPairingCodeChanged(code: String) = pairingCoordinator.onCodeChanged(code)
+    override fun onPairingCodeChanged(code: String) = pairingCoordinator.onCodeChanged(code)
 
-    fun updateConnectionAddress(
+    override fun updateConnectionAddress(
         endpoint: String,
         pin: String,
         confirmedFromPc: Boolean,
@@ -269,7 +269,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun syncNow() = viewModelScope.launch {
+    override fun syncNow() = viewModelScope.launch {
         status.value = "동기화 중"
         try {
             status.value = runCatching {
@@ -281,7 +281,7 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resolve(
+    override fun resolve(
         conflict: SyncConflictEntity,
         chooseLocal: Boolean,
         requestAuthentication: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,

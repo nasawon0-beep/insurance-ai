@@ -3,6 +3,10 @@ package com.insuranceai.android.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
 import androidx.compose.material.icons.outlined.Description
@@ -61,26 +65,7 @@ fun InsuranceAiApp(
     var selectedCustomerId by rememberSaveable { mutableStateOf<String?>(null) }
     var showAllPolicies by rememberSaveable { mutableStateOf(false) }
     val darkTheme = isSystemInDarkTheme()
-    val colors = if (darkTheme) darkColorScheme(
-        primary = Color(0xFFAEC7E8),
-        onPrimary = Color(0xFF0D2D4D),
-        primaryContainer = Color(0xFF304F76),
-        onPrimaryContainer = Color.White,
-        background = Color(0xFF12171D),
-        surface = Color(0xFF1A2027),
-        surfaceVariant = Color(0xFF27313B),
-        onSurface = Color(0xFFF1F4F7),
-    ) else lightColorScheme(
-        primary = Color(0xFF304F76),
-        onPrimary = Color.White,
-        primaryContainer = Color(0xFFE7EDF4),
-        onPrimaryContainer = Color(0xFF243B57),
-        background = Color(0xFFF4F5F6),
-        surface = Color.White,
-        surfaceVariant = Color(0xFFE7EDF4),
-        onSurface = Color(0xFF242B33),
-    )
-    MaterialTheme(colorScheme = colors) {
+    MoaTheme(dark = darkTheme) {
         val authenticationPolicy = authenticationUiPolicy(authenticationState.required)
         if (authenticationPolicy.showLockScreen) {
             LaunchedEffect(authenticationState.requestId) { sessionManager.endSession() }
@@ -94,13 +79,18 @@ fun InsuranceAiApp(
                     modifier = Modifier.fillMaxSize(),
                     bottomBar = {
                         if (currentRoute in bottomRoutes.map { it.value }) {
-                            NavigationBar {
+                            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                                 bottomRoutes.forEach { route ->
                                     NavigationBarItem(
                                         selected = currentRoute == route.value,
                                         onClick = { navController.navigate(route.value) { launchSingleTop = true } },
-                                        label = { Text(route.label) },
-                                        icon = { Icon(route.icon!!, contentDescription = route.label) }
+                                        label = { Text(route.label, fontWeight = if (currentRoute == route.value) FontWeight.Bold else FontWeight.Normal) },
+                                        icon = { Icon(route.icon!!, contentDescription = route.label, modifier = Modifier.size(20.dp)) },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                        ),
                                     )
                                 }
                             }
