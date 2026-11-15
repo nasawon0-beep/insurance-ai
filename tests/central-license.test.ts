@@ -112,6 +112,13 @@ test("flow distinguishes expiry, login required, email unconfirmed and server fa
   assert.equal((await resolveCentralLicenseWith(deps({ keys, getSession: async () => null, cachedUser: () => null }))).kind, "login_required");
 });
 
+test("explicit workspace denial cannot become an offline license success", async () => {
+  const { privateKey, publicB64 } = await keypair();
+  const active = await signLicense(buildLicense(ent(), USER, "k1", NOW), privateKey);
+  const d = deps({keys:{k1:publicB64},readCache:()=>active,getSession:async()=>{throw "WORKSPACE_AUTHORIZATION_DENIED";}});
+  assert.equal((await resolveCentralLicenseWith(d)).kind,"login_required");
+});
+
 test("network failure: verified cache within 5 days, trial end still enforced, never another user's cache", async () => {
   const { privateKey, publicB64 } = await keypair();
   const keys = { k1: publicB64 };

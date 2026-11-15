@@ -256,7 +256,8 @@ fn detected_private_ipv4() -> Result<String, String> {
 }
 
 fn mobile_state_dir(profile: &RuntimeProfile) -> PathBuf {
-    profile.config_dir.join("mobile-sync")
+    crate::account_session::profile().map(|p| p.config_dir.join("mobile-sync"))
+        .unwrap_or_else(|_| profile.config_dir.join("unbound-no-access/mobile-sync"))
 }
 
 fn mobile_startup_preference_path(profile: &RuntimeProfile) -> PathBuf {
@@ -264,6 +265,7 @@ fn mobile_startup_preference_path(profile: &RuntimeProfile) -> PathBuf {
 }
 
 fn mobile_instance_id(profile: &RuntimeProfile) -> Result<String, String> {
+    crate::account_session::current()?;
     let directory = mobile_state_dir(profile);
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("모바일 발견 identity 폴더 생성 실패: {error}"))?;
@@ -315,7 +317,8 @@ fn should_restore_mobile_sync(enabled: bool, authenticated_context_ready: bool) 
 }
 
 fn mobile_database(profile: &RuntimeProfile) -> PathBuf {
-    profile.data_dir.join("customers.sqlite3")
+    crate::account_session::profile().map(|p| p.data_dir.join("customers.sqlite3"))
+        .unwrap_or_else(|_| profile.data_dir.join("unbound-no-access/customers.sqlite3"))
 }
 
 fn prepare_admin_secret_path(state_dir: &Path) -> Result<PathBuf, String> {
@@ -329,16 +332,34 @@ async fn admin_output(
     profile: &RuntimeProfile,
     arguments: Vec<String>,
 ) -> Result<String, String> {
+    let _maintenance_guard=crate::maintenance_coordinator::AUXILIARY.read().await;
+    crate::maintenance_coordinator::ensure_business()?;
+    let _ = profile;
+    let session = crate::account_session::current()?;
+    let profile = &session.profile;
+    // Reject an argument list built before an account transition.
+    for pair in arguments.windows(2) {
+        if pair[0] == "--db" && PathBuf::from(&pair[1]) != profile.data_dir.join("customers.sqlite3") {
+            return Err("계정 전환 이전의 모바일 요청을 거부했습니다.".into());
+        }
+        if pair[0] == "--state-dir" && PathBuf::from(&pair[1]) != profile.config_dir.join("mobile-sync") {
+            return Err("계정 전환 이전의 인증서 요청을 거부했습니다.".into());
+        }
+    }
     let mut command = app
         .shell()
         .sidecar("local-engine")
         .map_err(|error| format!("번들 엔진을 찾을 수 없습니다: {error}"))?
-        .env("CUSTOMER_DB_PATH", mobile_database(profile))
+        .env("CUSTOMER_DB_PATH", profile.data_dir.join("customers.sqlite3"))
         .env("CUSTOMER_DB_KEYFILE", profile.customer_key_path())
+        .env("CUSTOMER_DB_KEYFILE_ONLY", "1")
+        .env("CUSTOMER_DB_KEY_B64", "")
+        .env("MOADOOM_ACCOUNT_ISSUER", &session.issuer)
+        .env("MOADOOM_ACCOUNT_SUBJECT", &session.subject)
         .env("PYTHONUTF8", "1")
         .env(
             "INSURANCE_AI_API_SECRET_FILE",
-            prepare_admin_secret_path(&mobile_state_dir(profile))?,
+            prepare_admin_secret_path(&profile.config_dir.join("mobile-sync"))?,
         );
     for &(name, value) in mobile_keyfile_environment(profile.qa) {
         command = command.env(name, value);
@@ -353,6 +374,7 @@ async fn admin_output(
             .unwrap_or("모바일 연결 관리 명령이 실패했습니다. 앱 로그를 확인하세요")
             .into());
     }
+    crate::account_session::require_epoch(session.epoch)?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -496,6 +518,10 @@ async fn start_with_intent(
     state: tauri::State<'_, MobileSyncRuntime>,
     intent: StartIntent,
 ) -> Result<MobileSyncStatus, String> {
+    let _ = profile;
+    crate::maintenance_coordinator::ensure_business()?;
+    let session = crate::account_session::current()?;
+    let profile = session.profile.clone();
     let generation;
     {
         let mut inner = state.0.lock().expect("mobile sync state lock");
@@ -563,12 +589,17 @@ async fn start_with_intent(
         .map_err(|error| fail_start(&state, format!("번들 엔진을 찾을 수 없습니다: {error}")))?
         .env("CUSTOMER_DB_PATH", &database)
         .env("CUSTOMER_DB_KEYFILE", profile.customer_key_path())
+        .env("CUSTOMER_DB_KEYFILE_ONLY", "1")
+        .env("CUSTOMER_DB_KEY_B64", "")
+        .env("MOADOOM_ACCOUNT_ISSUER", &session.issuer)
+        .env("MOADOOM_ACCOUNT_SUBJECT", &session.subject)
+        .env("MOADOOM_ACCOUNT_EXPIRES_AT", session.expires.to_string())
         .env("PYTHONUTF8", "1")
         .env(
             "INSURANCE_AI_API_SECRET_FILE",
             state_dir.join("server-api.secret"),
         )
-        .env("APP_LOCK_FILE", profile.lock_path())
+        .env("APP_LOCK_FILE", &session.parent_lock)
         .args([
             "--lan-sync-server",
             "--db",
@@ -609,6 +640,7 @@ async fn start_with_intent(
             format!("모바일 연결 process guard 적용 실패: {error}"),
         ));
     }
+    let child_pid = child.pid();
     {
         let mut inner = state.0.lock().expect("mobile sync state lock");
         inner.child = Some(child);
@@ -654,6 +686,7 @@ async fn start_with_intent(
             if let Some(message) = failure {
                 if let Some(runtime) = app_handle.try_state::<MobileSyncRuntime>() {
                     let mut inner = runtime.0.lock().expect("mobile sync state lock");
+                    if !crate::account_session::owns_process_event(inner.child.as_ref().map(|c|c.pid()),child_pid) {break;}
                     let was_unexpected = inner.child.take().is_some();
                     if let Some(job) = inner.job.take() {
                         job.terminate_all();
@@ -1152,8 +1185,35 @@ pub(crate) async fn mobile_sync_firewall_apply(
 }
 
 
+pub(crate) async fn stop_for_maintenance(app:&tauri::AppHandle)->Result<(),String>{
+    if let Some(state)=app.try_state::<MobileSyncRuntime>() {
+        let _lifecycle=state.1.lock().await;
+        {
+            let mut inner=state.0.lock().map_err(|_|"MOBILE_STATE_ERROR")?;
+            end_user_intent(&mut inner);
+            if let Some(job)=inner.job.as_ref(){job.stop_confirmed()?;}
+            else if inner.child.is_some(){return Err("MOBILE_EXIT_UNCONFIRMED".into());}
+        }
+        mobile_sync_stop_internal(&state)?;
+    }
+    Ok(())
+}
+pub(crate) async fn stop_for_account_transition(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<MobileSyncRuntime>() {
+        let _lifecycle = state.1.lock().await;
+        end_user_intent(&mut state.0.lock().expect("mobile sync state lock"));
+        mobile_sync_stop_internal(&state)?;
+        let mut inner = state.0.lock().expect("mobile sync state lock");
+        inner.host = None;
+        inner.fingerprint = None;
+        inner.certificate_expires_at = None;
+    }
+    Ok(())
+}
+
 pub(crate) fn terminate(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<MobileSyncRuntime>() {
+        end_user_intent(&mut state.0.lock().expect("mobile sync state lock"));
         let _ = mobile_sync_stop_internal(&state);
     }
 }

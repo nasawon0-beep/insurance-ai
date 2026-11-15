@@ -1,6 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
+import importlib.util
+
+# PyInstaller warnings alone must not permit a non-starting sidecar.
+for required_module in ("fastapi", "uvicorn", "jwt", "bcrypt"):
+    if importlib.util.find_spec(required_module) is None:
+        raise RuntimeError(f"CONTROL_DEPENDENCY_MISSING:{required_module}")
 
 a = Analysis(
     ["main.py"],

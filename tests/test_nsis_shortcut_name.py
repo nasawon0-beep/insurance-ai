@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,33 @@ def icon_fixture(target: str | None, current_icon: str | None) -> str | None:
     return current_icon
 
 
+APPROVED_RESOURCES = {
+    'icons/moadoom-brand-b.ico': 'moadoom-brand-b.ico',
+    'binaries/maintenance/maintenance-worker.exe': 'maintenance-worker.exe',
+}
+
+
+def assert_shipping_resources(resources):
+    assert resources == APPROVED_RESOURCES, 'missing or unauthorized shipping resource'
+
+
+@pytest.mark.parametrize('fault', ['missing-worker', 'missing-icon', 'extra', 'qa-worker', 'escape'])
+def test_shipping_resource_contract_rejects_unapproved_variants(fault):
+    resources = dict(APPROVED_RESOURCES)
+    if fault == 'missing-worker':
+        resources.pop('binaries/maintenance/maintenance-worker.exe')
+    elif fault == 'missing-icon':
+        resources.pop('icons/moadoom-brand-b.ico')
+    elif fault == 'extra':
+        resources['unapproved.exe'] = 'unapproved.exe'
+    elif fault == 'qa-worker':
+        resources['binaries/maintenance/qa-maintenance-worker.exe'] = resources.pop('binaries/maintenance/maintenance-worker.exe')
+    else:
+        resources['binaries/maintenance/maintenance-worker.exe'] = '../maintenance-worker.exe'
+    with pytest.raises(AssertionError, match='shipping resource'):
+        assert_shipping_resources(resources)
+
+
 def test_nsis_config_uses_official_current_user_installer_hook() -> None:
     config = json.loads(CONFIG.read_text(encoding="utf-8"))
     nsis = config["bundle"]["windows"]["nsis"]
@@ -42,9 +70,12 @@ def test_nsis_config_uses_official_current_user_installer_hook() -> None:
     assert config["productName"] == "Insurance AI"
     assert config["mainBinaryName"] == "Insurance AI"
     assert config["identifier"] == "com.abc.insurance-ai"
-    assert config["bundle"]["resources"] == {
-        "icons/moadoom-brand-b.ico": "moadoom-brand-b.ico"
-    }
+    assert_shipping_resources(config['bundle']['resources'])
+    coordinator = (ROOT / 'desktop/src-tauri/src/maintenance_coordinator.rs').read_text(encoding='utf-8')
+    build = (ROOT / 'desktop/src-tauri/build.rs').read_text(encoding='utf-8')
+    assert '.join("maintenance-worker.exe")' in coordinator
+    assert 'binaries/maintenance/maintenance-worker.exe' in build
+    assert 'MOADOOM_PACKAGED_WORKER_SHA256' in coordinator
     hook = HOOK.read_text(encoding="utf-8")
     assert f'!define MOADOOM_LEGACY_SHORTCUT_NAME "{config["productName"]}"' in hook
     assert f'!define MOADOOM_MAIN_BINARY_NAME "{config["mainBinaryName"]}"' in hook

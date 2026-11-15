@@ -35,7 +35,7 @@ import { track } from "./usage";
 import ImportWizard from "./ImportWizard";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { engineFetch, ensureLocalEngineRecovered } from "./engine";
+import { engineFetch, ensureLocalEngineRecovered, activateAccountWorkspace } from "./engine";
 import { formatLocalEngineNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { checkForUpdate, installUpdate, type UpdateCheck } from "./updater";
 import { isCoverageAnalysisDocument, isProposalDocument, selectReviewedPolicyCoverages } from "./coverageDocument";
@@ -2573,6 +2573,14 @@ function App() {
     let logPath: string | undefined;
     try {
       setAuth("checking");
+      // A signed-out app must reach login without opening any business workspace.
+      if (!isSignedIn()) {
+        setAuth("out");
+        setStartup({ status: "ready", message: "로그인이 필요합니다", steps: [{ label: "로그인 준비 완료", done: true }] });
+        return;
+      }
+      // On restart, recover authority before asking native to spawn an account engine.
+      await activateAccountWorkspace();
       logPath = await startBackendWithLoading();
       setStartup((current) => ({
         ...current,
@@ -2842,7 +2850,7 @@ function App() {
     );
   }
   if (auth === "readonly") {
-    return <LegacyReadonlyView email={readonlyEmail} onLogout={() => { logout(); setAuth("out"); }} />;
+    return <LegacyReadonlyView email={readonlyEmail} onLogout={() => { void logout().then(() => setAuth("out")).catch(() => window.alert("로그아웃을 완료하지 못했습니다. 다시 시도해 주세요.")); }} />;
   }
   if (needsOnboarding) {
     return <OnboardingScreen onComplete={() => void finishOnboardingAndConnectEngine()} onOllamaInstalled={() => undefined} />;
@@ -2900,9 +2908,9 @@ function App() {
     setView("customers");
     setBannerDismissed(true);
   };
-  const doLogout = () => {
-    logout();
-    setAuth("out");
+  const doLogout = async () => {
+    try { await logout(); setAuth("out"); }
+    catch { window.alert("로그아웃을 완료하지 못했습니다. 다시 시도해 주세요."); }
   };
 
   const tab = (key: View, label: string) => {

@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from synthetic_account_binding import SUBJECT, AUTHORIZATION, bind_synthetic_account
 
 pytest.importorskip("httpx")
 
@@ -18,7 +19,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("RAG_DB_PATH", str(tmp_path / "rag.sqlite3"))
     monkeypatch.setenv("DEV_SKIP_AUTH", "0")
     crypto.reset_cache()
-    yield TestClient(main.app)
+    bind_synthetic_account(monkeypatch, main.app)
+    bound = TestClient(main.app)
+    bound.headers['Authorization'] = AUTHORIZATION
+    yield bound
     crypto.reset_cache()
 
 
@@ -33,7 +37,8 @@ def test_customer_actor_fields_filter_and_global_queries(client, monkeypatch):
     c = _customer(client, "agent-7")
     rows = client.get(f"/customers/{c['id']}/audit").json()
     assert rows[0]["action"] == "create" and rows[0]["entity"] == "customer"
-    assert rows[0]["actor"] == "agent-7"
+    assert rows[0]["actor"] == SUBJECT
+    assert rows[0]["actor"] != "agent-7", "caller actor must not impersonate the account"
 
     assert client.patch(f"/customers/{c['id']}", json={"phone": "010-1234-5678", "memo": "secret"}).status_code == 200
     assert client.patch(f"/customers/{c['id']}", json={"rrn": "900101-1234568"}).status_code == 200
@@ -52,7 +57,7 @@ def test_customer_actor_fields_filter_and_global_queries(client, monkeypatch):
 
 def test_unknown_actor_policy_consultation_and_follow_up(client):
     c = _customer(client)
-    assert client.get(f"/customers/{c['id']}/audit").json()[0]["actor"] == "unknown"
+    assert client.get(f"/customers/{c['id']}/audit").json()[0]["actor"] == SUBJECT
     p = client.post(f"/customers/{c['id']}/policies", json={"insurer": "A"}).json()
     assert client.patch(f"/policies/{p['id']}", json={"memo": "private"}).status_code == 200
     assert client.delete(f"/policies/{p['id']}").status_code == 204
@@ -66,6 +71,7 @@ def test_unknown_actor_policy_consultation_and_follow_up(client):
     assert client.delete(f"/consultations/{k['id']}").status_code == 204
     rows = client.get(f"/customers/{c['id']}/audit").json()
     assert all(x["customer_id"] == c["id"] for x in rows)
+    assert all(x["actor"] == SUBJECT for x in rows)
     assert any(x["entity"] == "policy" and x["action"] == "delete" for x in rows)
     assert any(x["entity"] == "consultation" and x["fields"] == "follow_up_done_at" for x in rows)
     assert all("private" not in (x["fields"] or "") for x in rows)
@@ -141,6 +147,23 @@ def test_import_commit_writes_one_summary_without_personal_data(client):
     assert len(rows) == 1 and rows[0]["action"] == "create"
     assert "created" in rows[0]["fields"]
     assert "개인정보이름" not in rows[0]["fields"] and "절대저장금지" not in rows[0]["fields"]
+
+
+@pytest.mark.parametrize('authorization', ['', 'Bearer synthetic-foreign-account'])
+def test_spoofed_actor_cannot_authorize_or_mutate(client, authorization):
+    before = client.get('/customers').json()
+    denied = client.post('/customers', json={'name': 'SYNTHETIC DENIED'},
+                         headers={'Authorization': authorization, 'X-Actor-Id': SUBJECT})
+    assert denied.status_code == 401
+    assert client.get('/customers').json() == before
+
+
+@pytest.mark.parametrize('spoof', ['administrator', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'])
+def test_verified_subject_wins_over_caller_actor(client, spoof):
+    c = _customer(client, spoof)
+    rows = client.get(f"/customers/{c['id']}/audit").json()
+    assert rows and {row['actor'] for row in rows} == {SUBJECT}
+    assert all(row['actor'] != spoof for row in rows)
 
 
 def test_prune_audit(tmp_path):

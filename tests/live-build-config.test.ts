@@ -2,12 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { validateLiveConfig } from "../scripts/build-moadoom-live.mjs";
+import { validateIntegratedConfig } from "../scripts/build-moadoom-live.mjs";
 
 const cfg = JSON.parse(readFileSync(new URL("../desktop/moadoom-live.public.json", import.meta.url), "utf8"));
 
 test("live public config is valid and contains only public values", () => {
-  assert.deepEqual(validateLiveConfig(cfg), []);
+  assert.deepEqual(validateIntegratedConfig(cfg), []);
   assert.equal(cfg.VITE_MOADOOM_SUPABASE_URL, "https://fhdushntttxbfwkxylhz.supabase.co");
   assert.deepEqual(JSON.parse(cfg.VITE_MOADOOM_LICENSE_PUBLIC_KEYS), { "moadoom-20261103": "A9f5O+g778LZrvn73WCntWNGIPCzeUpP4fDDjdfKENc=" });
   assert.equal(cfg.VITE_MOADOOM_SITE_URL, "https://nasawon0-beep.github.io/insurance-ai-updates/");
@@ -15,10 +15,10 @@ test("live public config is valid and contains only public values", () => {
 });
 
 test("validator rejects secret keys, extra keys and malformed public keys", () => {
-  assert.ok(validateLiveConfig({ ...cfg, VITE_MOADOOM_SUPABASE_PUBLISHABLE_KEY: "sb_" + "secret_" + "abcdefghijklmnopqrstuvwxyz" }).length > 0);
-  assert.ok(validateLiveConfig({ ...cfg, MOADOOM_LICENSE_SIGNING_KEY: "x" }).length > 0);
-  assert.ok(validateLiveConfig({ ...cfg, VITE_MOADOOM_LICENSE_PUBLIC_KEYS: '{"k":"AAAA"}' }).length > 0);
-  assert.ok(validateLiveConfig({ ...cfg, VITE_MOADOOM_SUPABASE_URL: "http://127.0.0.1:54399" }).length > 0);
+  assert.ok(validateIntegratedConfig({ ...cfg, VITE_MOADOOM_SUPABASE_PUBLISHABLE_KEY: "sb_" + "secret_" + "abcdefghijklmnopqrstuvwxyz" }).length > 0);
+  assert.ok(validateIntegratedConfig({ ...cfg, MOADOOM_LICENSE_SIGNING_KEY: "x" }).length > 0);
+  assert.ok(validateIntegratedConfig({ ...cfg, VITE_MOADOOM_LICENSE_PUBLIC_KEYS: '{"k":"AAAA"}' }).length > 0);
+  assert.ok(validateIntegratedConfig({ ...cfg, VITE_MOADOOM_SUPABASE_URL: "http://127.0.0.1:54399" }).length > 0);
 });
 
 test("release workflow injects central public config before frontend/tauri build", () => {

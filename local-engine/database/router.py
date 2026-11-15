@@ -2258,14 +2258,23 @@ async def post_backup_restore(request: Request, conn=Depends(get_conn)):
     fn = raw.get("filename") if isinstance(raw, dict) else None
     if not fn:
         raise HTTPException(status_code=422, detail="filename 이 필요합니다.")
+    # Windows cannot atomically replace a DB while this request holds it open.
+    # No further business reads are made through the old connection.
+    conn.close()
     try:
         r = _backup.restore_backup(fn)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except OSError:
+        raise HTTPException(status_code=409, detail="업무 DB가 사용 중이거나 복원 파일을 교체할 수 없습니다. 진행 중인 작업 종료 후 다시 시도하세요.")
     try:
-        _usage.record(conn, "restore_run", {})
+        restored_conn = connect()
+        try:
+            _usage.record(restored_conn, "restore_run", {})
+        finally:
+            restored_conn.close()
     except Exception:
         pass
     return r

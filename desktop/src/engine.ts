@@ -7,6 +7,48 @@ import {
 } from "./config";
 import { invoke } from "@tauri-apps/api/core";
 import { responseFromNativeResult } from "./nativeResponse";
+import { centralClient } from "./centralClient";
+import { createAccountFence } from "./accountRequests";
+import { obtainWorkspaceSession, type WorkspaceSession } from "./workspaceAccess";
+
+const accountFence = createAccountFence();
+let workspaceSession: WorkspaceSession | null = null;
+let activationPromise: Promise<void> | null = null;
+let offlineRetryAfter = 0;
+export function resetAccountRequests(): void {
+  accountFence.invalidate();
+  workspaceSession = null;
+  activationPromise = null;
+  offlineRetryAfter = 0;
+  secretPromise = null;
+  recoveryPromise = null;
+  readinessPromise = null;
+}
+
+export async function activateAccountWorkspace(): Promise<void> {
+  if (activationPromise) return activationPromise;
+  const issued = accountFence.capture();
+  const attempt = (async () => {
+    const {data, error} = await centralClient().auth.getSession();
+    accountFence.assert(issued);
+    if (!IS_NATIVE_RUNTIME) throw new Error('검증된 데스크톱 계정 업무공간이 필요합니다.');
+    const expectedEpoch = await invoke<number>('account_session_generation');
+    accountFence.assert(issued);
+    const result = await obtainWorkspaceSession({
+      session: data.session, sessionError: error, cachedSubject: getActorId(),
+      offlineBackoff: workspaceSession?.offline === true && performance.now() < offlineRetryAfter,
+      activate: (accessToken, expectedSubject) => invoke<WorkspaceSession>('account_session_activate', {accessToken, expectedSubject, expectedEpoch}),
+      resume: expectedSubject => invoke<WorkspaceSession>('account_session_resume', {expectedSubject, expectedEpoch}),
+    });
+    accountFence.assert(issued);
+    if (workspaceSession?.requestToken !== result.requestToken) secretPromise = null;
+    workspaceSession = result;
+    if (result.offline && performance.now() >= offlineRetryAfter) offlineRetryAfter = performance.now() + 30000;
+    if (!result.offline) offlineRetryAfter = 0;
+  })();
+  activationPromise = attempt;
+  try { await attempt; } finally { if (activationPromise === attempt) activationPromise = null; }
+}
 
 export { LOCAL_ENGINE_URL };
 
@@ -244,13 +286,18 @@ async function engineFetchOnce(path: string, init: RequestInit = {}, retryWithFr
     return response;
   }
 
+  const issued = accountFence.capture();
+  const session = workspaceSession;
+  if (!session) throw new Error('중앙 계정 업무공간 권한이 필요합니다.');
   const headers = new Headers(init.headers);
   headers.set(API_SECRET_HEADER, await getApiSecretAfterStartupWait());
-  const actorId = getActorId();
-  if (actorId) headers.set(ACTOR_HEADER, actorId);
+  accountFence.assert(issued);
+  headers.set('Authorization', `Bearer ${session.requestToken}`);
+  headers.set(ACTOR_HEADER, session.subject);
 
   const response = await browserThenNativeEngineFetch(path, { ...init, headers });
-  if (response.status === 401 && retryWithFreshSecret) {
+  if (response.status === 401 && retryWithFreshSecret && ['GET', 'HEAD'].includes(methodForInit(init))) {
+    accountFence.assert(issued);
     secretPromise = null;
     return engineFetchOnce(path, init, false);
   }
@@ -262,14 +309,22 @@ export async function engineFetch(
   init: RequestInit = {},
   retryWithFreshSecret = true,
 ): Promise<Response> {
+  const issued = accountFence.capture();
   try {
-    return await engineFetchOnce(path, init, retryWithFreshSecret);
+    if (path !== '/health') await activateAccountWorkspace();
+    accountFence.assert(issued);
+    const result = await engineFetchOnce(path, init, retryWithFreshSecret);
+    accountFence.assert(issued);
+    return accountFence.response(result, issued);
   } catch (error) {
     if (!retryWithFreshSecret || !canRetryEngineStartupRequest(path, init) || !isLocalEngineStartupError(error)) {
       throw error;
     }
     console.warn("local-engine request failed before startup completed; waiting for readiness and retrying", { path, error });
     await waitForLocalEngineReady();
-    return engineFetchOnce(path, init, retryWithFreshSecret);
+    accountFence.assert(issued);
+    const result = await engineFetchOnce(path, init, retryWithFreshSecret);
+    accountFence.assert(issued);
+    return accountFence.response(result, issued);
   }
 }

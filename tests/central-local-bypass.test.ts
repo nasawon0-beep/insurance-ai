@@ -1,5 +1,5 @@
 // 중앙 회원 빌드: '이 PC 기존 계정'(로컬 이용권, 고정 개발 비밀 서명)으로 중앙 이용권을 우회하지 못하고,
-// 대신 로컬 비밀번호 인증 후 기존 자료 조회·내보내기만 하는 '자료 보존 모드'로 연다. 로컬 전용 빌드는 기존 동작.
+// 다계정 격리 정책: 로컬 로그인/자동 기존자료 연결 진입은 폐기한다. 남은 레거시 helper는 방어적 회귀로 유지.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,13 +38,13 @@ test("resolveLicenseStatus still refuses local/cached dev-signed license in cent
   assert.ok(guard < fn.indexOf("localStorage.getItem(LS.license)"));
 });
 
-test("central build PC-account login: password checked by control-server, login only, no device/license", () => {
+test("account-isolated desktop rejects local provider before any login or license call", () => {
   const fn = body(auth, "export async function authenticate(");
-  const branch = fn.slice(fn.indexOf("if (!localSessionAllowed(centralEnabled())) {"), fn.indexOf("const r = await call(`/auth/${mode}`"));
-  assert.ok(branch.length > 0);
-  assert.match(branch, /if \(mode !== "login"\) throw new Error\(CENTRAL_ACCOUNT_REQUIRED_MESSAGE\);/);
-  assert.match(branch, /call\("\/auth\/login"/);
-  assert.ok(!/\/devices|\/license|\/auth\/register/.test(branch));
+  assert.match(fn, /if \(provider !== 'central' \|\| !centralEnabled\(\)\) throw new Error\(CENTRAL_ACCOUNT_REQUIRED_MESSAGE\)/);
+  assert.match(fn, /return authenticateCentral\(mode, email, password\)/);
+  assert.ok(!/call\(/.test(fn));
+  const provider = body(auth, "export function getAuthProvider()");
+  assert.ok(!/return "local"/.test(provider));
 });
 
 test("readonly session is re-verified by control-server /auth/me, never from cached user/license alone", () => {
@@ -72,10 +72,10 @@ test("LegacyReadonlyView only issues GET engine requests (no create/update/delet
   assert.ok(!/\/(analy|assistant|rag|parse|stt|coverage|intake|rrn)/.test(view));
 });
 
-test("login screen: central build PC tab opens readonly mode, no unauthenticated local reset", () => {
-  assert.match(login, /"자료 보존 모드로 열기"/);
-  assert.match(login, /\{central && provider === "local" \? null : !showRecovery \?/);
-  assert.match(login, /!\(central && provider === "local"\) && !\(central && provider === "central" && !CENTRAL_SIGNUP_OPEN\)/);
+test("login screen has no PC-account/readonly entry or local password reset", () => {
+  assert.doesNotMatch(login, /자료 보존 모드로 열기|setProvider\("local"\)|resetLocalPassword|listLocalAccounts/);
+  assert.match(login, /useState<AuthProvider>\("central"\)/);
+  assert.match(login, /requestCentralPasswordReset/);
 });
 
 test("linking still requires central session first", () => {

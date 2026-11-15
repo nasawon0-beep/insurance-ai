@@ -1,11 +1,11 @@
+import MaintenancePanel from './MaintenancePanel';
+import {invoke} from '@tauri-apps/api/core';
+import {centralClient} from './centralClient';
 import { useCallback, useState } from "react";
 import {
   authenticate,
   type AuthProvider,
-  listLocalAccounts,
-  localRecoveryStatus,
   requestCentralPasswordReset,
-  resetLocalPassword,
 } from "./auth";
 import { CENTRAL_SIGNUP_OPEN, centralEnabled } from "./centralConfig";
 import { loadRememberedEmail, saveRememberedEmail } from "./rememberEmail";
@@ -16,21 +16,17 @@ interface LoginScreenProps {
 
 export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const central = centralEnabled();
-  // 중앙 설정이 있는 빌드는 모아둠 계정이 기본. 기존 이 PC 계정은 연결 전까지 계속 로그인 가능.
-  const [provider, setProvider] = useState<AuthProvider>(central ? "central" : "local");
+  const [provider] = useState<AuthProvider>("central");
   const [mode, setMode] = useState<"login" | "register">("login");
   const rememberedEmail = loadRememberedEmail();
   const [email, setEmail] = useState(rememberedEmail);
   const [rememberEmail, setRememberEmail] = useState(rememberedEmail !== "");
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  const [maintenanceOnly,setMaintenanceOnly]=useState(false);
+  const [maintenanceReady,setMaintenanceReady]=useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [showRecovery, setShowRecovery] = useState(false);
-  const [accounts, setAccounts] = useState<{ email: string; created_at?: string }[]>([]);
-  const [recoveryEmail, setRecoveryEmail] = useState("");
-  const [recoveryPw, setRecoveryPw] = useState("");
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [recoveryErr, setRecoveryErr] = useState<string | null>(null);
+
   const [msg, setMsg] = useState<string | null>(null);
 
   const openRecovery = useCallback(async () => {
@@ -49,45 +45,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
       }
       return;
     }
-    setShowRecovery(true);
-    setRecoveryErr(null);
-    setMsg(null);
-    if (!(await localRecoveryStatus())) {
-      setRecoveryErr("복구 불가: 이 컴퓨터에 저장된 계정이 없습니다.");
-      return;
-    }
-    try {
-      const found = await listLocalAccounts();
-      setAccounts(found);
-      setRecoveryEmail(found[0]?.email ?? "");
-    } catch {
-      setRecoveryErr("복구 중 오류가 발생했습니다.");
-    }
   }, [provider, email]);
-
-  const submitRecovery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!recoveryEmail || recoveryPw.length < 6) {
-      setRecoveryErr("계정과 6자 이상 새 비밀번호를 입력하세요.");
-      return;
-    }
-    setRecoveryBusy(true);
-    setRecoveryErr(null);
-    try {
-      await resetLocalPassword(recoveryEmail, recoveryPw);
-      setEmail(recoveryEmail);
-      setPw("");
-      setRecoveryPw("");
-      setShowRecovery(false);
-      setMode("login");
-      setErr(null);
-      setMsg("새 비밀번호를 설정했습니다. 로그인해 주세요.");
-    } catch (e) {
-      setRecoveryErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRecoveryBusy(false);
-    }
-  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,6 +57,15 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     setErr(null);
     try {
       const normalizedEmail = email.trim().toLowerCase();
+      if(maintenanceOnly&&mode==='login'){
+        const status=await invoke<{available:boolean;message:string}>('maintenance_status');
+        if(!status.available)throw new Error(status.message);
+        const expectedEpoch=await invoke<number>('account_session_generation');
+        const {data,error}=await centralClient().auth.signInWithPassword({email:normalizedEmail,password:pw});
+        if(error||!data.session)throw new Error('온라인 모아둠 로그인에 실패했습니다.');
+        await invoke('account_session_activate',{accessToken:data.session.access_token,expectedSubject:data.session.user.id,expectedEpoch,maintenanceOnly:true});
+        setPw('');setMaintenanceReady(true);return; // Do not start the normal App/business bootstrap.
+      }
       const result = await authenticate(mode, normalizedEmail, pw, provider);
       saveRememberedEmail(normalizedEmail, rememberEmail);
       if (result.requiresEmailConfirmation) {
@@ -115,6 +82,12 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   };
 
+  if(maintenanceReady)return <div className="container" style={{maxWidth:760,padding:32}}>
+    <h1>유지보수 전용 로그인</h1><p>업무공간과 업무 엔진을 만들지 않았습니다. 완료 후 앱을 다시 시작하세요. 기존 업무공간의 자동 병합·덮어쓰기는 하지 않습니다.</p>
+    <MaintenancePanel/>
+    <button onClick={async()=>{try{await invoke('account_session_close');await centralClient().auth.signOut();setMaintenanceReady(false);setMsg('로그아웃했습니다. 업무 시작은 앱을 다시 실행한 뒤 진행하세요.');}catch(e){setErr(String(e));}}}>작업 취소·로그아웃</button>
+    {err&&<p role="alert">{err}</p>}
+  </div>;
   return (
     <div className="container" style={{ maxWidth: 420, paddingTop: "80px" }}>
       <div className="animate-fade-in" style={{ textAlign: "center", marginBottom: "var(--space-8)" }}>
@@ -128,20 +101,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
       <div className="card animate-slide-up">
         <div className="card-body">
-          {central && (
-            <div className="flex gap-2 mb-3" role="tablist" aria-label="로그인 방식">
-              <button type="button" role="tab" aria-selected={provider === "central"}
-                onClick={() => { setProvider("central"); if (!CENTRAL_SIGNUP_OPEN) setMode("login"); setErr(null); setMsg(null); setShowRecovery(false); }}
-                className={provider === "central" ? "btn btn-secondary" : "btn btn-ghost"} style={{ flex: 1, fontSize: "var(--text-sm)" }}>
-                모아둠 계정
-              </button>
-              <button type="button" role="tab" aria-selected={provider === "local"}
-                onClick={() => { setProvider("local"); setMode("login"); setErr(null); setMsg(null); }}
-                className={provider === "local" ? "btn btn-secondary" : "btn btn-ghost"} style={{ flex: 1, fontSize: "var(--text-sm)" }}>
-                이 PC 기존 계정
-              </button>
-            </div>
-          )}
+          <p>모아둠 계정으로 로그인</p>
+          {!central && <p role="alert">중앙 인증 배포 설정을 확인해야 합니다. 기존 자료는 삭제되지 않습니다.</p>}
           {/* 탭 전환 */}
           <div className="flex gap-2 mb-4">
             <button
@@ -157,7 +118,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             </button>
             {/* 중앙 빌드에서는 이 PC 전용 신규 가입을 열지 않는다(가입 체계는 모아둠 계정 하나).
                 모아둠 계정 신규 가입도 안내 메일 발송 준비 전에는 닫는다(VITE_MOADOOM_SIGNUP_OPEN). */}
-            {!(central && provider === "local") && !(central && provider === "central" && !CENTRAL_SIGNUP_OPEN) && (
+            {central && CENTRAL_SIGNUP_OPEN && (
               <button
                 onClick={() => {
                   setMode("register");
@@ -178,13 +139,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             </p>
           )}
 
-          {central && provider === "local" && (
-            <p className="text-secondary" role="note" style={{ fontSize: "var(--text-sm)", margin: "0 0 var(--space-3)" }}>
-              이 PC 기존 계정으로 로그인하면 '자료 보존 모드'로 열립니다: 기존 고객 자료 조회와 내보내기만 할 수 있고,
-              새 등록·수정·분석·AI 기능은 모아둠 계정으로 로그인해야 합니다. 이 PC 계정 비밀번호를 잊었다면 모아둠 계정으로
-              로그인하세요(같은 PC의 고객 자료가 그대로 보입니다).
-            </p>
-          )}
+          <p className="text-secondary">소유권이 확인되지 않은 이전 자료는 자동 연결하지 않습니다.</p>
 
           {/* 로그인/회원가입 폼 */}
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -228,8 +183,9 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
               이메일 기억하기
             </label>
 
-            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy}>
-              {busy ? "처리 중..." : mode === "login" ? (central && provider === "local" ? "자료 보존 모드로 열기" : "로그인") : "가입하고 시작"}
+            {mode==='login'&&<label><input type="checkbox" checked={maintenanceOnly} disabled={busy} onChange={e=>setMaintenanceOnly(e.target.checked)}/>이전 자료 검토 전용 로그인 (업무공간 생성·업무 시작 안 함)</label>}
+            <button type="submit" className="btn btn-primary btn-lg w-full" disabled={busy || !central}>
+              {busy ? "처리 중..." : mode === "login" ? "로그인" : "가입하고 시작"}
             </button>
           </form>
 
@@ -245,8 +201,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             </div>
           )}
 
-          {/* 비밀번호 복구 — 중앙 빌드의 이 PC 계정은 인증 없는 로컬 재설정을 쓰지 않는다(서버도 차단) */}
-          {central && provider === "local" ? null : !showRecovery ? (
+          {central && (
             <button
               type="button"
               onClick={openRecovery}
@@ -255,77 +210,11 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             >
               비밀번호를 잊으셨나요?
             </button>
-          ) : (
-            <div className="card mt-4" style={{ backgroundColor: "var(--neutral-50)" }}>
-              <div className="card-body card-compact">
-                <h3 className="font-semibold mb-3">계정 복구</h3>
-                {accounts.length === 0 ? (
-                  <p className="text-sm text-secondary">이 컴퓨터에 저장된 계정이 없습니다.</p>
-                ) : (
-                  <form onSubmit={submitRecovery} className="flex flex-col gap-3">
-                    <div className="input-group">
-                      <label className="input-label">계정 선택</label>
-                      {accounts.map((account) => (
-                        <label key={account.email} className="input-checkbox-label text-sm">
-                          <input
-                            type="radio"
-                            className="input-checkbox"
-                            name="recovery-account"
-                            checked={recoveryEmail === account.email}
-                            onChange={() => setRecoveryEmail(account.email)}
-                          />
-                          {account.email}
-                          {account.created_at && (
-                            <span className="text-secondary"> ({account.created_at.slice(0, 10)})</span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
-
-                    <div className="input-group">
-                      <label htmlFor="new-password" className="input-label">
-                        새 비밀번호
-                      </label>
-                      <input
-                        id="new-password"
-                        type="password"
-                        className="input"
-                        placeholder="6자 이상"
-                        value={recoveryPw}
-                        onChange={(e) => setRecoveryPw(e.target.value)}
-                        autoComplete="new-password"
-                      />
-                    </div>
-
-                    {recoveryErr && (
-                      <div className="text-sm text-error" role="alert">
-                        {recoveryErr}
-                      </div>
-                    )}
-
-                    <div className="flex gap-2">
-                      <button type="submit" className="btn btn-primary" disabled={recoveryBusy}>
-                        {recoveryBusy ? "처리 중..." : "비밀번호 재설정"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowRecovery(false);
-                          setRecoveryErr(null);
-                        }}
-                        className="btn btn-secondary"
-                      >
-                        취소
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </div>
-            </div>
           )}
         </div>
       </div>
 
+      <MaintenancePanel readOnly/>
       {/* 보안 안내 */}
       <div className="text-center mt-6 text-sm text-secondary">
         <p>🔒 고객 정보는 100% 본인 PC에만 저장됩니다.</p>

@@ -1,0 +1,20 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+const modulePath=new URL('../src/workspaceAccess.ts',import.meta.url);
+test('offline authority is resumed only on network failure, never on explicit denial or account mismatch',async()=>{
+ assert.ok(existsSync(modulePath),'workspace access coordinator missing');
+ const {obtainWorkspaceSession}=await import(modulePath.href);
+ const a={subject:'account-a',requestToken:'a'.repeat(64),expiresAt:9999999999,epoch:1,offline:false};
+ let resumed=0;
+ const base={session:{access_token:'synthetic-token',user:{id:'account-a'}},sessionError:null,cachedSubject:'account-a',activate:async()=>a,resume:async(subject:string)=>{resumed++;assert.equal(subject,'account-a');return {...a,offline:true};}};
+ assert.equal((await obtainWorkspaceSession(base)).offline,false);
+ assert.equal((await obtainWorkspaceSession({...base,activate:async()=>{throw 'WORKSPACE_NETWORK_UNAVAILABLE';}})).offline,true);
+ assert.equal(resumed,1);
+ await assert.rejects(()=>obtainWorkspaceSession({...base,activate:async()=>{throw 'WORKSPACE_AUTHORIZATION_DENIED';}}));
+ assert.equal(resumed,1);
+ await assert.rejects(()=>obtainWorkspaceSession({...base,sessionError:{name:'AuthApiError'}}));
+ assert.equal(resumed,1);
+ await assert.rejects(()=>obtainWorkspaceSession({...base,activate:async()=>({...a,subject:'account-b'})}));
+ assert.equal((await obtainWorkspaceSession({...base,session:null,sessionError:{name:'AuthRetryableFetchError'}})).offline,true);
+});

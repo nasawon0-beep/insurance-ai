@@ -126,6 +126,13 @@ async def require_qa_request_binding(request: Request, call_next):
             and secrets.compare_digest(supplied_binding, expected_binding)
         ):
             return JSONResponse(status_code=403, content={"detail": "QA request binding rejected"})
+    # Desktop central-only mode is a trusted launcher setting, never an HTTP flag.
+    # Retain legacy records/keys for reviewed migration; retire their public routes.
+    if os.environ.get("CONTROL_DESKTOP_CENTRAL_ONLY") == "1":
+        path=request.url.path.rstrip("/")
+        retired=("/auth", "/central-link", "/license", "/devices", "/admin/license")
+        if any(path==prefix or path.startswith(prefix+"/") for prefix in retired):
+            return JSONResponse(status_code=410,content={"detail":"central_account_required"},headers={"Cache-Control":"no-store"})
     return await call_next(request)
 
 TRIAL_DAYS = int(os.environ.get("CONTROL_TRIAL_DAYS", "30"))

@@ -1,10 +1,11 @@
 {
   "name": "insurance-ai-desktop",
   "private": true,
-  "version": "2.5.17",
+  "version": "2.5.18",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node ../scripts/build-moadoom-live.mjs check-env",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

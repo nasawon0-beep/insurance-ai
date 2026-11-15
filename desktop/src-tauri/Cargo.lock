@@ -760,8 +760,9 @@ dependencies = [
 
 [[package]]
 name = "desktop-scaffold"
-version = "2.5.17"
+version = "2.5.18"
 dependencies = [
+ "base64 0.22.1",
  "fs2",
  "futures-util",
  "getrandom 0.2.17",
@@ -769,8 +770,10 @@ dependencies = [
  "qrcode",
  "regex",
  "reqwest 0.11.27",
+ "ring",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import re
 import shutil
 import sqlite3
@@ -132,6 +134,7 @@ def _prune(d: Path) -> int:
     for p in to_delete:
         try:
             p.unlink()
+            _rm(_owner_file(p))
             pruned += 1
         except OSError:
             pass
@@ -151,6 +154,12 @@ def make_backup(trigger: str = "manual", db_path: Optional[str] = None) -> dict:
         dst = d / f"{base}_{n:03d}.sqlite3"
         n += 1
     _snapshot(src, dst)
+    try:
+        _seal_snapshot(dst)
+    except Exception:
+        _rm(dst)
+        _rm(_owner_file(dst))
+        raise
     pruned = _prune(d)
     st = dst.stat()
     return {
@@ -173,6 +182,61 @@ def startup_backup(db_path: Optional[str] = None) -> Optional[dict]:
     return make_backup("startup", db_path)
 
 
+def _account_owner():
+    issuer = os.environ.get("MOADOOM_ACCOUNT_ISSUER")
+    subject = os.environ.get("MOADOOM_ACCOUNT_SUBJECT")
+    if not issuer and not subject:
+        return None  # Legacy library tooling, not the bound engine HTTP path.
+    from uuid import UUID
+    if not issuer or not subject or not re.fullmatch(r"https://[a-z0-9-]+\.supabase\.co/auth/v1", issuer) or str(UUID(subject)) != subject:
+        raise ValueError("검증된 계정 백업 경로가 필요합니다.")
+    return [issuer, subject]
+
+
+def _owner_file(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".owner.enc")
+
+
+def _snapshot_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _seal_snapshot(path: Path) -> None:
+    owner = _account_owner()
+    if owner is None:
+        return
+    from .crypto import get_cipher
+    manifest = json.dumps({"v": 1, "purpose": "account-database-backup", "owner": owner, "sha256": _snapshot_digest(path)}, sort_keys=True)
+    encrypted = get_cipher().encrypt(manifest)
+    if encrypted is None:
+        raise ValueError("백업 소유권 봉인 실패")
+    _owner_file(path).write_text(encrypted, encoding="utf-8")
+
+
+def _verify_snapshot(path: Path, manifest_source: Optional[Path] = None) -> None:
+    owner = _account_owner()
+    if owner is None:
+        return
+    try:
+        from .crypto import get_cipher, is_encrypted
+        marker = _owner_file(manifest_source or path)
+        if marker.stat().st_size > 8192:
+            raise ValueError()
+        encrypted = marker.read_text(encoding="utf-8")
+        if not is_encrypted(encrypted):
+            raise ValueError()
+        plain = get_cipher(create_if_missing=False).decrypt(encrypted)
+        if plain is None:
+            raise ValueError()
+        manifest = json.loads(plain)
+        expected = {"v": 1, "purpose": "account-database-backup", "owner": owner, "sha256": _snapshot_digest(path)}
+        if manifest != expected:
+            raise ValueError()
+    except Exception as exc:
+        raise ValueError("현재 계정의 백업 소유권·암호화 키·무결성을 확인할 수 없습니다. 기존 자료는 변경하지 않았습니다.") from exc
+
+
 def restore_backup(filename: str, db_path: Optional[str] = None) -> dict:
     d = backup_dir(db_path)
     # 경로 조작 방지 — 파일명만 허용.
@@ -186,10 +250,12 @@ def restore_backup(filename: str, db_path: Optional[str] = None) -> dict:
     if not head.startswith(_SQLITE_MAGIC):
         raise ValueError("SQLite 데이터베이스 파일이 아닙니다. 복구를 취소했습니다.")
 
+    _verify_snapshot(src)
     target = resolve_db_path(db_path)
     safety = d / f"{_SAFETY_PREFIX}{_ts()}.sqlite3"
     if target.exists():
         _snapshot(target, safety)
+        _seal_snapshot(safety)
     else:
         safety.write_bytes(b"")
 
@@ -200,6 +266,7 @@ def restore_backup(filename: str, db_path: Optional[str] = None) -> dict:
     tmp = target.with_name(target.name + ".restore-tmp")
     try:
         shutil.copy2(src, tmp)
+        _verify_snapshot(tmp, src)
         os.replace(tmp, target)
     except Exception:
         _rm(tmp)

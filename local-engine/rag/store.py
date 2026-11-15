@@ -23,11 +23,66 @@ def resolve_db_path(db_path: str | Path | None = None) -> Path:
     return Path(db_path or os.environ.get("RAG_DB_PATH") or _PACKAGED_DEFAULT)
 
 
+def convert_legacy_store(source, destination, *, cipher, owner, confirmed):
+    """Approved conversion to a NEW encrypted file; never modify/delete original.
+    Plaintext snapshot exists only in SQLite memory, not a new temporary disk DB.
+    """
+    import secrets
+    from types import SimpleNamespace
+    source=Path(source);destination=Path(destination)
+    if not confirmed or source.resolve()==destination.resolve():
+        raise ValueError('Explicit separate-destination RAG conversion required')
+    if destination.exists():raise FileExistsError(destination)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    pending=destination.with_name(destination.name+'.pending-'+secrets.token_hex(12))
+    original=sqlite3.connect(source.resolve().as_uri()+'?mode=ro',uri=True)
+    memory=sqlite3.connect(':memory:');output=None
+    try:
+        original.backup(memory)
+        tables={r[0] for r in memory.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not tables.issubset({'chunks','docs'}) or 'chunks' not in tables:
+            raise ValueError('Unknown legacy RAG schema requires review')
+        output=VectorStore(pending,cipher=cipher,owner=owner)
+        for row in memory.execute('SELECT chunk_id,doc_id,filename,page,text,embedding,embed_model FROM chunks'):
+            cid,d,name,page,text,embedding,model=row
+            encrypted=isinstance(text,str) and text.startswith('enc:v2:')
+            if encrypted:
+                name=output._name(name,d)
+                text=cipher.decrypt_bound(text,output._aad('text',d,cid,page))
+                embedding=cipher.decrypt_bound(embedding,output._aad('embedding',d,cid,page))
+            elif isinstance(text,str) and text.startswith('enc:'):
+                raise ValueError('Unsupported RAG encryption version')
+            output.add([SimpleNamespace(chunk_id=cid,doc_id=d,filename=name,page=page,text=text)],[json.loads(embedding)],model)
+        if 'docs' in tables:
+            for d,h,name,n,model in memory.execute('SELECT doc_id,file_hash,filename,chunks,embed_model FROM docs'):
+                if isinstance(name,str) and name.startswith('enc:v2:'):name=output._name(name,d)
+                output.upsert_doc(d,h,name,n,model)
+        output.close();output=None
+        os.link(pending,destination)
+    finally:
+        if output is not None:output.close()
+        memory.close();original.close()
+        if pending.exists():pending.unlink()
+
+
 class VectorStore:
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, cipher=None, owner=None):
+        from database.crypto import get_cipher
+        from protected_business_key import environment_identity
+        self.owner = owner if owner is not None else (environment_identity() or [])
         self.db_path = resolve_db_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
+        try:
+            populated = False
+            if self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks'").fetchone():
+                populated = bool(self.conn.execute('SELECT 1 FROM chunks LIMIT 1').fetchone())
+                if self.conn.execute("SELECT 1 FROM chunks WHERE text NOT LIKE 'enc:v2:%' LIMIT 1").fetchone():
+                    raise ValueError('Legacy plaintext RAG requires explicit source-preserving conversion')
+            self.cipher = cipher or get_cipher(create_if_missing=not populated)
+        except Exception:
+            self.conn.close()
+            raise
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chunks (
@@ -57,6 +112,13 @@ class VectorStore:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_hash ON docs(file_hash)")
         self.conn.commit()
 
+    def _aad(self, kind, doc_id, chunk_id='', page=0):
+        return json.dumps(['moadoom-rag-v1',self.owner,kind,doc_id,chunk_id,page],separators=(',',':')).encode()
+
+    def _name(self, value, doc_id, write=False):
+        method = self.cipher.encrypt_bound if write else self.cipher.decrypt_bound
+        return method(value, self._aad('filename',doc_id))
+
     def clear(self, doc_id: str | None = None) -> int:
         cur = (
             self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
@@ -72,7 +134,9 @@ class VectorStore:
 
     def add(self, chunks: list, embeddings: list[list[float]], embed_model: str) -> int:
         rows = [
-            (c.chunk_id, c.doc_id, c.filename, c.page, c.text, json.dumps(e), embed_model)
+            (c.chunk_id, c.doc_id, self._name(c.filename,c.doc_id,True), c.page,
+             self.cipher.encrypt_bound(c.text,self._aad('text',c.doc_id,c.chunk_id,c.page)),
+             self.cipher.encrypt_bound(json.dumps(e),self._aad('embedding',c.doc_id,c.chunk_id,c.page)), embed_model)
             for c, e in zip(chunks, embeddings)
         ]
         self.conn.executemany(
@@ -104,7 +168,7 @@ class VectorStore:
                 embed_model = excluded.embed_model,
                 indexed_at = excluded.indexed_at
             """,
-            (doc_id, file_hash, filename, chunks, embed_model, indexed_at),
+            (doc_id, file_hash, self._name(filename,doc_id,True), chunks, embed_model, indexed_at),
         )
         self.conn.commit()
 
@@ -117,14 +181,14 @@ class VectorStore:
             return {
                 "doc_id": row[0],
                 "file_hash": row[1],
-                "filename": row[2],
+                "filename": self._name(row[2],row[0]),
                 "chunks": row[3],
                 "embed_model": row[4],
                 "indexed_at": row[5],
             }
 
         legacy = self.conn.execute(
-            "SELECT doc_id, filename, COUNT(*), MIN(embed_model) FROM chunks WHERE doc_id = ? GROUP BY doc_id, filename",
+            "SELECT doc_id, MIN(filename), COUNT(*), MIN(embed_model) FROM chunks WHERE doc_id = ? GROUP BY doc_id",
             (doc_id,),
         ).fetchone()
         if not legacy:
@@ -132,7 +196,7 @@ class VectorStore:
         return {
             "doc_id": legacy[0],
             "file_hash": legacy[0],
-            "filename": legacy[1],
+            "filename": self._name(legacy[1],legacy[0]),
             "chunks": legacy[2],
             "embed_model": legacy[3],
             "indexed_at": None,
@@ -166,7 +230,7 @@ class VectorStore:
             {
                 "doc_id": d,
                 "file_hash": h,
-                "filename": f,
+                "filename": self._name(f,d),
                 "chunks": actual_n if actual_n is not None else n,
                 "embed_model": m,
                 "indexed_at": indexed_at,
@@ -176,11 +240,11 @@ class VectorStore:
 
         legacy_rows = self.conn.execute(
             """
-            SELECT c.doc_id, c.filename, COUNT(*), MIN(c.embed_model)
+            SELECT c.doc_id, MIN(c.filename), COUNT(*), MIN(c.embed_model)
             FROM chunks c
             LEFT JOIN docs d ON d.doc_id = c.doc_id
             WHERE d.doc_id IS NULL
-            GROUP BY c.doc_id, c.filename
+            GROUP BY c.doc_id
             ORDER BY c.filename
             """
         ).fetchall()
@@ -188,14 +252,14 @@ class VectorStore:
             {
                 "doc_id": d,
                 "file_hash": d,
-                "filename": f,
+                "filename": self._name(f,d),
                 "chunks": n,
                 "embed_model": m,
                 "indexed_at": None,
             }
             for d, f, n, m in legacy_rows
         )
-        return docs
+        return sorted(docs, key=lambda row: row['filename'] or '')
 
     def search(
         self,
@@ -214,16 +278,16 @@ class VectorStore:
         qn = math.sqrt(sum(x * x for x in query_emb)) or 1.0
         scored: list[dict[str, Any]] = []
         for chunk_id, d, f, page, text, emb_json in self.conn.execute(q, params):
-            emb = json.loads(emb_json)
+            emb = json.loads(self.cipher.decrypt_bound(emb_json,self._aad('embedding',d,chunk_id,page)))
             dot = sum(a * b for a, b in zip(query_emb, emb))
             en = math.sqrt(sum(x * x for x in emb)) or 1.0
             scored.append(
                 {
                     "chunk_id": chunk_id,
                     "doc_id": d,
-                    "filename": f,
+                    "filename": self._name(f,d),
                     "page": page,
-                    "text": text,
+                    "text": self.cipher.decrypt_bound(text,self._aad('text',d,chunk_id,page)),
                     "score": round(dot / (qn * en), 4),
                 }
             )

@@ -24,11 +24,12 @@ from pathlib import Path
 from typing import Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from protected_business_key import environment_identity, read_protected, write_protected
 
 _SERVICE = "insurance-ai-local-engine"
 _ACCOUNT = "customer-db-key"
 _DEFAULT_KEYFILE = (
-    Path.home() / ".insurance-ai" / "customer-db.key"
+    Path("~/.insurance-ai/customer-db.key")  # Resolve only on keyfile access, not worker import.
     if getattr(sys, "frozen", False)
     else Path(__file__).parent / "data" / ".dbkey"
 )
@@ -41,7 +42,7 @@ def is_encrypted(value: Optional[str]) -> bool:
 
 
 def _keyring_get() -> Optional[bytes]:
-    if os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
+    if environment_identity() or os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
         return None
     try:
         import keyring
@@ -53,7 +54,7 @@ def _keyring_get() -> Optional[bytes]:
 
 
 def _keyring_set(key: bytes) -> bool:
-    if os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
+    if environment_identity() or os.environ.get("CUSTOMER_DB_KEYFILE_ONLY") == "1":
         return False
     try:
         import keyring
@@ -65,15 +66,24 @@ def _keyring_set(key: bytes) -> bool:
 
 
 def _keyfile_get() -> Optional[bytes]:
-    if _KEYFILE_FALLBACK.exists():
-        return base64.b64decode(_KEYFILE_FALLBACK.read_text().strip())
+    path = _KEYFILE_FALLBACK.expanduser()
+    if path.exists():
+        owner = environment_identity()
+        if owner:
+            return read_protected(path, *owner)
+        return base64.b64decode(path.read_text().strip())
     return None
 
 
 def _keyfile_set(key: bytes) -> None:
-    _KEYFILE_FALLBACK.parent.mkdir(parents=True, exist_ok=True)
-    _KEYFILE_FALLBACK.write_text(base64.b64encode(key).decode("ascii"))
-    os.chmod(_KEYFILE_FALLBACK, 0o600)
+    path = _KEYFILE_FALLBACK.expanduser()
+    owner = environment_identity()
+    if owner:
+        write_protected(path, key, *owner)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(base64.b64encode(key).decode("ascii"))
+    os.chmod(path, 0o600)
 
 
 def _database_has_encrypted_values() -> bool:
@@ -142,6 +152,20 @@ class FieldCipher:
         ct = self._aes.encrypt(nonce, plaintext.encode("utf-8"), None)
         return _PREFIX + base64.b64encode(nonce + ct).decode("ascii")
 
+    def encrypt_bound(self, plaintext: Optional[str], context: bytes) -> Optional[str]:
+        if plaintext is None:
+            return None
+        nonce = secrets.token_bytes(12)
+        return "enc:v2:" + base64.b64encode(nonce + self._aes.encrypt(nonce, plaintext.encode("utf-8"), context)).decode("ascii")
+
+    def decrypt_bound(self, stored: Optional[str], context: bytes) -> Optional[str]:
+        if stored is None:
+            return None
+        if not stored.startswith("enc:v2:"):
+            raise ValueError("Unprotected/unsupported data: explicit approved conversion required")
+        blob = base64.b64decode(stored[7:], validate=True)
+        return self._aes.decrypt(blob[:12], blob[12:], context).decode("utf-8")
+
     def decrypt(self, stored: Optional[str]) -> Optional[str]:
         if stored is None:
             return None
@@ -153,10 +177,15 @@ class FieldCipher:
 
 
 _cipher: Optional[FieldCipher] = None
+_cipher_owner = None
 
 
 def get_cipher(*, create_if_missing: bool = True) -> FieldCipher:
-    global _cipher
+    global _cipher, _cipher_owner
+    owner = environment_identity()
+    if owner != _cipher_owner:
+        _cipher = None
+    _cipher_owner = owner
     if _cipher is not None:
         return _cipher
 
@@ -189,5 +218,6 @@ def get_cipher(*, create_if_missing: bool = True) -> FieldCipher:
 
 def reset_cache() -> None:
     """테스트에서 키 소스를 바꾼 뒤 캐시를 비울 때."""
-    global _cipher
+    global _cipher, _cipher_owner
     _cipher = None
+    _cipher_owner = None

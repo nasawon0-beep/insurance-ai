@@ -10,7 +10,7 @@ import {
 } from "./config";
 import { invoke } from "@tauri-apps/api/core";
 import { responseFromNativeResult } from "./nativeResponse";
-import { engineFetch } from "./engine";
+import { engineFetch, activateAccountWorkspace, resetAccountRequests } from "./engine";
 import { formatErrorDetail } from "./errorDetail";
 import { formatControlServerNetworkError, isFetchNetworkError } from "./localEngineErrors";
 import { type SignedLicenseBlob, verifyLicenseForUser } from "./licenseSignature";
@@ -65,8 +65,7 @@ export type AuthProvider = "central" | "local";
 export function getAuthProvider(): AuthProvider | null {
   const v = localStorage.getItem(LS.provider);
   if (v === "central" && centralEnabled()) return "central";
-  if (v === "local") return "local";
-  return localStorage.getItem(LS.token) ? "local" : null;
+  return null; // Legacy tokens do not establish an account workspace.
 }
 
 /** 부팅 시 로그인 화면을 건너뛸 수 있는지(세션 또는 오프라인 판정 근거가 있는지). */
@@ -122,6 +121,9 @@ async function nativeControlFetch(path: string, init: RequestInit): Promise<Resp
 }
 
 async function call(path: string, init?: RequestInit) {
+  if (/^\/auth\/(login|register|local-recovery)(\/|$)/.test(path) || path === '/central-link') {
+    throw new Error('모아둠 중앙 계정으로 로그인해 주세요. 이전 자료는 소유권 확인 전 연결하지 않습니다.');
+  }
   let res: Response;
   const requestInit: RequestInit = {
     headers: {
@@ -209,6 +211,8 @@ export type AuthenticateResult = { user: User | null; requiresEmailConfirmation:
 
 /** 중앙(모아둠 계정) 로그인/가입. 가입은 확인 메일을 거쳐야 로그인된다. */
 async function authenticateCentral(mode: "login" | "register", email: string, password: string): Promise<AuthenticateResult> {
+  resetAccountRequests();
+  if (IS_NATIVE_RUNTIME) await invoke('account_session_close');
   const sb = centralClient();
   if (mode === "register") {
     if (!CENTRAL_SIGNUP_OPEN) throw new Error("모아둠 계정 신규 가입은 아직 열리지 않았습니다. 기존 계정으로 로그인하세요.");
@@ -228,6 +232,7 @@ async function authenticateCentral(mode: "login" | "register", email: string, pa
   const { data, error } = await sb.auth.getUser();
   if (error || !data.user?.email) throw new Error("회원 정보를 확인할 수 없습니다.");
   const user = { id: data.user.id, email: data.user.email };
+  await activateAccountWorkspace();
   const previous = getUser();
   if (previous?.id !== user.id) localStorage.removeItem(LS.centralLicense); // 다른 회원의 캐시 재사용 금지
   localStorage.setItem(LS.provider, "central");
@@ -239,54 +244,25 @@ export async function authenticate(
   mode: "login" | "register",
   email: string,
   password: string,
-  provider: AuthProvider = centralEnabled() ? "central" : "local",
+  provider: AuthProvider = "central",
 ): Promise<AuthenticateResult> {
-  if (provider === "central") return authenticateCentral(mode, email, password);
-  // 중앙 회원 빌드: 이 PC 기존 계정은 이용권 근거가 아니다(로컬 이용권 우회 차단).
-  // 로그인만 허용해 '자료 보존 모드'(기존 자료 조회·내보내기) 세션을 만든다. 가입·기기 등록·이용권 발급 없음.
-  if (!localSessionAllowed(centralEnabled())) {
-    if (mode !== "login") throw new Error(CENTRAL_ACCOUNT_REQUIRED_MESSAGE);
-    const legacy = await call("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
-    localStorage.setItem(LS.provider, "local");
-    localStorage.setItem(LS.token, legacy.token);
-    localStorage.setItem(LS.user, JSON.stringify(legacy.user));
-    return { user: legacy.user as User, requiresEmailConfirmation: false };
-  }
-  const r = await call(`/auth/${mode}`, {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-  localStorage.setItem(LS.provider, "local");
-  localStorage.setItem(LS.token, r.token);
-  localStorage.setItem(LS.user, JSON.stringify(r.user));
-  // 기기 등록 (실패해도 로그인은 유지 — 초과 시 메시지만)
-  try {
-    await call("/devices", {
-      method: "POST",
-      body: JSON.stringify({
-        device_id: deviceId(),
-        name: navigator.platform || "desktop",
-        app_version: "0.1.0",
-      }),
-    });
-  } catch (e) {
-    console.warn("device register:", e);
-  }
-  return { user: r.user as User, requiresEmailConfirmation: false };
+  if (provider !== 'central' || !centralEnabled()) throw new Error(CENTRAL_ACCOUNT_REQUIRED_MESSAGE);
+  return authenticateCentral(mode, email, password);
 }
 
 /** 로그아웃: 세션/캐시만 지운다. 고객 자료(local-engine DB/PDF)는 건드리지 않는다. */
-export function logout() {
-  // 로그아웃하면 모바일 연결 서버와 네트워크 변경 자동 재시작도 멈춘다('시작 시 복원' 설정은 다음 로그인용으로 유지).
-  try {
-    void invoke("mobile_sync_pause_for_logout").catch(() => undefined);
-  } catch {
-    /* Tauri 밖(테스트)에서는 무시 */
-  }
+export async function logout(): Promise<void> {
+  resetAccountRequests();
+  // Never claim logout or expose a new login realm until durable native revocation succeeds.
+  if (IS_NATIVE_RUNTIME) await invoke('account_session_close');
   if (getAuthProvider() === "central") {
-    void centralClient().auth.signOut({ scope: "local" }).catch(() => undefined);
+    await centralClient().auth.stopAutoRefresh();
+    await centralClient().auth.signOut({ scope: "local" }).catch(() => undefined);
   }
-  [LS.token, LS.user, LS.license, LS.provider, LS.centralLicense, "iai.settings"].forEach((k) => localStorage.removeItem(k));
+  [LS.token, LS.user, LS.license, LS.provider, LS.centralLicense, "iai.settings",
+    "moadoom.central.session", "moadoom.central.session-user", "moadoom.central.session-code-verifier",
+  ].forEach((k) => localStorage.removeItem(k));
+  if (IS_NATIVE_RUNTIME) window.location.reload();
 }
 
 /** 비밀번호 재설정 메일 요청(중앙 계정). 메일의 링크는 사이트 재설정 화면으로 간다. */
@@ -320,9 +296,11 @@ function resolveCentralLicense(): Promise<LicenseResolution> {
   return resolveCentralLicenseWith({
     async getSession() {
       const sb = centralClient();
-      const { data } = await sb.auth.getSession();
+      const { data, error } = await sb.auth.getSession();
+      if (error && error.name !== "AuthRetryableFetchError") throw error;
       const s = data.session;
       if (!s?.access_token || !s.user?.email) return null;
+      await activateAccountWorkspace();
       return { accessToken: s.access_token, userId: s.user.id, email: s.user.email };
     },
     fetchLicense: fetchCentralLicense,

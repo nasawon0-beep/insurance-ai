@@ -6,6 +6,7 @@
 """
 import base64
 import sqlite3
+import os
 
 import pytest
 
@@ -744,7 +745,7 @@ def test_rrn_reveal_writes_access_log(client, rrn_on):
     reveal_log = [row for row in log if row["access_type"] == "explicit_reveal"]
     assert len(reveal_log) == 1
     assert reveal_log[0]["purpose"] == "보험금 청구 확인" and reveal_log[0]["accessed_at"]
-    assert reveal_log[0]["actor"] == "agent-7"
+    assert reveal_log[0]["actor"] == os.environ["MOADOOM_ACCOUNT_SUBJECT"]
 
 
 def test_rrn_customer_detail_writes_access_log(client, rrn_on):
@@ -760,7 +761,7 @@ def test_rrn_customer_detail_writes_access_log(client, rrn_on):
     detail_log = [row for row in log if row["access_type"] == "detail_open"]
     assert len(detail_log) == 1
     assert detail_log[0]["purpose"] == "고객 상세 화면 열람"
-    assert detail_log[0]["actor"] == "advisor-1"
+    assert detail_log[0]["actor"] == os.environ["MOADOOM_ACCOUNT_SUBJECT"]
     assert detail_log[0]["accessed_at"]
 
 
@@ -798,7 +799,7 @@ def test_rrn_create_response_writes_access_log(client, rrn_on):
     log = client.get(f"/customers/{r.json()['id']}/rrn-access-log").json()["access_log"]
     assert len(log) == 1
     assert log[0]["access_type"] == "create_response"
-    assert log[0]["actor"] == "creator-1"
+    assert log[0]["actor"] == os.environ["MOADOOM_ACCOUNT_SUBJECT"]
     assert log[0]["purpose"] == "고객 저장 응답에 주민등록번호 포함"
     assert log[0]["accessed_at"]
 
@@ -815,7 +816,7 @@ def test_rrn_update_response_writes_access_log(client, rrn_on):
     log = client.get(f"/customers/{cid}/rrn-access-log").json()["access_log"]
     assert len(log) == 1
     assert log[0]["access_type"] == "update_response"
-    assert log[0]["actor"] == "updater-1"
+    assert log[0]["actor"] == os.environ["MOADOOM_ACCOUNT_SUBJECT"]
     assert log[0]["purpose"] == "고객 저장 응답에 주민등록번호 포함"
 
 
@@ -837,8 +838,8 @@ def test_rrn_save_responses_log_even_when_legacy_env_is_off(client, db_path, mon
         rows = conn.execute(
             "SELECT actor, access_type FROM rrn_access_log WHERE customer_id = ?", (cid,)
         ).fetchall()
-    assert ("creator-off-env", "create_response") in rows
-    assert ("updater-off-env", "update_response") in rows
+    assert (os.environ["MOADOOM_ACCOUNT_SUBJECT"], "create_response") in rows
+    assert (os.environ["MOADOOM_ACCOUNT_SUBJECT"], "update_response") in rows
 
 
 def test_focus_customer_uses_selected_id_detail_request_only():

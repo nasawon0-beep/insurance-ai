@@ -1,5 +1,6 @@
 // 모아둠 live(실제 Supabase) 연결 빌드 실행기 — 공개값만 주입한다.
-// 설정: desktop/moadoom-live.public.json (VITE_MOADOOM_* 4개, 모두 공개값)
+// 설정: desktop/moadoom-live.public.json (공개값만, workspace 검증 공개키 필수)
+// 유지보수 공개키는 별도 선택 설정이며 없으면 유지보수 기능은 계속 차단된다.
 // 사용(저장소 루트에서):
 //   node scripts/build-moadoom-live.mjs check      # 설정 검증만
 //   node scripts/build-moadoom-live.mjs frontend   # desktop: npm run build (tsc + vite) → desktop/dist
@@ -39,18 +40,63 @@ export function validateLiveConfig(cfg) {
   return errors;
 }
 
+// Integrated account-isolation builds need a separately provisioned workspace verifier.
+// Keeping legacy validation separate permits auditing previously approved public config
+// without pretending it is sufficient for the new native workspace gate.
+export function validateIntegratedConfig(cfg) {
+  const { VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS: workspace, VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS: maintenance, ...legacy } = cfg;
+  const errors = validateLiveConfig(legacy);
+  for (const [name, value, required] of [
+    ["VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS", workspace, true],
+    ["VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS", maintenance, false],
+  ]) {
+    if (value === undefined && !required) continue;
+    try {
+      if (typeof value !== "string") throw new Error();
+      const keys = JSON.parse(value);
+      if (!keys || typeof keys !== "object" || Array.isArray(keys) || !Object.keys(keys).length) throw new Error();
+      for (const [kid, pub] of Object.entries(keys)) {
+        if (!/^[A-Za-z0-9._-]{3,64}$/.test(kid) || typeof pub !== "string") throw new Error();
+        const raw = Buffer.from(pub, "base64");
+        if (raw.length !== 32 || raw.toString("base64") !== pub) throw new Error();
+      }
+    } catch { errors.push(`missing or invalid ${name} (separate Ed25519 public keys required)`); }
+  }
+  return errors;
+}
+
+export function verifyRepositoryMaps(cfg, env) {
+  for (const name of ["VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS", "VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS"]) {
+    try {
+      const supplied = JSON.parse(env[name] || "");
+      const expected = JSON.parse(cfg[name]);
+      if (!supplied || Array.isArray(supplied) || typeof supplied !== "object" || !Object.keys(supplied).length ||
+          Object.keys(supplied).sort().join("\n") !== Object.keys(expected).sort().join("\n") ||
+          Object.keys(expected).some(key => supplied[key] !== expected[key])) throw new Error();
+    } catch { throw new Error(`${name}: required repository map missing, invalid or different from committed configuration`); }
+  }
+}
+
 function main() {
   const mode = process.argv[2] ?? "check";
-  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-  const errors = validateLiveConfig(cfg);
+  const names = ["VITE_MOADOOM_SUPABASE_URL", "VITE_MOADOOM_SUPABASE_PUBLISHABLE_KEY", "VITE_MOADOOM_LICENSE_PUBLIC_KEYS", "VITE_MOADOOM_SITE_URL", "VITE_MOADOOM_SIGNUP_OPEN", "VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS", "VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS"];
+  // Check what Vite AND Cargo will inherit, not a JSON file that wasn't injected.
+  const cfg = mode === "check-env"
+    ? Object.fromEntries(names.filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]]))
+    : JSON.parse(readFileSync(cfgPath, "utf8"));
+  const errors = validateIntegratedConfig(cfg);
   if (errors.length) {
     console.error("live config invalid:", errors.join("; "));
     process.exit(2);
   }
-  console.log(`live config OK: ${cfg.VITE_MOADOOM_SUPABASE_URL}, kid=${Object.keys(JSON.parse(cfg.VITE_MOADOOM_LICENSE_PUBLIC_KEYS)).join(",")}, site=${cfg.VITE_MOADOOM_SITE_URL}`);
-  if (mode === "check") return;
   if (mode === "github-env") {
-    // CI(release.yml): 검증된 공개값을 이후 step 환경변수로 넘긴다. 공개값만이라 로그 노출 무방.
+    try { verifyRepositoryMaps(cfg, process.env); }
+    catch (error) { console.error(error.message); process.exit(2); }
+  }
+  console.log("live config OK (values suppressed)");
+  if (mode === "check" || mode === "check-env") return;
+  if (mode === "github-env") {
+    // Export canonical committed values only after required vars match; never log values.
     const out = process.env.GITHUB_ENV;
     if (!out) {
       console.error("GITHUB_ENV not set");

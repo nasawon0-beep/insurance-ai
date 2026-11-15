@@ -104,11 +104,12 @@ ALLOWED_ORIGINS = [
 
 def _create_api_secret() -> str:
     value = secrets.token_urlsafe(32)
-    uid = getattr(os, "getuid", lambda: getpass.getuser())()
-    path = os.environ.get(
-        "INSURANCE_AI_API_SECRET_FILE",
-        os.path.join(tempfile.gettempdir(), f"insurance-ai-api-{uid}.secret"),
-    )
+    path = os.environ.get("INSURANCE_AI_API_SECRET_FILE")
+    if path is None:
+        # The native launcher supplies a scoped path; do not resolve an unused
+        # username fallback (getpass falls through to Unix-only pwd on Windows).
+        uid = getattr(os, "getuid", lambda: getpass.getuser())()
+        path = os.path.join(tempfile.gettempdir(), f"insurance-ai-api-{uid}.secret")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         if hasattr(os, "fchmod"):  # Unix 전용 — Windows 는 os.open 모드로 충분
@@ -359,6 +360,9 @@ from database.reset_router import router as business_reset_router
 from database.reset_activity import BusinessResetActivityMiddleware
 app.include_router(business_reset_router)
 app.add_middleware(BusinessResetActivityMiddleware)
+# Business access must never fall back to the shared legacy workspace.
+from account_boundary import AccountBoundaryMiddleware
+app.add_middleware(AccountBoundaryMiddleware)
 
 
 def _allow_private_network_preflight(request: Request, response):

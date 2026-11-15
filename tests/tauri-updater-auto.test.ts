@@ -94,7 +94,7 @@ test("local-engine startup race waits for health and retries safe initial GET re
   assert.match(engine, /local-engine request failed before startup completed; waiting for readiness and retrying/);
 
   const retryBlock = engine.slice(engine.indexOf("export async function engineFetch"));
-  assert.match(retryBlock, /await waitForLocalEngineReady\(\);[\s\S]*return engineFetchOnce\(path, init, retryWithFreshSecret\)/);
+  assert.match(retryBlock, /await waitForLocalEngineReady\(\);[\s\S]*accountFence\.assert\(issued\);[\s\S]*const result = await engineFetchOnce\(path, init, retryWithFreshSecret\);[\s\S]*accountFence\.assert\(issued\);[\s\S]*return accountFence\.response\(result, issued\)/);
   assert.doesNotMatch(engine, /ensureLocalEngineRecovered\(\)[\s\S]{0,240}engineFetch/);
 });
 

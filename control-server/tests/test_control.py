@@ -50,6 +50,19 @@ def _loopback_client(app, server=("127.0.0.1", 8790)):
     return TestClient(loopback_app)
 
 
+def test_desktop_central_only_retires_local_identity_without_touching_database(client, monkeypatch):
+    token, _ = _auth(client)
+    database=Path(os.environ['CONTROL_DB_PATH']); before=database.read_bytes()
+    monkeypatch.setenv('CONTROL_DESKTOP_CENTRAL_ONLY','1')
+    for method,path in [('POST','/auth/login'),('POST','/auth/register'),('GET','/auth/me'),
+                        ('POST','/auth/local-recovery/reset'),('GET','/central-link'),
+                        ('POST','/central-link'),('GET','/license'),('GET','/devices')]:
+        response=client.request(method,path,headers=h(token),json={'email':'fixture@example.test','password':'synthetic-pass'})
+        assert response.status_code==410,(path,response.text)
+    assert client.get('/health').status_code==200
+    assert database.read_bytes()==before
+
+
 def test_health_reports_qa_instance_identity(client, monkeypatch):
     instance_id = "12345678-1234-1234-1234-123456789abc"
     fingerprint = "b" * 64

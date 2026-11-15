@@ -3,6 +3,7 @@ import base64
 import sqlite3
 
 import pytest
+from synthetic_account_binding import SUBJECT, AUTHORIZATION, bind_synthetic_account
 
 pytest.importorskip("httpx")
 
@@ -25,11 +26,14 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(env):
+def client(env, monkeypatch):
     from fastapi.testclient import TestClient
     import main
 
-    return TestClient(main.app)
+    bind_synthetic_account(monkeypatch, main.app)
+    bound = TestClient(main.app)
+    bound.headers['Authorization'] = AUTHORIZATION
+    return bound
 
 
 def test_settings_reports_always_enabled_policy(client):
@@ -104,9 +108,12 @@ def test_detail_and_reveal_keep_access_audit(client, env):
             "SELECT actor, access_type, purpose FROM rrn_access_log WHERE customer_id = ?",
             (cid,),
         ).fetchall()
-    assert ("creator", "create_response", "고객 저장 응답에 주민등록번호 포함") in rows
-    assert ("viewer", "detail_open", "고객 상세 화면 열람") in rows
-    assert ("revealer", "explicit_reveal", "보험 업무 확인") in rows
+    assert (SUBJECT, "create_response", "고객 저장 응답에 주민등록번호 포함") in rows
+    assert (SUBJECT, "detail_open", "고객 상세 화면 열람") in rows
+    assert (SUBJECT, "explicit_reveal", "보험 업무 확인") in rows
+    assert len(rows) == 3
+    assert {row[0] for row in rows} == {SUBJECT}
+    assert not {row[0] for row in rows} & {"creator", "viewer", "revealer"}
 
 
 def test_intake_keeps_rrn_under_always_enabled_policy(client, monkeypatch):

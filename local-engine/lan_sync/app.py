@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import re
+import os
+import time
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -11,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from .bridge import ProductionBridge
 from .store import AuthError, PairingRateLimitError, SyncStore, ValidationError
+from authority_clock import AuthorityClock
 
 SYNC_SCHEMA_VERSION = 2
 FAMILY_CAPABILITY = "family_relationship.v1"
@@ -37,12 +40,25 @@ def create_app(
     app = FastAPI(title="MoaDoom LAN Sync", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sync_store = store
     app.state.production_bridge = bridge
+    # Deadline is supplied by the verified native account launcher, not a phone.
+    raw_deadline = os.environ.get('MOADOOM_ACCOUNT_EXPIRES_AT')
+    try:
+        account_deadline = int(raw_deadline) if raw_deadline is not None else None
+    except ValueError:
+        account_deadline = 0
+    account_clock = AuthorityClock()
 
     @app.middleware("http")
     async def require_tls(request: Request, call_next):
+        if account_deadline is not None and not account_clock.valid_until(account_deadline):
+            return JSONResponse(status_code=401, content={"detail": "account_session_expired"})
         if request.url.scheme != "https":
             return JSONResponse(status_code=426, content={"detail": "TLS required"})
-        return await call_next(request)
+        response = await call_next(request)
+        if account_deadline is not None and not account_clock.valid_until(account_deadline):
+            return JSONResponse(status_code=401, content={"detail": "account_session_expired"})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
 
     def auth(authorization: str | None):
         if not authorization or not authorization.startswith("Bearer "):

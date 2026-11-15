@@ -1,10 +1,15 @@
 mod mobile_firewall;
+mod account_session;
+mod workspace_grant;
+mod maintenance_bridge;
+mod maintenance_lock;
+mod maintenance_coordinator;
 mod mobile_sync;
 mod ollama;
 
-use fs2::FileExt;
+
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -48,12 +53,43 @@ struct LocalEngineResponse {
 struct SidecarChildren {
     control_server: Mutex<Option<CommandChild>>,
     local_engine: Mutex<Option<CommandChild>>,
+    #[cfg(windows)]
+    local_engine_job: Mutex<Option<SidecarJob>>,
+}
+
+fn stop_all_for_maintenance(app:&tauri::AppHandle,base:&RuntimeProfile)->Result<(),String>{
+    #[cfg(not(windows))] {let _=(app,base);return Err("WINDOWS_MAINTENANCE_REQUIRED".into());}
+    #[cfg(windows)] {
+        let state=app.try_state::<SidecarChildren>().ok_or("PROCESS_STATE_MISSING")?;
+        let engine=state.local_engine_job.lock().map_err(|_|"ENGINE_JOB_LOCK")?;
+        if let Some(job)=engine.as_ref(){job.stop_confirmed()?;}
+        else if state.local_engine.lock().map_err(|_|"ENGINE_LOCK")?.is_some(){return Err("ENGINE_EXIT_UNCONFIRMED".into());}
+        app.try_state::<SidecarJob>().ok_or("CONTROL_JOB_MISSING")?.stop_confirmed()?;
+        if !wait_for_local_engine_port_released(base.engine_port,std::time::Duration::from_secs(5))||!wait_for_local_engine_port_released(base.control_port,std::time::Duration::from_secs(5)){return Err("PROCESS_PORT_STILL_OCCUPIED".into());}
+        Ok(())
+    }
+}
+fn stop_account_engine(app: &tauri::AppHandle) -> Result<(),String> {
+    if let Some(state)=app.try_state::<SidecarChildren>() {
+        if let Some(child)=state.local_engine.lock().map_err(|_|"engine state lock")?.take() {let _=child.kill();}
+        #[cfg(windows)]
+        if let Some(job)=state.local_engine_job.lock().map_err(|_|"engine job lock")?.take() {job.terminate_all();}
+    }
+    Ok(())
 }
 
 // 앱 수명 동안 flock(LOCK_EX) 을 잡고 있는 파일. 앱이 어떤 이유로든 죽으면 OS 가 락을
 // 해제하고, 사이드카가 LOCK_NB 로 잡히는 걸 보고 자체 종료한다(PID 재사용·좀비 무관).
-struct AppLock(#[allow(dead_code)] File);
+struct AppLock(Mutex<maintenance_lock::ApplicationLease>);
 
+#[cfg(all(test,windows))]
+mod maintenance_job_test {
+ #[test] fn owned_job_exit_is_confirmed_before_unlock(){
+  let python=std::env::var("MAINTENANCE_TEST_PYTHON").unwrap();
+  let mut child=std::process::Command::new(python).args(["-c","import time;time.sleep(60)"]).spawn().unwrap();
+  let job=super::SidecarJob::new().unwrap();job.assign(child.id()).unwrap();job.stop_confirmed().unwrap();assert!(!child.wait().unwrap().success());
+ }
+}
 #[cfg(windows)]
 struct SidecarJob(Mutex<Option<isize>>);
 
@@ -110,6 +146,21 @@ impl SidecarJob {
         Ok(())
     }
 
+    fn stop_confirmed(&self)->Result<(),String>{
+        use windows_sys::Win32::System::JobObjects::{TerminateJobObject,QueryInformationJobObject,JobObjectBasicAccountingInformation,JOBOBJECT_BASIC_ACCOUNTING_INFORMATION};
+        let guard=self.0.lock().map_err(|_|"JOB_STATE_ERROR")?;
+        let handle=guard.ok_or("JOB_HANDLE_MISSING")? as *mut std::ffi::c_void;
+        unsafe {
+            if TerminateJobObject(handle,1)==0{return Err("JOB_TERMINATE_FAILED".into());}
+            let start=std::time::Instant::now();
+            loop {let mut info:JOBOBJECT_BASIC_ACCOUNTING_INFORMATION=std::mem::zeroed();
+                if QueryInformationJobObject(handle,JobObjectBasicAccountingInformation,&mut info as *mut _ as *mut _,std::mem::size_of_val(&info) as u32,std::ptr::null_mut())==0{return Err("JOB_QUERY_FAILED".into());}
+                if info.ActiveProcesses==0{return Ok(());}
+                if start.elapsed()>std::time::Duration::from_secs(10){return Err("JOB_EXIT_UNCONFIRMED".into());}
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
     fn terminate_all(&self) {
         if let Some(handle) = self.0.lock().expect("sidecar job lock").take() {
             unsafe {
@@ -591,6 +642,8 @@ fn append_local_engine_log(log_path: &Path, line: &str) {
 
 #[tauri::command]
 fn local_engine_log_path(profile: tauri::State<'_, RuntimeProfile>) -> Result<String, String> {
+    let _ = profile;
+    let profile = account_session::profile()?;
     Ok(sidecar_log_path(&profile, "local-engine.log")
         .to_string_lossy()
         .into_owned())
@@ -958,12 +1011,30 @@ fn kill_unhealthy_local_engine_processes() -> Result<(), Box<dyn std::error::Err
 
 fn spawn_local_engine(
     app: &tauri::AppHandle,
+    _profile: &RuntimeProfile,
+    repair_unhealthy: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _business=maintenance_coordinator::BUSINESS.lock().map_err(|_|std::io::Error::other("BUSINESS_LOCK"))?;
+    maintenance_coordinator::ensure_business().map_err(std::io::Error::other)?;
+    let session = account_session::current().map_err(std::io::Error::other)?;
+    spawn_account_engine(app, &session.profile, repair_unhealthy, &session)
+}
+
+mod engine_startup_policy;
+
+fn spawn_account_engine(
+    app: &tauri::AppHandle,
     profile: &RuntimeProfile,
     repair_unhealthy: bool,
+    session: &account_session::Session,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = app.state::<SidecarChildren>();
     let log_path = sidecar_log_path(profile, "local-engine.log");
     append_local_engine_log(&log_path, "=== local-engine startup requested ===");
+    if state.local_engine.lock().expect("local-engine child lock").is_none()
+        && is_tcp_port_open(LOCAL_ENGINE_HOST,profile.engine_port,LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT) {
+        return Err("다른 프로세스의 엔진 포트를 재사용하거나 종료하지 않습니다.".into());
+    }
     if health_matches_profile_at(
         LOCAL_ENGINE_HOST,
         profile.engine_port,
@@ -981,42 +1052,28 @@ fn spawn_local_engine(
         return Ok(());
     }
 
-    if profile.qa
-        && is_tcp_port_open(
-            LOCAL_ENGINE_HOST,
-            profile.engine_port,
-            LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT,
-        )
-    {
-        return Err(format!(
-            "QA local-engine 포트 {}가 다른 프로세스에 점유되었거나 instance identity가 불일치합니다. 기존 engine을 종료하거나 재사용하지 않습니다",
-            profile.engine_port
-        )
-        .into());
-    }
-
     if profile.qa {
-        if state
-            .local_engine
-            .lock()
-            .expect("local-engine child lock")
-            .is_some()
-        {
-            return Err(
-                "QA local-engine child가 실행 중이지만 health identity가 일치하지 않습니다".into(),
-            );
+        let managed = state.local_engine.lock().expect("local-engine child lock").is_some();
+        let listening = is_tcp_port_open(LOCAL_ENGINE_HOST, profile.engine_port, LOCAL_ENGINE_HEALTH_PROBE_TIMEOUT);
+        match engine_startup_policy::qa_existing_engine(managed, listening) {
+            engine_startup_policy::ExistingEngine::WaitOwned => {
+                append_local_engine_log(&log_path, "QA_OWNED_ENGINE_READINESS_WAIT");
+                // BUSINESS remains held: no account switch or second spawn while waiting.
+                // The child mutex above is released before the health wait acquires it.
+                return wait_for_qa_local_engine_health(app, profile)
+                    .map_err(|failure| std::io::Error::other(failure.message()).into());
+            }
+            engine_startup_policy::ExistingEngine::RejectForeign => {
+                return Err("QA_FOREIGN_ENGINE_LISTENER: 기존 engine을 종료하거나 재사용하지 않습니다".into());
+            }
+            engine_startup_policy::ExistingEngine::Spawn => {}
         }
-    } else if let Some(child) = state
-        .local_engine
-        .lock()
-        .expect("local-engine child lock")
-        .take()
-    {
-        let _ = child.kill();
+    } else {
+        stop_account_engine(app).map_err(std::io::Error::other)?;
     }
 
     if repair_unhealthy && !profile.qa {
-        kill_unhealthy_local_engine_processes()?;
+        // Only the managed child above may be terminated. Never taskkill another installation.
         if !wait_for_local_engine_port_released(
             profile.engine_port,
             LOCAL_ENGINE_PORT_RELEASE_TIMEOUT,
@@ -1041,13 +1098,19 @@ fn spawn_local_engine(
         .env("WHISPER_MODEL_DIR", &profile.model_dir)
         .env("COVERAGE_ANALYSIS_LOG_DIR", &profile.log_dir)
         .env("CUSTOMER_DB_KEYFILE", profile.customer_key_path())
+        .env("CUSTOMER_DB_KEYFILE_ONLY", "1")
+        .env("CUSTOMER_DB_KEY_B64", "")
+        .env("MOADOOM_ACCOUNT_ISSUER", &session.issuer)
+        .env("MOADOOM_ACCOUNT_SUBJECT", &session.subject)
+        .env("MOADOOM_ACCOUNT_TOKEN_SHA256", &session.digest)
+        .env("MOADOOM_ACCOUNT_EXPIRES_AT", session.expires.to_string())
         .env("ENGINE_PORT", profile.engine_port.to_string())
         // WebView 의 /api-secret fetch 가 Origin/TLS/CORS 계층에서 막혀도 Tauri 명령이 같은 파일을 읽어 로컬 API 인증을 복구할 수 있게 고정 경로를 넘긴다.
         .env("INSURANCE_AI_API_SECRET_FILE", profile.engine_secret_path())
         // whisper 모델(1.5GB+)은 부팅 시 받지 않는다 — 첫 STT 사용 시 자체 UI 로 다운로드
         .env("WHISPER_PREWARM", "0")
         // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
-        .env("APP_LOCK_FILE", profile.lock_path());
+        .env("APP_LOCK_FILE", &session.parent_lock);
     if profile.qa {
         command = command
             .env("CUSTOMER_DB_KEYFILE_ONLY", "1")
@@ -1088,8 +1151,10 @@ fn spawn_local_engine(
         )
     })?;
     #[cfg(windows)]
-    if let Some(sidecar_job) = app.try_state::<SidecarJob>() {
-        sidecar_job.assign(engine_child.pid())?;
+    {
+        let job = SidecarJob::new()?;
+        if let Err(error)=job.assign(engine_child.pid()) {let _=engine_child.kill();return Err(error);}
+        *state.local_engine_job.lock().expect("engine job lock")=Some(job);
     }
     let engine_pid = engine_child.pid();
     *state.local_engine.lock().expect("local-engine child lock") = Some(engine_child);
@@ -1115,11 +1180,10 @@ fn spawn_local_engine(
                     eprintln!("[local-engine] {line}");
                     append_local_engine_log(&log_path, &line);
                     if let Some(state) = app_handle.try_state::<SidecarChildren>() {
-                        let _ = state
-                            .local_engine
-                            .lock()
-                            .expect("local-engine child lock")
-                            .take();
+                        let mut child = state.local_engine.lock().expect("local-engine child lock");
+                        if account_session::owns_process_event(child.as_ref().map(|c|c.pid()),engine_pid) {
+                            child.take();
+                        }
                     }
                 }
                 CommandEvent::Error(e) => {
@@ -1138,6 +1202,8 @@ fn start_local_engine(
     app: tauri::AppHandle,
     profile: tauri::State<'_, RuntimeProfile>,
 ) -> Result<String, String> {
+    let _ = profile;
+    let profile = account_session::profile()?;
     spawn_local_engine(&app, &profile, true)
         .map_err(|e| format!("local-engine 서버를 시작할 수 없습니다. {e}"))?;
     Ok(sidecar_log_path(&profile, "local-engine.log")
@@ -1150,6 +1216,8 @@ fn ensure_local_engine(
     app: tauri::AppHandle,
     profile: tauri::State<'_, RuntimeProfile>,
 ) -> Result<(), String> {
+    let _ = profile;
+    let profile = account_session::profile()?;
     spawn_local_engine(&app, &profile, true).map_err(|e| format!("local-engine 복구 실패: {e}"))?;
     if profile.qa {
         wait_for_qa_local_engine_health(&app, &profile).map_err(|failure| {
@@ -1172,6 +1240,8 @@ fn ensure_local_engine(
 
 #[tauri::command]
 fn local_engine_api_secret(profile: tauri::State<'_, RuntimeProfile>) -> Result<String, String> {
+    let _ = profile;
+    let profile = account_session::profile()?;
     let value = fs::read_to_string(profile.engine_secret_path())
         .map_err(|e| format!("local-engine 인증 파일을 읽을 수 없습니다: {e}"))?
         .trim()
@@ -1310,7 +1380,11 @@ async fn local_engine_request(
     request: LocalEngineRequest,
     profile: tauri::State<'_, RuntimeProfile>,
 ) -> Result<LocalEngineResponse, String> {
-    bound_loopback_request(request, &profile, profile.engine_port).await
+    let _ = profile;
+    let session = account_session::current()?;
+    let result = bound_loopback_request(request, &session.profile, session.profile.engine_port).await?;
+    account_session::require_epoch(session.epoch)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1835,6 +1909,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            account_session::account_session_activate,
+            account_session::account_session_generation,
+            account_session::account_session_resume,
+            account_session::account_session_close,
+            maintenance_coordinator::maintenance_status,
+            maintenance_coordinator::maintenance_prepare,
+            maintenance_coordinator::maintenance_execute,
             greet,
             ollama::check_ollama_installed,
             ollama::install_ollama,
@@ -1890,12 +1971,8 @@ pub fn run() {
             }
 
             // 사이드카 생존 신호용 잠금 파일. 이 File 을 앱 상태로 보관해 fd 를 열어둔다.
-            let lock_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(profile.lock_path())?;
-            lock_file.lock_exclusive()?;
-            app.manage(AppLock(lock_file));
+            let lock = maintenance_lock::ApplicationLease::acquire(&profile.lock_path()).map_err(std::io::Error::other)?;
+            app.manage(AppLock(Mutex::new(lock)));
             app.manage(profile.clone());
             app.manage(mobile_sync::MobileSyncRuntime::default());
             mobile_sync::spawn_network_follow(app.handle().clone());
@@ -1911,7 +1988,8 @@ pub fn run() {
                 .env("CONTROL_JWT_SECRET", jwt_secret)
                 .env("CONTROL_ADMIN_TOKEN", admin_token)
                 .env("CONTROL_LICENSE_SECRET", "dev-license-secret-change-me")
-                .env("CONTROL_LOCAL_RECOVERY", "1")
+                .env("CONTROL_LOCAL_RECOVERY", "0")
+                .env("CONTROL_DESKTOP_CENTRAL_ONLY", "1")
                 .env("CONTROL_DB_PATH", profile.data_dir.join("control.sqlite3"))
                 .env("CONTROL_PORT", profile.control_port.to_string())
                 // 앱이 죽으면 이 락이 풀리고 sidecar 가 자체 종료 (고아 방지)
@@ -1979,23 +2057,12 @@ pub fn run() {
             app.manage(SidecarChildren {
                 control_server: Mutex::new(Some(child)),
                 local_engine: Mutex::new(None),
+                #[cfg(windows)]
+                local_engine_job: Mutex::new(None),
             });
-            if let Err(error) = spawn_local_engine(app.handle(), &profile, true) {
-                let log_path = sidecar_log_path(&profile, "local-engine.log");
-                append_local_engine_log(&log_path, &format!("startup spawn failed: {error}"));
-                eprintln!("[local-engine] startup spawn failed: {error}");
-                if profile.qa {
-                    return Err(std::io::Error::other(error.to_string()).into());
-                }
-            }
+            // Business engines start only after native central identity verification.
+            // QA retains its TLS/binding checks, not a pre-login business bypass.
             if profile.qa {
-                if let Err(failure) = wait_for_qa_local_engine_health(app.handle(), &profile) {
-                    return Err(std::io::Error::other(format!(
-                        "QA local-engine readiness 실패: {}",
-                        failure.message()
-                    ))
-                    .into());
-                }
                 if !wait_for_profile_service_health(
                     &profile,
                     "control_server",

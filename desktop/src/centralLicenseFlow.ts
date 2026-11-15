@@ -66,7 +66,11 @@ export async function resolveCentralLicenseWith(deps: CentralDeps): Promise<Lice
   let session: CentralSession = null;
   try {
     session = await deps.getSession();
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "WORKSPACE_AUTHORIZATION_DENIED" || (error instanceof Error && error.name === "AuthApiError")) {
+      return { kind: "login_required", message: LOGIN_REQUIRED_MESSAGE };
+    }
     session = null;
   }
   const cachedUser = deps.cachedUser();

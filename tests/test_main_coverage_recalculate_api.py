@@ -15,13 +15,21 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("CUSTOMER_DB_PATH", str(tmp_path / "customers.sqlite3"))
     monkeypatch.setenv("CUSTOMER_DB_KEY_B64", _TEST_KEY_B64)
     monkeypatch.setenv("RAG_DB_PATH", str(tmp_path / "rag.sqlite3"))
-    monkeypatch.setenv("DEV_SKIP_AUTH", "1")
+    # Synthetic trusted-launcher binding. This tests business handlers with real
+    # middleware authentication, not a production central-server login.
+    import hashlib
+    monkeypatch.setenv("DEV_SKIP_AUTH", "0")
+    monkeypatch.setenv("MOADOOM_ACCOUNT_ISSUER", "https://fixture.supabase.co/auth/v1")
+    monkeypatch.setenv("MOADOOM_ACCOUNT_SUBJECT", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    monkeypatch.setenv("MOADOOM_ACCOUNT_TOKEN_SHA256", hashlib.sha256(b"synthetic-account-A").hexdigest())
+    monkeypatch.setenv("MOADOOM_ACCOUNT_EXPIRES_AT", "4102444800")
     crypto.reset_cache()
 
     from fastapi.testclient import TestClient
     import main
 
-    yield TestClient(main.app)
+    monkeypatch.setattr(main.app, "middleware_stack", None)
+    yield TestClient(main.app, headers={"Authorization": "Bearer synthetic-account-A"})
     crypto.reset_cache()
 
 
