@@ -44,13 +44,13 @@ def secure_directory(path):
     return path
 
 def _acl_checks(sd,expected_sid,*,file=False):
-    """Diagnostic only. Compare binary ACE/SID semantics; never authorizes access."""
+    """Validate an OS-returned descriptor; never accept arbitrary caller pointers."""
     adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32')
     checks={name:False for name in ('descriptor_valid','dacl_present','dacl_nonnull','dacl_valid','control_valid','protected_or_file','single_ace','allow_ace','flags_expected','mask_expected','sid_valid','trustee_current','semantic_match')}
     def bind(name,args,result=W.BOOL):
         fn=getattr(adv,name);fn.argtypes=args;fn.restype=result;return fn
     valid=bind('IsValidSecurityDescriptor',[ctypes.c_void_p])
-    checks['descriptor_valid']=bool(valid(sd))
+    checks['descriptor_valid']=bool(sd and valid(sd))
     if not checks['descriptor_valid']:return checks
     present=W.BOOL();defaulted=W.BOOL();dacl=ctypes.c_void_p()
     get_dacl=bind('GetSecurityDescriptorDacl',[ctypes.c_void_p,ctypes.POINTER(W.BOOL),ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(W.BOOL)])
@@ -62,36 +62,43 @@ def _acl_checks(sd,expected_sid,*,file=False):
     control=W.WORD();revision=W.DWORD()
     get_control=bind('GetSecurityDescriptorControl',[ctypes.c_void_p,ctypes.POINTER(W.WORD),ctypes.POINTER(W.DWORD)])
     checks['control_valid']=bool(get_control(sd,ctypes.byref(control),ctypes.byref(revision)))
+    if not checks['control_valid'] or control.value & 0x100:return checks  # no pending auto-inheritance
     checks['protected_or_file']=bool(file or control.value & 0x1000)
     class ACL_INFO(ctypes.Structure):_fields_=[('count',W.DWORD),('used',W.DWORD),('free',W.DWORD)]
     info=ACL_INFO()
     get_info=bind('GetAclInformation',[ctypes.c_void_p,ctypes.c_void_p,W.DWORD,W.DWORD])
     if not get_info(dacl,ctypes.byref(info),ctypes.sizeof(info),2):return checks
+    class ACL_HEADER(ctypes.Structure):_fields_=[('revision',W.BYTE),('reserved',W.BYTE),('size',W.WORD),('count',W.WORD),('reserved2',W.WORD)]
+    acl_header=ctypes.cast(dacl,ctypes.POINTER(ACL_HEADER)).contents
+    if not 8<=info.used<=acl_header.size:return checks
     checks['single_ace']=info.count==1
     if not checks['single_ace']:return checks
     ace=ctypes.c_void_p()
     if not bind('GetAce',[ctypes.c_void_p,W.DWORD,ctypes.POINTER(ctypes.c_void_p)])(dacl,0,ctypes.byref(ace)):return checks
     class ACE(ctypes.Structure):_fields_=[('kind',W.BYTE),('flags',W.BYTE),('size',W.WORD),('mask',W.DWORD)]
+    if not ace.value or not dacl.value+8<=ace.value<=dacl.value+info.used-ctypes.sizeof(ACE):return checks
     header=ctypes.cast(ace,ctypes.POINTER(ACE)).contents
+    if header.size<16 or ace.value+header.size>dacl.value+info.used:return checks
     checks['allow_ace']=header.kind==0
     checks['flags_expected']=header.flags in ((0,0x10) if file else (0x03,))
     checks['mask_expected']=header.mask==0x1f01ff
-    if not checks['allow_ace'] or header.size<16:return checks
+    if not checks['allow_ace']:return checks
     trustee=ctypes.c_void_p(ace.value+8)
+    # Bound the complete SID before calling APIs that walk its subauthorities.
+    sid_header=ctypes.string_at(trustee,8)
+    sid_size=8+4*sid_header[1]
+    if sid_header[0]!=1 or sid_header[1]>15 or 8+sid_size!=header.size:return checks
     is_sid=bind('IsValidSid',[ctypes.c_void_p]);length=bind('GetLengthSid',[ctypes.c_void_p],W.DWORD)
     checks['sid_valid']=bool(is_sid(trustee))
-    if not checks['sid_valid'] or 8+length(trustee)>header.size:
+    if not checks['sid_valid'] or length(trustee)!=sid_size:
         checks['sid_valid']=False;return checks
     expected=ctypes.c_void_p();convert=bind('ConvertStringSidToSidW',[W.LPCWSTR,ctypes.POINTER(ctypes.c_void_p)])
-    kernel.LocalFree.argtypes=[ctypes.c_void_p]
+    kernel.LocalFree.argtypes=[ctypes.c_void_p];kernel.LocalFree.restype=ctypes.c_void_p
     if not convert(expected_sid,ctypes.byref(expected)):return checks
     try:
+        if not expected.value or not is_sid(expected):return checks
         equal=bind('EqualSid',[ctypes.c_void_p,ctypes.c_void_p])
         checks['trustee_current']=bool(equal(trustee,expected))
-        owner=ctypes.c_void_p();owner_defaulted=W.BOOL()
-        get_owner=bind('GetSecurityDescriptorOwner',[ctypes.c_void_p,ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(W.BOOL)])
-        checks['owner_available']=bool(get_owner(sd,ctypes.byref(owner),ctypes.byref(owner_defaulted)) and owner.value)
-        checks['owner_current']=bool(checks['owner_available'] and equal(owner,expected))
     finally:kernel.LocalFree(expected)
     required=('descriptor_valid','dacl_present','dacl_nonnull','dacl_valid','control_valid','protected_or_file','single_ace','allow_ace','flags_expected','mask_expected','sid_valid','trustee_current')
     checks['semantic_match']=all(checks[key] for key in required)
@@ -102,31 +109,26 @@ def verify_acl(path,*,file=False):
     path=safe_path(path);adv=ctypes.WinDLL('advapi32',use_last_error=True);kernel=ctypes.WinDLL('kernel32')
     get=adv.GetNamedSecurityInfoW
     get.argtypes=[W.LPWSTR,W.DWORD,W.DWORD,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.POINTER(ctypes.c_void_p)];get.restype=W.DWORD
-    sd=ctypes.c_void_p();text=W.LPWSTR()
-    convert=adv.ConvertSecurityDescriptorToStringSecurityDescriptorW
-    convert.argtypes=[ctypes.c_void_p,W.DWORD,W.DWORD,ctypes.POINTER(W.LPWSTR),ctypes.c_void_p];convert.restype=W.BOOL
-    kernel.LocalFree.argtypes=[ctypes.c_void_p]
+    sd=ctypes.c_void_p()
+    kernel.LocalFree.argtypes=[ctypes.c_void_p];kernel.LocalFree.restype=ctypes.c_void_p
     if get(str(path),1,4,None,None,None,None,ctypes.byref(sd)):raise ValueError('ACL query failed')
     try:
-        if not convert(sd,1,4,ctypes.byref(text),None):raise ValueError('ACL inspection failed')
-        serialized=text.value
-        if serialized is None:raise ValueError('ACL inspection failed')
-        current_sid=sid()
-        pattern=(r'D:(?:P)?(?:AI)?\(A;(?:ID)?;FA;;;' if file else r'D:P(?:AI)?\(A;OICI;FA;;;')+re.escape(current_sid)+r'\)'
-        matched=bool(re.fullmatch(pattern,serialized))
+        try:
+            checks=_acl_checks(sd,sid(),file=file)
+        except Exception:
+            print('CUSTODY_ACL_DIAGNOSTIC unavailable',file=sys.stderr)
+            return False
+        matched=checks['semantic_match'] is True
         if not matched:
-            # Observation only: keep the existing fail-closed authorization decision.
-            try:
-                checks=_acl_checks(sd,current_sid,file=file)
-                checks['serialized_trustee_numeric']=bool(re.search(r';;;S-',serialized))
-                checks['legacy_match']=False
-                print('CUSTODY_ACL_DIAGNOSTIC '+json.dumps(checks,sort_keys=True),file=sys.stderr)
-            except Exception:
-                print('CUSTODY_ACL_DIAGNOSTIC unavailable',file=sys.stderr)
+            _acl_diagnostic(checks)
         return matched
     finally:
-        if text:kernel.LocalFree(ctypes.cast(text,ctypes.c_void_p))
-        kernel.LocalFree(sd)
+        if sd:kernel.LocalFree(sd)
+
+
+def _acl_diagnostic(checks):
+    # Logging return values are never authorization decisions.
+    print('CUSTODY_ACL_DIAGNOSTIC '+json.dumps(checks,sort_keys=True),file=sys.stderr)
 
 def dpapi(data,context,protect):
     if os.name!='nt':raise ValueError('Windows DPAPI required')

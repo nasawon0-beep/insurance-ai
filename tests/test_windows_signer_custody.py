@@ -78,6 +78,7 @@ def test_concurrent_creation_has_one_winner(tmp_path):
     ('read-only',False),('deny-ace',False),('inherit-only',False),
     ('no-propagate',False),('wrong-inheritance',False),('unprotected-directory',False),
     ('null-dacl',False),('empty-dacl',False),('missing-dacl',False),
+    ('propagating-file',False),('inherited-directory',False),('pending-inheritance',False),('foreign-user',False),
 ])
 def test_binary_dacl_policy(case,accepted):
     # Real Windows descriptors in memory; no foreign-account directory or key created.
@@ -90,6 +91,10 @@ def test_binary_dacl_policy(case,accepted):
     rights='FA';kind='A';prefix='D:P'
     if case=='foreign-admin':trustee='BA'
     if case=='foreign-everyone':trustee='WD'
+    if case=='foreign-user':trustee=expected.rsplit('-',1)[0]+'-4294967294'
+    if case=='propagating-file':flags='OICI'
+    if case=='inherited-directory':flags='OICIID'
+    if case=='pending-inheritance':prefix='D:PAR'
     if case=='read-only':rights='FR'
     if case=='deny-ace':kind='D'
     if case=='inherit-only':flags='OICIIO'
@@ -131,10 +136,15 @@ def test_diagnostic_never_authorizes_or_discloses_values(tmp_path,monkeypatch,ca
     result=subprocess.run(['icacls',str(d),'/grant','*S-1-1-0:R'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     assert result.returncode==0
     secret='diagnostic-canary-not-for-logs'
-    def inspect(*args,**kwargs):
-        if inspection=='inspection-error':raise ValueError(secret)
-        return {'semantic_match':True}
-    monkeypatch.setattr(m,'_acl_checks',inspect)
+    if inspection=='inspection-error':
+        def inspect(*args,**kwargs):raise ValueError(secret)
+        monkeypatch.setattr(m,'_acl_checks',inspect)
+    else:
+        emit=m._acl_diagnostic
+        def diagnostic(checks):
+            emit(checks)
+            return True  # A logging result must not override a rejected binary ACL.
+        monkeypatch.setattr(m,'_acl_diagnostic',diagnostic)
     matched=m.verify_acl(d)
     output=capsys.readouterr().err
     assert matched is False
@@ -142,6 +152,69 @@ def test_diagnostic_never_authorizes_or_discloses_values(tmp_path,monkeypatch,ca
     assert secret not in output and str(d) not in output and 'S-1-' not in output
     if inspection=='candidate-match':
         data=json.loads(output.split('CUSTODY_ACL_DIAGNOSTIC ',1)[1])
-        assert data['legacy_match'] is False and data['semantic_match'] is True
+        assert data['semantic_match'] is False
         assert all(type(value) is bool for value in data.values())
     else:assert output.strip()=='CUSTODY_ACL_DIAGNOSTIC unavailable'
+
+
+@pytest.mark.parametrize('rid',[500,501])
+@pytest.mark.parametrize('file',[False,True])
+def test_verify_binary_alias_descriptor(tmp_path,monkeypatch,rid,file):
+    import ctypes
+    from ctypes import wintypes as W
+    m=module();expected=m.sid().rsplit('-',1)[0]+'-'+str(rid)
+    native=m.ctypes.WinDLL;adv=native('advapi32')
+    convert=adv.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes=[W.LPCWSTR,W.DWORD,ctypes.POINTER(ctypes.c_void_p),ctypes.c_void_p];convert.restype=W.BOOL
+    def query(path,kind,info,*outputs):
+        # Transport seam only: descriptor allocation and all binary checks are real WinAPI.
+        sddl='D:P(A;'+('' if file else 'OICI')+';FA;;;'+expected+')'
+        return 0 if convert(sddl,1,outputs[-1],None) else 1
+    class Proxy:
+        def __getattr__(self,name):return query if name=='GetNamedSecurityInfoW' else getattr(adv,name)
+    monkeypatch.setattr(m.ctypes,'WinDLL',lambda name,*a,**kw:Proxy() if name=='advapi32' else native(name,*a,**kw))
+    monkeypatch.setattr(m,'sid',lambda:expected)
+    accepted=m.verify_acl(tmp_path,file=file)
+    assert accepted is True
+
+
+@pytest.mark.parametrize('fault',[
+    'GetNamedSecurityInfoW','IsValidSecurityDescriptor','GetSecurityDescriptorDacl',
+    'IsValidAcl','GetSecurityDescriptorControl','GetAclInformation','GetAce',
+    'IsValidSid','GetLengthSid','ConvertStringSidToSidW','EqualSid',
+    'ace-null','ace-outside','ace-truncated','sid-overrun',
+    'descriptor-null','expected-sid-null','acl-info-oversize',
+])
+def test_acl_api_and_memory_boundaries_fail_closed(tmp_path,monkeypatch,fault):
+    import ctypes
+    m=module();d=m.secure_directory(tmp_path/'custody')
+    native=m.ctypes.WinDLL;adv=native('advapi32')
+    original_ace=adv.GetAce
+    from ctypes import wintypes as W
+    original_ace.argtypes=[ctypes.c_void_p,W.DWORD,ctypes.POINTER(ctypes.c_void_p)];original_ace.restype=W.BOOL
+    def broken(*args):
+        if fault=='GetNamedSecurityInfoW':return 5
+        if fault=='descriptor-null':return 0
+        if fault=='expected-sid-null':return 1
+        if fault=='acl-info-oversize':
+            fields=ctypes.cast(args[1],ctypes.POINTER(W.DWORD))
+            fields[0]=1;fields[1]=0xffffffff;fields[2]=0
+            return 1
+        if fault.startswith('ace-') or fault=='sid-overrun':
+            target=ctypes.cast(args[-1],ctypes.POINTER(ctypes.c_void_p))
+            if fault=='ace-null':target[0]=None;return 1
+            if fault=='ace-outside':target[0]=1;return 1
+            status=original_ace(*args)
+            if not status:return status
+            if fault=='ace-truncated':ctypes.c_ushort.from_address(target[0]+2).value=8
+            else:ctypes.c_ubyte.from_address(target[0]+9).value=255
+            return status
+        return 0
+    api='GetAce' if fault.startswith('ace-') or fault=='sid-overrun' else fault
+    api={'descriptor-null':'GetNamedSecurityInfoW','expected-sid-null':'ConvertStringSidToSidW','acl-info-oversize':'GetAclInformation'}.get(api,api)
+    class Proxy:
+        def __getattr__(self,name):return broken if name==api else getattr(adv,name)
+    monkeypatch.setattr(m.ctypes,'WinDLL',lambda name,*a,**kw:Proxy() if name=='advapi32' else native(name,*a,**kw))
+    try:accepted=m.verify_acl(d)
+    except ValueError:accepted=False
+    assert accepted is False
