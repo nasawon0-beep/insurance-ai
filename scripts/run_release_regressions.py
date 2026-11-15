@@ -1,8 +1,11 @@
 """Explicit release gate; one fresh process and owned fixture directory per file."""
 import argparse
+import builtins
 import json
+import locale
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +59,40 @@ def validate_selection(root=ROOT):
     assert all(profile != 'account-positive' for name, profile in ENGINE.items() if name != 'tests/test_customers_api.py')
 
 
+def export_diagnostic(destination, name, text, evidence, returncode):
+    """Allowlisted structure only: never export raw stdout, values, captures or fixtures."""
+    destination.mkdir(parents=True, exist_ok=True)
+    def safe_id(value):
+        base = str(value).split('[', 1)[0]
+        if not re.fullmatch(r'[A-Za-z0-9_./:-]+', base):
+            return '<redacted-id>'
+        return base + ('[parameters-redacted]' if '[' in str(value) else '')
+    public = {'file':safe_id(name), 'returncode':returncode,
+              'runner_python':sys.version.split()[0], 'runner_utf8_mode':sys.flags.utf8_mode,
+              'runner_encoding':locale.getencoding()}
+    for key in ('collected', 'passed', 'failed', 'skipped'):
+        public[key] = [safe_id(value) for value in evidence.get(key, [])]
+    lines = [json.dumps({k:v for k,v in public.items() if k not in ('collected','passed','failed','skipped')}),
+             'Diagnostic values/captures/parameters omitted; see referenced source lines.']
+    errors = {key for key, value in vars(builtins).items() if isinstance(value, type) and issubclass(value, Exception)}
+    for line in text.splitlines():
+        location = re.match(r'^(?:tests|local-engine|control-server)[\\/][A-Za-z0-9_./\\-]+\.py:\d+:', line)
+        error = re.match(r'^E\s+([A-Za-z]+(?:Error|Exception))\b', line)
+        version = re.match(r'^platform \w+ -- Python [\d.]+, pytest-[\d.]+', line)
+        if location:
+            lines.append(location[0])
+        elif error and error[1] in errors:
+            lines.append(error[1] + ': <details omitted>')
+        elif version:
+            lines.append(version[0])
+    lines.extend('FAILED ' + item for item in public['failed'])
+    diagnostic = '\n'.join(dict.fromkeys(lines)) + '\n'
+    stem = Path(name).stem
+    (destination/(stem+'.pytest.txt')).write_text(diagnostic, encoding='utf-8')
+    (destination/(stem+'.results.json')).write_text(json.dumps(public, indent=2), encoding='utf-8')
+    return diagnostic
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--group', choices=['engine', 'control'], required=True)
@@ -90,6 +127,9 @@ def main():
         rows.append({'file':name,'profile':profile,'command':command,'returncode':result.returncode,'ok':ok,'evidence':evidence,'log':str(fixture/'pytest.log')})
         (run/'results.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
         print(name, 'PASS' if ok else 'FAIL', flush=True)
+        diagnostic = export_diagnostic(run/'public-evidence', name, result.stdout, evidence, result.returncode)
+        if not ok:
+            print(diagnostic, flush=True)
     if args.group == 'engine':
         node = shutil.which('node')
         version = subprocess.check_output([node, '--version'], text=True).strip()

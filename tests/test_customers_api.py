@@ -846,7 +846,7 @@ def test_focus_customer_uses_selected_id_detail_request_only():
     source = (
         __import__("pathlib").Path(__file__).parents[1]
         / "desktop" / "src" / "Customers.tsx"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     focus_effect = source.split(
         '// 홈 대시보드 / 던져넣기 등에서 고객을 눌러 들어온 경우.', 1
     )[1].split("useEffect(() => {", 2)[1]

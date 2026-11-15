@@ -165,6 +165,20 @@ jobs:
           TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo check
           TAURI_CONFIG="$(cat tauri.onedir.conf.json)" cargo test --lib
 
+      - name: Upload sanitized regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-regression-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          include-hidden-files: false
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/release-engine/run-*/public-evidence/*.txt
+            ${{ runner.temp }}/release-engine/run-*/public-evidence/*.json
+            ${{ runner.temp }}/release-control/run-*/public-evidence/*.txt
+            ${{ runner.temp }}/release-control/run-*/public-evidence/*.json
+
       - name: Validate scoped firewall offline mocks (not OS connectivity)
         shell: pwsh
         run: '& desktop/src-tauri/src/mobile_firewall.tests.ps1'

@@ -315,3 +315,48 @@ def test_edge_signature_length_bound_applies_to_final_remote_name():
     publisher=runpy.run_path(str(ROOT/'scripts/create_release_only.py'))
     with pytest.raises(RuntimeError):
         publisher['remote_name']('a'*236+'.exe.sig')
+
+
+def test_ci_public_diagnostic_omits_values_and_fixture_files(tmp_path):
+    runner=runpy.run_path(str(ROOT/'scripts/run_release_regressions.py'))
+    secret='canary-sensitive-value-NEVER-EXPORT'
+    text='platform win32 -- Python 3.11.9, pytest-8.3.3\n'
+    text+='tests/test_customers_api.py:849: UnicodeDecodeError\nE   UnicodeDecodeError: '+secret+'\n'
+    text+='Authorization: Bearer '+secret+'\nassert '+repr(secret)+'\n'
+    evidence={'collected':['tests/test_x.py::test_x['+secret+']'],'passed':[], 'failed':['tests/test_x.py::test_x['+secret+']'],'skipped':[]}
+    (tmp_path/'customer.key').write_text(secret)
+    (tmp_path/'customers.sqlite3').write_text(secret)
+    output=tmp_path/'public-evidence'
+    diagnostic=runner['export_diagnostic'](output,'tests/test_customers_api.py',text,evidence,1)
+    assert 'UnicodeDecodeError' in diagnostic and 'test_customers_api.py:849' in diagnostic
+    assert secret not in diagnostic
+    assert {p.suffix for p in output.iterdir()}=={'.txt','.json'}
+    for path in output.iterdir():assert secret not in path.read_text(encoding='utf-8')
+    saved=json.loads((output/'test_customers_api.results.json').read_text())
+    assert saved['returncode']==1 and saved['failed']==['tests/test_x.py::test_x[parameters-redacted]']
+
+
+def test_ci_evidence_upload_is_always_and_narrow():
+    text=(ROOT/'.github/workflows/release.yml').read_text(encoding='utf-8')
+    section=text.split('name: Upload sanitized regression evidence',1)[1].split('\n      - name:',1)[0]
+    assert 'if: always()' in section and 'retention-days: 3' in section
+    assert 'include-hidden-files: false' in section
+    paths=[line.strip() for line in section.splitlines() if '${{ runner.temp }}' in line]
+    assert set(paths)=={f'${{{{ runner.temp }}}}/release-{group}/run-*/public-evidence/*.{suffix}' for group in ('engine','control') for suffix in ('txt','json')}
+
+
+@pytest.mark.parametrize('codec',['utf-8','cp949','cp1252'])
+@pytest.mark.parametrize('eol',['\n','\r\n'])
+def test_customer_source_contract_ignores_host_codec(monkeypatch,codec,eol):
+    import ast
+    source=ROOT/'tests/test_customers_api.py'
+    tree=ast.parse(source.read_text(encoding='utf-8'))
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='test_focus_customer_uses_selected_id_detail_request_only')
+    ns: dict={'__file__':str(source)}
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),'customer-source-contract','exec'),ns)
+    data=(ROOT/'desktop/src/Customers.tsx').read_bytes().replace(b'\r\n',b'\n').replace(b'\n',eol.encode())
+    def read_source(path,encoding=None,errors=None):
+        assert path==ROOT/'desktop/src/Customers.tsx'
+        return data.decode(encoding or codec,errors or 'strict')
+    monkeypatch.setattr(Path,'read_text',read_source)
+    ns[fn.name]()
