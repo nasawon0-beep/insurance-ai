@@ -69,3 +69,79 @@ def test_concurrent_creation_has_one_winner(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(attempt,range(2)))
     assert sum(x is not None for x in results)==1
     assert m.info_and_key(d)[0]==next(x for x in results if x is not None)
+
+
+@pytest.mark.parametrize('case,accepted',[
+    ('current-directory',True),('alias500-directory',True),('alias501-directory',True),
+    ('current-file',True),('inherited-file',True),('alias500-file',True),
+    ('foreign-admin',False),('foreign-everyone',False),('extra-ace',False),
+    ('read-only',False),('deny-ace',False),('inherit-only',False),
+    ('no-propagate',False),('wrong-inheritance',False),('unprotected-directory',False),
+    ('null-dacl',False),('empty-dacl',False),('missing-dacl',False),
+])
+def test_binary_dacl_policy(case,accepted):
+    # Real Windows descriptors in memory; no foreign-account directory or key created.
+    import ctypes
+    from ctypes import wintypes as W
+    m=module();expected=m.sid();file=case.endswith('file')
+    if case.startswith('alias500'):expected=expected.rsplit('-',1)[0]+'-500'
+    if case.startswith('alias501'):expected=expected.rsplit('-',1)[0]+'-501'
+    trustee=expected;flags='ID' if case=='inherited-file' else '' if file else 'OICI'
+    rights='FA';kind='A';prefix='D:P'
+    if case=='foreign-admin':trustee='BA'
+    if case=='foreign-everyone':trustee='WD'
+    if case=='read-only':rights='FR'
+    if case=='deny-ace':kind='D'
+    if case=='inherit-only':flags='OICIIO'
+    if case=='no-propagate':flags='OICINP'
+    if case=='wrong-inheritance':flags='OI'
+    if case=='unprotected-directory':prefix='D:'
+    sddl=prefix+'('+kind+';'+flags+';'+rights+';;;'+trustee+')'
+    if case=='extra-ace':sddl+='(A;OICI;FR;;;WD)'
+    if case=='null-dacl':sddl='D:NO_ACCESS_CONTROL'
+    if case=='empty-dacl':sddl='D:P'
+    if case=='missing-dacl':sddl='O:'+expected
+    adv=ctypes.WinDLL('advapi32');kernel=ctypes.WinDLL('kernel32')
+    convert=adv.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes=[W.LPCWSTR,W.DWORD,ctypes.POINTER(ctypes.c_void_p),ctypes.c_void_p];convert.restype=W.BOOL
+    kernel.LocalFree.argtypes=[ctypes.c_void_p];sd=ctypes.c_void_p()
+    converted=bool(convert(sddl,1,ctypes.byref(sd),None));assert converted
+    try:
+        checks=m._acl_checks(sd,expected,file=file)
+        assert checks['semantic_match'] is accepted
+        assert all(type(value) is bool for value in checks.values())
+    finally:kernel.LocalFree(sd)
+
+
+@pytest.mark.parametrize('principal',['WD','BA'])
+def test_directory_acl_widening_is_refused(tmp_path,principal):
+    m=module();d=tmp_path/'custody'
+    m.create(d,'workspace','fixture-widening','fixture',test_only=True)
+    import subprocess
+    trustee={'WD':'*S-1-1-0:R','BA':'*S-1-5-32-544:R'}[principal]
+    result=subprocess.run(['icacls',str(d),'/grant',trustee],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    assert result.returncode==0
+    with pytest.raises(ValueError,match='ACL'):m.load(d)
+
+
+@pytest.mark.parametrize('inspection',['candidate-match','inspection-error'])
+def test_diagnostic_never_authorizes_or_discloses_values(tmp_path,monkeypatch,capsys,inspection):
+    m=module();d=tmp_path/'custody';m.secure_directory(d)
+    import subprocess
+    result=subprocess.run(['icacls',str(d),'/grant','*S-1-1-0:R'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    assert result.returncode==0
+    secret='diagnostic-canary-not-for-logs'
+    def inspect(*args,**kwargs):
+        if inspection=='inspection-error':raise ValueError(secret)
+        return {'semantic_match':True}
+    monkeypatch.setattr(m,'_acl_checks',inspect)
+    matched=m.verify_acl(d)
+    output=capsys.readouterr().err
+    assert matched is False
+    assert 'CUSTODY_ACL_DIAGNOSTIC' in output
+    assert secret not in output and str(d) not in output and 'S-1-' not in output
+    if inspection=='candidate-match':
+        data=json.loads(output.split('CUSTODY_ACL_DIAGNOSTIC ',1)[1])
+        assert data['legacy_match'] is False and data['semantic_match'] is True
+        assert all(type(value) is bool for value in data.values())
+    else:assert output.strip()=='CUSTODY_ACL_DIAGNOSTIC unavailable'
