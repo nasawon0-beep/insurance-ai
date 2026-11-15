@@ -37,13 +37,12 @@ def test_release_workflow_verifies_runtime_modules_and_resources_before_bundle()
 
 
 def assert_signing_secret_contract(source):
-    # Tauri v2 updater docs: both key and optional password are build env inputs.
-    # This release uses existing protected secrets, never literals/CLI arguments.
+    # Preserve the successful existing-key workflow: no optional password input.
+    # Never replace the signing key or disable updater signatures to clear a build.
     pattern = r'^\s*(TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?):\s*(.+)$'
     bindings = re.findall(pattern, source, re.M)
-    expected = {name: '${{ secrets.' + name + ' }}' for name in
-                ('TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')}
-    assert len(bindings) == 2 and dict(bindings) == expected, 'signing secret references required'
+    expected = {'TAURI_SIGNING_PRIVATE_KEY': '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'}
+    assert len(bindings) == 1 and dict(bindings) == expected, 'only the existing signing key reference is approved'
     step = source.split('- name: Build Windows signed bundles from onedir candidate', 1)[1].split('- name:', 1)[0]
     assert dict(re.findall(pattern, step, re.M)) == expected, 'signing secrets must be build-scoped'
     remainder = re.sub(pattern, '', source, flags=re.M)
@@ -55,7 +54,7 @@ def test_release_workflow_uses_existing_signing_secret_names_only():
     assert_signing_secret_contract(RELEASE.read_text(encoding='utf-8'))
 
 
-@pytest.mark.parametrize('fault', ['literal-key', 'literal-password', 'wrong-secret', 'missing-password', 'echo-key', 'duplicate'])
+@pytest.mark.parametrize('fault', ['literal-key', 'literal-password', 'wrong-secret', 'missing-key', 'echo-key', 'duplicate', 'injected-password'])
 def test_signing_contract_rejects_leaks_and_wrong_references(fault):
     source = RELEASE.read_text(encoding='utf-8')
     key = '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
@@ -63,17 +62,32 @@ def test_signing_contract_rejects_leaks_and_wrong_references(fault):
     if fault == 'literal-key':
         source = source.replace(key, 'SYNTHETIC-NOT-A-SECRET')
     elif fault == 'literal-password':
-        source = source.replace(password, 'SYNTHETIC-NOT-A-SECRET')
+        source += '\n          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: SYNTHETIC-NOT-A-SECRET\n'
     elif fault == 'wrong-secret':
-        source = source.replace(password, '${{ secrets.UNAPPROVED_SIGNER }}')
-    elif fault == 'missing-password':
-        source = re.sub(r'^.*TAURI_SIGNING_PRIVATE_KEY_PASSWORD:.*\n', '', source, flags=re.M)
+        source = source.replace(key, '${{ secrets.UNAPPROVED_SIGNER }}')
+    elif fault == 'missing-key':
+        source = re.sub(r'^.*TAURI_SIGNING_PRIVATE_KEY:.*\n', '', source, flags=re.M)
+    elif fault == 'injected-password':
+        source += '\n          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ' + password + '\n'
     elif fault == 'echo-key':
         source += '\n          echo "$TAURI_SIGNING_PRIVATE_KEY"\n'
     else:
         source += '\n          TAURI_SIGNING_PRIVATE_KEY: ' + key + '\n'
     with pytest.raises(AssertionError):
         assert_signing_secret_contract(source)
+
+
+def test_updater_signing_remains_enabled_without_password_input():
+    import json
+    source=RELEASE.read_text(encoding='utf-8')
+    assert 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD' not in source
+    step=source.split('- name: Build Windows signed bundles from onedir candidate',1)[1].split('- name:',1)[0]
+    assert 'npm run tauri -- build --ci -v --config src-tauri/tauri.onedir.conf.json' in step
+    assert '--no-sign' not in step
+    base=json.loads((ROOT/'desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
+    overlay=json.loads((ROOT/'desktop/src-tauri/tauri.onedir.conf.json').read_text(encoding='utf-8'))
+    assert base['bundle']['createUpdaterArtifacts'] is True
+    assert overlay.get('bundle',{}).get('createUpdaterArtifacts',True) is True
 
 
 def test_release_validation_uses_the_local_engine_venv_python():

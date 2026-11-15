@@ -6,8 +6,9 @@ test('CI builds pinned shipping and separate QA workers before native validation
  assert.match(workflow,/build_maintenance_worker\.py --qa-fixture/);
  assert.match(workflow,/MAINTENANCE_TEST_PACKAGED_WORKER/);
 });
-test('CI wires approved public verifier maps and signer password without literal keys',()=>{
+test('CI wires approved public verifier maps and existing signer key without password override',()=>{
  assert.match(workflow,/VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS: \$\{\{ vars\.VITE_MOADOOM_WORKSPACE_PUBLIC_KEYS \}\}/);
  assert.match(workflow,/VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS: \$\{\{ vars\.VITE_MOADOOM_MAINTENANCE_PUBLIC_KEYS \}\}/);
- assert.match(workflow,/TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY_PASSWORD \}\}/);
+ assert.match(workflow,/TAURI_SIGNING_PRIVATE_KEY: \$\{\{ secrets\.TAURI_SIGNING_PRIVATE_KEY \}\}/);
+ assert.doesNotMatch(workflow,/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/);
 });
