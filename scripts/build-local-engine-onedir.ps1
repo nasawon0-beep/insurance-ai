@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 
 $Root = Split-Path -Parent $PSScriptRoot

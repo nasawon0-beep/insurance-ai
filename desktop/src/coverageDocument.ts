@@ -65,7 +65,10 @@ export function selectReviewedPolicyCoverages(source: CaptureCoverageSource): Re
     const insurer = String(row.insurer ?? "").trim();
     const rider = String(row.rider_name ?? row.coverage_name ?? row.standard_name ?? "").trim();
     // 50개 표준항목 집계표는 계약 원장이 아니다. 회사/상품 담보 상세만 저장한다.
-    if (!insurer || isAggregateSummaryCoverage(row)) return false;
+    const physicalLedgerRow = row.source_type === "contract_ledger"
+      && /^(ledger|detail):/.test(String(row.source_occurrence_key ?? ""))
+      && Number(row.source_page) > 0 && Number(row.source_row) >= 0;
+    if ((!insurer && !physicalLedgerRow) || isAggregateSummaryCoverage(row)) return false;
     return rider.length > 0;
   });
 }

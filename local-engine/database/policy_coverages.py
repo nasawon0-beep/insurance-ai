@@ -223,7 +223,7 @@ _SHORT_FORM_STANDARD_NAMES = {
     "상해통원의료비": "상해통원",
     "질병입원의료비": "질병입원",
     "질병통원의료비": "질병통원",
-    "3대비급여실손": "1인실 입원일당",
+    "3대비급여실손": "3대비급여실손",  # 기존 4개 실손 항목으로 분할할 근거가 없으면 검토 유지
     "상해수술비": "상해수술비",
     "질병수술비": "질병수술비",
     "암수술비": "암수술비",
@@ -288,6 +288,13 @@ def normalize_standard_name(company_name: str | None, standard_name: str | None 
         if compact(explicit) == "기타":
             return "기타"
         explicit_hay = compact(explicit)
+        # Only exact, document-observed labels. Never broaden company-name
+        # keyword inference, and do not infer a 3% threshold from 'under 80%'.
+        if explicit_hay in _SHORT_FORM_STANDARD_NAMES and explicit_hay not in {
+            "상해80%미만후유장해", "질병80%미만후유장해",
+            "장기요양간병비", "간병인/간호간병상해일당", "간병인/간호간병질병일당",
+        }:
+            return _SHORT_FORM_STANDARD_NAMES[explicit_hay]
         exact_source_names = {
             "허혈성심장질환수술비": "허혈심장질환수술비",
             "허혈심장질환수술비": "허혈심장질환수술비",
@@ -825,6 +832,155 @@ def _verified_standard_cell_text(page, table, row_index: int, column: int, ancho
     return (text, "geometry_trace") if text else (None, "needs_review")
 
 
+def _rowspan_cell_text(table, rows: list[list[str]], row_index: int, column: int) -> str:
+    """Use a physical merged cell, never forward-fill an ordinary blank cell.
+
+    Do not carry labels across pages/tables: an unlabelled continuation needs
+    review unless the original PDF supplies a cell covering this exact row.
+    """
+    text = rows[row_index][column]
+    if text:
+        return text
+    geometry = getattr(table, "rows", ())
+    if row_index >= len(geometry) or geometry[row_index].cells[column] is not None:
+        return text
+    cells = [cell for cell in geometry[row_index].cells if cell is not None]
+    if not cells:
+        return text
+    y = max(cell[1] for cell in cells)
+    for previous in range(row_index - 1, -1, -1):
+        cell = geometry[previous].cells[column]
+        if cell is not None:
+            return rows[previous][column] if cell[1] <= y < cell[3] else text
+    return text
+
+
+def parse_contract_detail_references_from_pdf(
+    pdf_path: str, contracts: list[dict], ledger: list[dict], *, source_hash: str | None = None,
+) -> list[dict]:
+    """Preserve five-column detail rows not represented by the credit ledger.
+
+    An exact, cardinality-aware cross-reference avoids counting a repeated
+    presentation twice. Unmatched details remain REFERENCE until reviewed:
+    neither broad categories nor a unique insured/contract are inferred.
+    """
+    from collections import Counter
+    import pdfplumber
+    def identity(row: dict) -> tuple:
+        return tuple(compact(row.get(k)) for k in ("insurer", "product_name", "rider_name_raw", "amount_text", "start_date"))
+    remaining = Counter(identity(row) for row in ledger)
+    result = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_no, page in enumerate(pdf.pages, 1):
+            text = compact(page.extract_text() or "")
+            candidates = [c for c in contracts if all(c.get(k) and compact(c[k]) in text for k in ("insurer", "product_name", "issued_date"))]
+            contract = candidates[0] if len(candidates) == 1 else {}
+            # Shared literal labels are not proof of a unique contract.
+            labels = {}
+            for field in ("insurer", "product_name", "issued_date"):
+                values = {c.get(field) for c in candidates if c.get(field)}
+                labels[field] = next(iter(values)) if len(values) == 1 else None
+            for table_index, table in enumerate(page.find_tables()):
+                for row_index, raw in enumerate(table.extract() or []):
+                    row = [str(c or "").strip() for c in raw]
+                    if len(row) != 5 or not re.fullmatch(r"\d+", row[0]) or row[1] not in {"정액", "실손"} or not row[2]:
+                        continue
+                    entry = {
+                        "source_hash": source_hash, "source_page": page_no, "source_table": table_index, "source_row": row_index,
+                        "source_occurrence_key": f"detail:{source_hash or 'nohash'}:{page_no}:{table_index}:{row_index}",
+                        "insurer": labels.get("insurer"), "product_name": labels.get("product_name"),
+                        "start_date": labels.get("issued_date"), "end_date": None,
+                        "rider_no": row[0], "coverage_type": row[1], "rider_name": row[2], "rider_name_raw": row[2],
+                        "standard_name": row[3] or "기타", "standard_name_raw": row[3],
+                        "standard_name_extracted_raw": row[3], "standard_name_verification": "raw_cell",
+                        "amount": parse_amount(row[4]), "amount_text": row[4],
+                        "document_status": "REFERENCE", "review_status": "needs_review",
+                        "source_type": "contract_ledger", "source_link_status": "unlinked", "confidence": 0.99,
+                    }
+                    entry["amount_status"] = infer_amount_status(entry["amount"], row[4])
+                    key = identity(entry)
+                    if contract and remaining[key] > 0:
+                        remaining[key] -= 1
+                    else:
+                        result.append(entry)
+    return result
+
+
+def parse_credit_summaries_from_pdf(pdf_path: str) -> list[dict]:
+    """Observed seven-column total/company breakdown; never a rider ledger.
+
+    Columns are category/name/total/KB/non-KB non-life/life/mutual-aid.
+    Recommended amounts are absent here and must not be invented.
+    """
+    import pdfplumber
+    result = []
+    recommendations = {}
+    seen = set()
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_no, page in enumerate(pdf.pages, 1):
+            for table_index, table in enumerate(page.find_tables()):
+                for row_index, raw in enumerate(table.extract() or []):
+                    row = [str(c or "").strip() for c in raw]
+                    if len(row) == 8 and compact(row[1]) in _SHORT_FORM_STANDARD_NAMES and row[4] in {"충분", "부족", "미가입"}:
+                        value = parse_amount(row[2])
+                        if value is not None:
+                            recommendations.setdefault(compact(row[1]), set()).add(value)
+                    if len(row) != 7 or compact(row[1]) not in _SHORT_FORM_STANDARD_NAMES:
+                        continue
+                    if any(text and not re.fullmatch(r"[\d,.\s억만천백십원+\-]+", text) for text in row[2:]):
+                        continue
+                    identity = (compact(row[1]), compact(row[2]))
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    amount = parse_amount(row[2])
+                    result.append({
+                        "coverage_name": normalize_standard_name(None, row[1]),
+                        "standard_name": normalize_standard_name(None, row[1]),
+                        "source_coverage_name": row[1], "amount": amount,
+                        "amount_text": row[2], "amount_status": infer_amount_status(amount, row[2]),
+                        "recommended_amount": None, "recommended_amount_text": None,
+                        "source_type": "observed_summary", "source_page": page_no,
+                        "source_table": table_index, "source_row": row_index,
+                    })
+    for item in result:
+        values = recommendations.get(compact(item["source_coverage_name"]), set())
+        if len(values) == 1:
+            item["recommended_amount"] = next(iter(values))
+    return result
+
+
+def parse_credit_contracts_from_pdf(pdf_path: str) -> list[dict]:
+    """Read current contract-list rows; never infer contracts from rider periods."""
+    import pdfplumber
+    contracts = []
+    cycles = {"월납": "MONTHLY", "년납": "YEARLY", "연납": "YEARLY", "일시납": "SINGLE"}
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_no, page in enumerate(pdf.pages, 1):
+            for table_index, table in enumerate(page.find_tables()):
+                for row_index, raw in enumerate(table.extract() or []):
+                    row = [re.sub(r"\s+", " ", str(c or "")).strip() for c in raw]
+                    # Validated columns: NO/company/product/date/cycle/term/maturity/premium/blank.
+                    # Historical rows have status in column 1 and date in column 4.
+                    if len(row) != 9 or not re.fullmatch(r"\d{1,3}", row[0]):
+                        continue
+                    if not row[1] or not row[2] or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", row[3]):
+                        continue
+                    if row[4] and row[4] not in cycles:
+                        continue
+                    if row[5] and not re.fullmatch(r"\d+년|일시납|전기납|종신납", compact(row[5])):
+                        continue
+                    premium = re.fullmatch(r"([\d,]+)원", compact(row[7]))
+                    contracts.append({
+                        "insurer": row[1], "product_name": row[2], "issued_date": row[3],
+                        "premium_won": int(premium[1].replace(",", "")) if premium else None,
+                        "payment_cycle": cycles.get(row[4]), "payment_period": row[5] or None,
+                        "insured_period": row[6] or None, "plan_type": None,
+                        "source_page": page_no, "source_table": table_index, "source_row": row_index,
+                    })
+    return contracts
+
+
 def parse_policy_coverages_from_pdf(
     pdf_path: str,
     source_file_name: str | None = None,
@@ -881,7 +1037,8 @@ def parse_policy_coverages_from_pdf(
                             current_insurer = row[indices["회사명"]]
                         if row[indices["상품명"]]:
                             current_product = row[indices["상품명"]]
-                        standard_raw = row[indices["신정원담보명"]]
+                        standard_extracted = row[indices["신정원담보명"]]
+                        standard_raw = _rowspan_cell_text(found_table, rows, source_row, indices["신정원담보명"])
                         amount_text = row[indices["가입금액"]]
                         amount = parse_amount(amount_text)
                         ledger.append({
@@ -899,15 +1056,15 @@ def parse_policy_coverages_from_pdf(
                             "coverage_type": None,
                             "rider_name": rider,
                             "rider_name_raw": rider,
-                            "standard_name_extracted_raw": standard_raw,
+                            "standard_name_extracted_raw": standard_extracted,
                             "standard_name_raw": standard_raw,
                             "standard_name": normalize_standard_name(rider, standard_raw),
-                            "standard_name_verification": "raw_cell",
+                            "standard_name_verification": "merged_cell" if standard_raw and not standard_extracted else ("raw_cell" if standard_raw else "needs_review"),
                             "source_standard_name": None,
                             "source_standard_names_json": "[]",
                             "source_type": "contract_ledger",
                             "source_link_status": "unlinked",
-                            "review_status": "unreviewed",
+                            "review_status": "unreviewed" if standard_raw else "needs_review",
                             "amount": amount,
                             "amount_text": amount_text,
                             "amount_status": infer_amount_status(amount, amount_text),
@@ -918,6 +1075,41 @@ def parse_policy_coverages_from_pdf(
                         })
                     # This table is itself the contract ledger. Treating it as a
                     # separate summary/link source would double-count the same rows.
+                    continue
+                # 자동차보험's compact contract table is a ledger, not a
+                # health-summary total. Preserve unsupported benefits for review;
+                # do not coerce unlimited limits to zero or to driver benefits.
+                motor_columns = ["회사명", "상품명", "담보명", "보험기간", "가입금액"]
+                motor_header = next((i for i, row in enumerate(rows)
+                    if all(compact(name) in [compact(c) for c in row] for name in motor_columns)), None)
+                if motor_header is not None and "자동차보험" in compact(page.extract_text() or ""):
+                    header = [compact(c) for c in rows[motor_header]]
+                    indices = {name: header.index(name) for name in motor_columns}
+                    for source_row, row in enumerate(rows[motor_header + 1:], start=motor_header + 1):
+                        if len(row) <= max(indices.values()) or not row[indices["담보명"]]:
+                            continue
+                        rider = row[indices["담보명"]]
+                        amount_text = row[indices["가입금액"]]
+                        amount = parse_amount(amount_text)
+                        dates = _DATE_RE.findall(row[indices["보험기간"]])
+                        ledger.append({
+                            "source_file_name": source_file_name, "source_hash": source_hash,
+                            "source_page": page_no, "source_table": table_index, "source_row": source_row,
+                            "source_occurrence_key": f"ledger:{source_hash or 'nohash'}:{page_no}:{table_index}:{source_row}",
+                            "insurer": row[indices["회사명"]] or None,
+                            "product_name": row[indices["상품명"]] or None,
+                            "rider_name": rider, "rider_name_raw": rider,
+                            "standard_name_extracted_raw": "자동차보험", "standard_name_raw": "자동차보험",
+                            "standard_name": "자동차보험", "standard_name_verification": "section_heading",
+                            "source_type": "contract_ledger", "source_link_status": "unlinked",
+                            "review_status": "needs_review", "amount": amount, "amount_text": amount_text,
+                            "amount_status": infer_amount_status(amount, amount_text),
+                            "start_date": dates[0].replace(".", "-") if len(dates) == 2 else None,
+                            "end_date": dates[1].replace(".", "-") if len(dates) == 2 else None,
+                            "confidence": 0.95,
+                            # Deliberately omit vehicle/person identifiers in other columns.
+                            "raw_text": " | ".join(row[indices[name]] for name in motor_columns),
+                        })
                     continue
                 detail_header = next((i for i, row in enumerate(rows) if all(_find_cell_index(row, token) is not None for token in ["구분", "회사명", "담보명"])), None)
                 if detail_header is not None:
@@ -1120,6 +1312,7 @@ def _match_policy_id(conn: sqlite3.Connection, customer_id: str, row: dict) -> t
     ri, rp = compact(row.get("insurer")), compact(row.get("product_name"))
     best = None
     best_score = 0
+    best_count = 0
     for p in candidates:
         score = 0
         pi, pp = compact(p.get("insurer")), compact(p.get("product_name"))
@@ -1134,8 +1327,10 @@ def _match_policy_id(conn: sqlite3.Connection, customer_id: str, row: dict) -> t
         if row.get("end_date") and row.get("end_date") == p.get("end_date"):
             score += 2
         if score > best_score:
-            best, best_score = p, score
-    return (best["id"], "matched") if best and best_score >= 5 else (None, "unmatched")
+            best, best_score, best_count = p, score, 1
+        elif score == best_score:
+            best_count += 1
+    return (best["id"], "matched") if best and best_score >= 5 and best_count == 1 else (None, "unmatched")
 
 
 def _validate_policy_owner(conn: sqlite3.Connection, customer_id: str, policy_id: str) -> None:

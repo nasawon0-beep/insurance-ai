@@ -1137,10 +1137,10 @@ def _birth_from_short_form_text(doc_text: str, issued: Optional[str] = None) -> 
     return None, None, None
 
 
-def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optional[str] = None) -> tuple[dict, list[str]]:
+def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optional[str] = None, *, allow_inferred_identity: bool = True) -> tuple[dict, list[str]]:
     """보장분석 PDF 1차 화면용 고객정보. Ollama 호출 없이 표지/파일명/나이만 사용한다."""
     fields = {
-        "name": _short_form_title_name(doc_text) or _name_from_filename(filename),
+        "name": _short_form_title_name(doc_text) or (_name_from_filename(filename) if allow_inferred_identity else None),
         "phone": None,
         "birth_date": None,
         "gender": None,
@@ -1164,7 +1164,7 @@ def _quick_customer_fields(doc_text: str, filename: Optional[str], issued: Optio
     warns: list[str] = []
     if not fields.get("name"):
         warns.append("이름을 찾지 못했습니다. 직접 입력하세요.")
-    est_warn = _estimate_birthdate_from_age(fields, doc_text, issued)
+    est_warn = _estimate_birthdate_from_age(fields, doc_text, issued) if allow_inferred_identity else None
     if est_warn:
         warns.append(est_warn)
     warns.append("빠른 분석 결과입니다. 상세 담보 검수는 저장 전 원문과 함께 확인하세요.")
@@ -1207,10 +1207,19 @@ def _quick_policies_from_coverage_rows(rows: list[dict], limit: int = 50) -> lis
     return list(grouped.values())[:limit]
 
 
-def _coverage_document_policies(rows: list[dict], doc_text: str) -> tuple[list[dict], list[str]]:
+def _coverage_document_policies(rows: list[dict], doc_text: str, credit_contracts: list[dict] | None = None) -> tuple[list[dict], list[str]]:
     """집계표는 요약에만 남기고, 실제 계약 후보만 반환한다."""
     from . import intake as _intake
 
+    if credit_contracts:
+        # The original contract list supplies premium/term/date. Rider grouping
+        # must not collapse renewals or manufacture missing contract metadata.
+        motor = _quick_policies_from_coverage_rows([
+            row for row in rows if row.get("standard_name_raw") == "자동차보험"
+        ])
+        for policy in motor:
+            policy["identity_review_required"] = True
+        return credit_contracts + motor, (["자동차보험 계약/차량 식별이 확정되지 않았습니다. 담보 원문은 보존하며 계약 연결은 검토가 필요합니다."] if motor else [])
     policies = _quick_policies_from_coverage_rows(rows)
     if policies:
         return policies, []
@@ -1593,9 +1602,11 @@ async def capture(
                 }
                 is_coverage_doc = doc_type_enum in coverage_doc_types or doc_type == "보장분석" or "보유계약리스트" in doc_text
                 coverage_analysis_review = None
+                credit_contracts: list[dict] = []
+                credit_summaries: list[dict] = []
                 if is_coverage_doc:
                     t0 = time.perf_counter()
-                    f, warns = _quick_customer_fields(doc_text + extra, file.filename, _short_form_issued_date(doc_text))
+                    f, warns = _quick_customer_fields(doc_text + extra, file.filename, _short_form_issued_date(doc_text), allow_inferred_identity=False)
                     perf["customer"] = time.perf_counter() - t0
                     t0 = time.perf_counter()
                     tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
@@ -1615,6 +1626,14 @@ async def capture(
                                 )
                                 if direct_ledger_rows:
                                     policy_coverage_rows = direct_ledger_rows
+                                    credit_contracts = policy_coverages.parse_credit_contracts_from_pdf(tmp_pdf.name)
+                                    credit_summaries = policy_coverages.parse_credit_summaries_from_pdf(tmp_pdf.name)
+                                    detail_references = policy_coverages.parse_contract_detail_references_from_pdf(
+                                        tmp_pdf.name, credit_contracts, direct_ledger_rows, source_hash=source_hash,
+                                    )
+                                    policy_coverage_rows.extend(detail_references)
+                                    if detail_references:
+                                        warns.append(f"계약별 상세표 {len(detail_references)}행은 원장과 동일성/분류 확인이 필요하여 참고 담보로 보존했습니다. 확인 전 보유보장에 이중 합산하지 않습니다.")
                             candidate_pages = detect_candidate_pages(tmp_pdf.name, doc_type_enum)
                             parsed_coverages = parse_coverage_analysis(tmp_pdf.name, candidate_pages)
                         except Exception as exc:
@@ -1664,6 +1683,8 @@ async def capture(
                         ],
                         "page_count": _doc_type_metadata.get("page_count"),
                     }
+                    if credit_summaries:
+                        coverage_analysis_review["coverages"] = credit_summaries
                 else:
                     focused = (_focus_customer_lines(doc_text) + "\n" + prop_body)[:3000]
                     guide = (
@@ -1685,7 +1706,7 @@ async def capture(
                 if title_nm:
                     f["name"] = title_nm
                 nm = str(f.get("name") or "")
-                if not nm or "*" in nm or "○" in nm or "◯" in nm:
+                if not is_coverage_doc and (not nm or "*" in nm or "○" in nm or "◯" in nm):
                     fn_nm = _name_from_filename(file.filename)
                     if fn_nm:
                         f["name"] = fn_nm
@@ -1711,13 +1732,13 @@ async def capture(
                         cov_raw = _slice_section(doc_text, ("전체 보장현황", "전체보장현황"), ("상품별 가입담보상세", "가입담보상세", "보유계약리스트"), 3500)
                     else:
                         t0 = time.perf_counter()
-                        policies, policy_warnings = _coverage_document_policies(policy_coverage_rows, doc_text)
+                        policies, policy_warnings = _coverage_document_policies(policy_coverage_rows, doc_text, credit_contracts)
                         warns += policy_warnings
                         perf["policy_parse"] = time.perf_counter() - t0
                         t0 = time.perf_counter()
                         coverage_status = _parse_coverage_status(doc_text)
                         perf["coverage_status"] = time.perf_counter() - t0
-                        if doc_type == "보장분석" and not coverage_status:
+                        if doc_type == "보장분석" and not coverage_status and not credit_summaries:
                             warns.append("보장별 상세표를 찾지 못했습니다. 이 문서는 미지원 양식으로 자동 보장분석 저장을 하지 않습니다. 가입현황/계약별 담보는 검수 후 별도 확인하세요.")
                         consult_extra = coverage_status  # 구조화 리스트
                         cov_raw = _slice_section(doc_text, _GAP_START, _GAP_END, 3500)
@@ -1794,6 +1815,11 @@ async def capture(
                 own_default = not (doc_type == "보장분석" or "보유계약리스트" in doc_text)
                 for _p in policies:
                     _p["is_own"] = own_default
+                    if credit_contracts:
+                        # Save source rows once through the top-level ledger.
+                        # Product-prefix matching cannot identify same-product
+                        # contracts; let the API retain ambiguous links for review.
+                        continue
                     p_key = policy_coverages.compact(_p.get("product_name"))
                     i_key = policy_coverages.compact(_p.get("insurer"))
                     p_match_key = p_key.replace("무배당", "").replace("(무)", "").replace("메리츠", "")
@@ -1812,7 +1838,7 @@ async def capture(
                         _p["policy_coverages"] = matched_cov
 
                 issued = next((p.get("issued_date") for p in policies if p.get("issued_date")), None) or coverage_summary_issued
-                est_warn = _estimate_birthdate_from_age(f, doc_text + extra, issued)
+                est_warn = _estimate_birthdate_from_age(f, doc_text + extra, issued) if not is_coverage_doc else None
                 if est_warn:
                     warns.append(est_warn)
 
@@ -1829,7 +1855,20 @@ async def capture(
                     perf.get("total", 0.0),
                 )
 
+                # Customer/contract extraction does not establish coverage support.
+                # An empty extraction is not evidence that the document has no benefits.
+                analysis_status = "quick_analysis_done"
+                if not policy_coverage_rows and not coverage_status and not (
+                    coverage_analysis_review and coverage_analysis_review.get("coverages")
+                ):
+                    analysis_status = "coverage_review_required" if is_coverage_doc else "coverage_format_unrecognized"
+                    warns.append(
+                        "담보가 추출되지 않았습니다. 원문에 담보가 없는 정상 문서인지, 추출 누락인지 확인해 주세요. 고객·계약 정보는 검수 후 저장할 수 있습니다."
+                        if is_coverage_doc else
+                        "자동 담보 추출을 지원하는 양식으로 인식되지 않았습니다. 담보 0건은 미가입 판정이 아닙니다. 고객·계약 추출 결과는 별도로 검수해 주세요."
+                    )
                 items.append({
+                    "source_hash": source_hash,
                     "fields": f,
                     "warnings": warns,
                     "doc_type": doc_type,
@@ -1847,7 +1886,7 @@ async def capture(
                         else _coverage_review(doc_type, doc_text, coverage_status, policy_coverage_rows)
                     ),
                     "coverages_text": cov_raw,
-                    "analysis_status": "quick_analysis_done",
+                    "analysis_status": analysis_status,
                     "quick_contracts": [
                         {"insurer": p.get("insurer"), "product_name": p.get("product_name")}
                         for p in policies[:20]

@@ -515,7 +515,8 @@ function CapturePanel({
     const observedSummary = Array.isArray(row.coverage_review?.coverages) && row.coverage_review.coverages.length > 0
       ? row.coverage_review.coverages
       : Array.isArray(row.coverage_status) ? row.coverage_status : [];
-    const willSkip = !isCoverageAnalysisDocument(docType) && savedCoverageCount <= 0 && extractedCoverageCount <= 0;
+    const willSkip = savedCoverageCount <= 0 && extractedCoverageCount <= 0
+      && (!isCoverageAnalysisDocument(docType) || observedSummary.length === 0);
     console.log("[보장분석 재계산] 조건 검사", {
       docType,
       isCoverageAnalysis: isCoverageAnalysisDocument(docType),
@@ -726,7 +727,8 @@ function CapturePanel({
           savedCoverageCount += bulkCreated + bulkExisting;
           res.policyCoverages += bulkCreated;
           console.log("[통합 보장분석 저장] 완료", { created: bulkCreated, existing: bulkExisting });
-        } else if (cid && isCoverageAnalysis && !(Array.isArray(row.coverage_status) && row.coverage_status.length > 0)) {
+        } else if (cid && isCoverageAnalysis && row.analysis_status !== "coverage_review_required"
+          && !(Array.isArray(row.coverage_status) && row.coverage_status.length > 0)) {
           throw new Error("계약별 담보 원장이 없어 보장분석을 연결할 수 없습니다. 요약금액으로 계약담보를 생성하지 않습니다.");
         }
 
@@ -1212,7 +1214,7 @@ function CapturePanel({
             }}
           >
             <div style={{ marginBottom: 10, fontSize: 14, color: "var(--color-text-primary)", fontWeight: 700 }}>
-              ✅ 검수 완료 — 고객 {activeRows.length}명 · 계약 {contractCount}건 · 담보 {coverageCount}건
+              분석 미리보기 — 고객 {activeRows.length}명 · 계약 {contractCount}건 · 담보 {coverageCount}건
             </div>
             <button
               aria-label="고객 등록 및 저장"

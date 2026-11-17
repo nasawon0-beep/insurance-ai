@@ -534,22 +534,30 @@ export async function savePolicies(
     let createdPolicy = false;
     let savingCoverages = false;
     try {
+      if (p.identity_review_required === true && !key(p.policy_number)) {
+        throw new Error("계약/차량 식별을 확인할 수 없어 자동 계약 저장을 보류했습니다. 담보 원문은 별도 검토 대상으로 보존됩니다.");
+      }
+      // A source hash identifies a document, not an individual contract.
+      // Several products, renewals or numbered contracts may share one PDF.
       const existing = existingPolicies.find((item) => (
-        (key(p.source_hash) !== "" && key(item.source_hash) === key(p.source_hash)) ||
-        (key(item.insurer) === key(p.insurer) &&
-          key(item.product_name) === key(p.product_name) &&
-          key(item.start_date) === key(p.issued_date) &&
-          key(item.document_status ?? "CONFIRMED") === key(p.document_status ?? "CONFIRMED") &&
-          (key(p.insurer) !== "" || key(p.product_name) !== ""))
+        key(item.insurer) === key(p.insurer) &&
+        key(item.product_name) === key(p.product_name) &&
+        key(item.start_date) === key(p.issued_date) &&
+        key(item.policy_number) === key(p.policy_number) &&
+        key(item.payment_period) === key(p.payment_period) &&
+        key(item.insured_period) === key(p.insured_period) &&
+        key(item.document_status ?? "CONFIRMED") === key(p.document_status ?? "CONFIRMED") &&
+        (key(p.insurer) !== "" || key(p.product_name) !== "")
       ));
       const created = existing ?? await api(`/customers/${cid}/policies`, {
         method: "POST",
         body: JSON.stringify({
           insurer: p.insurer || null,
           product_name: p.product_name || null,
+          policy_number: p.policy_number || null,
           plan_type: (p.plan_type as string) || null,
           premium: prem > 0 ? prem : null,
-          payment_cycle: (p.payment_cycle as string) || "MONTHLY",
+          payment_cycle: (p.payment_cycle as string) || null,
           start_date: (p.issued_date as string) || null,
           // 보험기간/납입기간은 정식 필드로도 보낸다 → 서버가 만기·납입종료일 자동 산출.
           // memo 크램(위 `memo`)은 하위호환용으로 유지.

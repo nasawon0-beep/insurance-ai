@@ -993,6 +993,26 @@ def _summary(items: list[dict[str, Any]], *, audience: str = "internal") -> tupl
 def _persist_run(
     conn: sqlite3.Connection, customer_id: str, items: list[dict[str, Any]], profile: dict[str, Any], mode: str
 ) -> str:
+    # Reimporting the same source must not silently discard a user's review.
+    # Keep newly calculated/source amounts separate; never carry decisions to
+    # a different or unidentified document.
+    previous = conn.execute(
+        "SELECT id, profile_json FROM coverage_analysis_runs WHERE customer_id = ? "
+        "AND status = 'completed' ORDER BY completed_at DESC, rowid DESC LIMIT 1",
+        (customer_id,),
+    ).fetchone()
+    if previous and profile.get("source_hash") and json.loads(previous["profile_json"] or "{}").get("source_hash") == profile["source_hash"]:
+        decisions = {r["catalog_id"]: dict(r) for r in conn.execute(
+            "SELECT * FROM coverage_analysis WHERE customer_id = ? AND run_id = ? AND manual_override = 1",
+            (customer_id, previous["id"]),
+        ).fetchall()}
+        fields = ("current_amount", "recommended_amount", "status", "gap_amount", "coverage_ratio",
+                  "gap_ratio", "priority", "priority_score", "customer_display", "customer_summary",
+                  "internal_memo", "manual_override", "override_reason", "reviewed_by", "reviewed_at")
+        for item in items:
+            old = decisions.get(item["id"])
+            if old:
+                item.update({key: old[key] for key in fields})
     run_id = _new_id("run")
     started = _now()
     summary_customer, summary_internal = _summary(items)
@@ -1036,6 +1056,11 @@ def _persist_run(
                 json.dumps(row["matched_policy_coverage_ids"], ensure_ascii=False),
             ),
         )
+        if row.get("manual_override"):
+            conn.execute(
+                "UPDATE coverage_analysis SET manual_override = 1, override_reason = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ? AND customer_id = ?",
+                (row.get("override_reason"), row.get("reviewed_by"), row.get("reviewed_at"), coverage_id, customer_id),
+            )
     conn.commit()
     return run_id
 
