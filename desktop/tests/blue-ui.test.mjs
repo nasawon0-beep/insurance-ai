@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const src = (name) => fs.readFileSync(new URL('../src/' + name, import.meta.url), 'utf8');
-const css = src('styles/blue.css');
+const css = src('styles/blue.css').replace(/\r\n/g, '\n'); // Match logical CSS lines on LF and Windows CRLF checkouts.
 
 // ---- helpers -------------------------------------------------------------------------------
 function block(selector) {
