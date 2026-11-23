@@ -7,6 +7,7 @@ import { initializeRuntimeProfile } from "./config";
 import "./styles/index.css";
 import "./styles/navy.css";
 import "./styles/legacy-surfaces.css";
+import "./styles/blue.css";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },

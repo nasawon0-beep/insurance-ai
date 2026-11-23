@@ -1,0 +1,269 @@
+/* Approved blue UI layer (#0055FF). Loaded after navy.css and legacy-surfaces.css; presentation only.
+   Source of truth: the approved click-through design (PC). No data, API, auth or update behaviour lives here.
+   - --moa-muted (#6e7b96) is the approved secondary hue; it is 4.25:1 on white, so it is used for icons/rules only.
+     Body-size secondary text uses --color-text-secondary (#5b6883, 5.6:1) to keep WCAG AA. */
+:root {
+  --moa-radius: 10px;
+  --moa-muted: #6e7b96;
+  --moa-subtle: #f7f9fc;
+  --moa-mint: #c2f5e9;
+  --moa-mint-ink: #065f60;
+  --color-bg-base: #ffffff;
+  --color-bg-page: #ffffff;
+  --color-bg-surface: #ffffff;
+  --color-bg-hover: #edf4ff;
+  --color-text-primary: #08163c;
+  --color-text-secondary: #5b6883;
+  --color-text-disabled: #6e7b96;
+  --color-border-default: #e4e9f2;
+  --color-border-hover: #b9c6df;
+  --color-border-focus: #0055ff;
+  --color-input-border: #b9c6df;
+  --primary-50: #f4f8ff;
+  --primary-100: #edf4ff;
+  --primary-200: #cfe0ff;
+  --primary-300: #9bbcff;
+  --primary-400: #5c8fff;
+  --primary-500: #1a66ff;
+  --primary-600: #0055ff;
+  --primary-700: #0045d1;
+  --primary-800: #0036a3;
+  --primary-900: #082a73;
+  --color-accent-text: #0055ff;
+  --color-accent-soft: #edf4ff;
+  --color-soft: #f2f5fa;
+  --color-error: #b3261e;
+  --color-error-soft: #fdecea;
+  --color-success: #065f60;
+  --color-success-soft: #c2f5e9;
+  --color-warning: #8a4b00;
+  --color-warning-soft: #fff3df;
+  --color-info: #0055ff;
+  --coverage-sufficient: #0055ff;
+  --coverage-sufficient-bg: #edf4ff;
+  --coverage-uninsured: #5b6883;
+  --coverage-uninsured-bg: #f2f5fa;
+  --coverage-badge-sufficient: #0055ff;
+  --coverage-badge-uninsured: #5b6883;
+  --color-error-fill: #b3261e;
+  --color-success-fill: #065f60;
+  --color-muted-fill: #5b6883;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --shadow-sm: none;
+  --shadow-md: 0 1px 2px #08163c0d;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --moa-muted: #a6b3cd;
+  --moa-subtle: #18263d;
+  --moa-mint: #245d5c;
+  --moa-mint-ink: #b7f5e6;
+  --color-bg-base: #0c1628;
+  --color-bg-page: #0c1628;
+  --color-bg-surface: #111e34;
+  --color-bg-hover: #1e3153;
+  --color-text-primary: #e5edff;
+  --color-text-secondary: #a6b3cd;
+  --color-text-disabled: #8896b3;
+  --color-border-default: #2e3e59;
+  --color-border-hover: #4a5f85;
+  --color-border-focus: #6f9eff;
+  --color-input-border: #4a5f85;
+  --primary-50: #18263d;
+  --primary-100: #1e3153;
+  --primary-200: #244370;
+  --primary-300: #5c8fff;
+  --primary-400: #6f9eff;
+  --primary-500: #2f6bea;
+  --primary-600: #2765e1;
+  --primary-700: #1f55c2;
+  --color-accent-text: #6f9eff;
+  --color-accent-soft: #1e3153;
+  --color-soft: #18263d;
+  --color-error: #ffb4ab;
+  --color-error-soft: #4a2a2f;
+  --color-success: #b7f5e6;
+  --color-success-soft: #245d5c;
+  --color-warning: #ffdb9b;
+  --color-warning-soft: #513c23;
+  --color-info: #6f9eff;
+  --coverage-sufficient: #6f9eff;
+  --coverage-sufficient-bg: #1e3153;
+  --coverage-uninsured: #a6b3cd;
+  --coverage-uninsured-bg: #18263d;
+  --coverage-badge-sufficient: #2765e1;
+  --coverage-badge-uninsured: #5b6883;
+  --color-error-fill: #c4453c;
+  --color-success-fill: #1d7a73;
+  --color-muted-fill: #5b6883;
+  --shadow-md: none;
+}
+
+body { background: var(--color-bg-page); color: var(--color-text-primary); }
+
+/* ---------- shared components ---------- */
+.card,
+.coverage-group-card,
+.coverage-summary-card {
+  border-radius: var(--moa-radius);
+  border: 1px solid var(--color-border-default);
+  box-shadow: none;
+}
+button { border-radius: 8px; min-height: 36px; font-weight: 600; }
+button.btn-primary, button.primary, button[style*="background: var(--primary-600)"] { background: var(--primary-600); border-color: var(--primary-600); color: #fff; }
+input:not([type="checkbox"]):not([type="radio"]), textarea, select { border-radius: 8px; border-color: var(--color-input-border) !important; }
+th { background: var(--moa-subtle); color: var(--color-text-secondary); font-weight: 600; }
+.badge-success,
+.status-chip[data-status="가입"] { background: var(--moa-mint) !important; color: var(--moa-mint-ink) !important; }
+.badge-primary { background: var(--color-accent-soft); color: var(--color-accent-text); }
+.status-chip {
+  border-radius: 999px !important; padding: 2px 9px !important; font-size: 12px !important; font-weight: 600;
+  background: var(--moa-subtle) !important; color: var(--color-text-secondary) !important; border: 1px solid var(--color-border-default);
+}
+.status-chip { white-space: nowrap; flex-shrink: 0; }
+.status-chip[data-status="가입"] { border-color: transparent; }
+.status-chip[data-status="가망"] { background: var(--color-accent-soft) !important; color: var(--color-accent-text) !important; border-color: transparent; }
+.status-chip[data-status="해지"] { background: var(--color-error-soft) !important; color: var(--color-error) !important; border-color: transparent; }
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible { outline: 3px solid var(--color-border-focus) !important; outline-offset: 2px; }
+
+/* ---------- sidebar / shell ---------- */
+.app-shell { grid-template-columns: 156px minmax(0, 1fr); }
+.app-sidebar { padding: 22px 12px 16px; gap: 24px; background: var(--color-bg-surface); border-right: 1px solid var(--color-border-default); }
+.app-brand { padding: 0 6px; font-size: 20px; }
+.app-brand-mark { display: inline-flex; align-items: center; gap: 8px; }
+.app-brand-name { font-size: 20px; font-weight: 800; letter-spacing: -0.04em; color: var(--color-text-primary); }
+.app-navigation { gap: 4px; }
+.app-navigation .app-nav-button {
+  display: flex !important; align-items: center; gap: 11px; padding: 10px 12px !important; min-height: 42px;
+  border: 0 !important; border-radius: 10px !important; font-size: 14px !important; font-weight: 600 !important;
+  color: var(--color-text-primary) !important; background: transparent !important; text-align: left;
+}
+.app-navigation .app-nav-button:hover { background: var(--moa-subtle) !important; }
+.app-navigation .app-nav-button[aria-current="page"] { background: var(--color-accent-soft) !important; color: var(--color-accent-text) !important; font-weight: 700 !important; }
+.moa-nav-icon { flex-shrink: 0; }
+.app-account { color: var(--color-text-secondary); }
+.app-content { padding: 24px 28px 40px; background: var(--color-bg-page); }
+
+/* ---------- customers: list column + detail ---------- */
+.customers-workspace { gap: 20px; max-width: 1440px; }
+.customers-list-panel { width: 286px; flex-shrink: 0; }
+.customers-list-panel > div:last-child { border: 0 !important; background: transparent !important; max-height: calc(100vh - 340px) !important; min-height: 240px; }
+.customers-list-panel label { font-size: 13px; color: var(--color-text-secondary); }
+.customers-new-button { border-radius: 8px !important; border: 0 !important; min-height: 40px; font-size: 14px; }
+.customers-segments button { border-radius: 999px !important; min-height: 32px; padding: 4px 8px !important; flex: 1 1 auto; font-size: 13px !important; font-weight: 600; background: var(--color-bg-surface) !important; color: var(--color-text-primary) !important; border: 1px solid var(--color-border-default) !important; }
+.customers-segments button[aria-pressed="true"] { background: var(--primary-600) !important; border-color: var(--primary-600) !important; color: #fff !important; }
+.customer-row { display: flex !important; align-items: flex-start; gap: 12px; padding: 14px 12px !important; border-bottom: 1px solid var(--color-border-default) !important; border-radius: 10px; }
+.customer-row:hover { background: var(--moa-subtle) !important; }
+.customer-row[aria-pressed="true"] { background: var(--color-accent-soft) !important; }
+.customer-avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; font-size: 15px; font-weight: 700; background: var(--color-accent-soft); color: var(--color-accent-text); }
+.customer-avatar-lg { width: 56px; height: 56px; font-size: 24px; }
+.customer-row[aria-pressed="true"] .customer-avatar { background: var(--color-bg-surface); }
+.customer-row-body { min-width: 0; flex: 1; }
+.customer-row-name { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+.customer-row-meta { color: var(--color-text-secondary) !important; font-size: 13px !important; margin-top: 2px; }
+.customer-row-tags { color: var(--color-accent-text) !important; font-size: 12px !important; }
+
+.customer-detail-header { background: transparent !important; border-bottom: 0 !important; gap: 14px !important; }
+.customer-profile-main > strong { font-size: 22px !important; font-weight: 800; letter-spacing: -0.03em; }
+.customer-profile-row { width: 100%; display: flex; align-items: center; gap: 16px; }
+.customer-profile-main { flex: 1; min-width: 0; }
+.customer-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(86px, 1fr)); gap: 8px; flex: 0 0 300px; }
+.customer-shortcut { min-height: 88px !important; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 10px !important; background: var(--color-accent-soft) !important; border-color: var(--color-border-default) !important; color: var(--color-text-primary) !important; }
+.customer-shortcut .moa-nav-icon { color: var(--color-accent-text); }
+.customer-shortcut small { color: var(--color-text-secondary); font-size: 11px; }
+.customer-overview { width: 100%; padding: 13px 16px; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--color-bg-surface); }
+.customer-overview h3 { margin: 0 0 10px; font-size: 14px; }
+.customer-overview dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 0; }
+.customer-overview dt { color: var(--color-text-secondary); font-size: 11px; margin-bottom: 5px; }
+.customer-overview dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 1300px) {
+  .customer-profile-row { flex-wrap: wrap; }
+  .customer-shortcuts { flex: 1 0 100%; }
+  .customer-shortcut { min-height: 70px !important; }
+  .customer-overview dl { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+.customer-kpi { display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px !important; }
+.customer-kpi-item { display: flex; flex-direction: column; align-self: stretch; gap: 2px; padding: 10px 14px; border: 1px solid var(--color-border-default); border-radius: var(--moa-radius); background: var(--color-bg-surface); }
+.customer-kpi-label { font-size: 13px; color: var(--color-text-secondary); }
+.customer-kpi-item b, .customer-kpi-value { font-size: 16px; font-weight: 700; color: var(--color-text-primary) !important; overflow-wrap: anywhere; }
+.customer-kpi-value { font-size: 13px; font-weight: 500; color: var(--color-text-secondary) !important; }
+.customer-kpi-value b { font-size: 16px; }
+.customers-detail-tabs { gap: 26px !important; border-bottom: 1px solid var(--color-border-default); }
+.detail-tab { background: none !important; border: 0 !important; border-bottom: 3px solid transparent !important; border-radius: 0 !important; padding: 8px 2px !important; min-height: 44px; font-size: 15px !important; font-weight: 600 !important; color: var(--color-text-secondary) !important; }
+.detail-tab[aria-selected="true"] { color: var(--color-accent-text) !important; border-bottom-color: var(--color-accent-text) !important; font-weight: 700 !important; }
+.detail-tab-count { margin-left: 6px; font-size: 13px; font-weight: 600; }
+
+/* contracts */
+.contract-policy-table { border: 1px solid var(--color-border-default) !important; border-radius: var(--moa-radius); border-collapse: separate !important; border-spacing: 0; font-size: 14px !important; }
+.contract-policy-table th:first-child { border-top-left-radius: var(--moa-radius); }
+.contract-policy-table th:last-child { border-top-right-radius: var(--moa-radius); }
+.contract-policy-table th { background: var(--moa-subtle); color: var(--color-text-secondary); font-size: 13px; padding: 12px 10px !important; border-right: 0 !important; border-bottom: 1px solid var(--color-border-default) !important; }
+.contract-policy-table td { padding: 12px 10px !important; border-right: 0 !important; border-bottom: 1px solid var(--color-border-default) !important; }
+.contract-policy-table tbody tr:hover td { background: var(--moa-subtle); }
+/* Keep the row actions reachable when the table needs horizontal scrolling (e.g. 150% Windows scaling). */
+.contract-policy-table th:last-child, .contract-policy-table td:last-child { position: sticky; right: 0; box-shadow: -1px 0 0 var(--color-border-default); }
+.contract-policy-table td:last-child { background: var(--color-bg-surface); }
+.contract-policy-table tbody tr:hover td:last-child { background: var(--moa-subtle); }
+.contract-policy-table { min-width: 740px !important; }
+.contract-policy-table col:nth-child(1) { width: 88px !important; }
+.contract-policy-table col:nth-child(2) { width: auto !important; min-width: 130px !important; }
+.contract-policy-table col:nth-child(3) { width: 92px !important; }
+.contract-policy-table col:nth-child(4) { width: 84px !important; }
+.contract-policy-table col:nth-child(5) { width: 100px !important; }
+.contract-policy-table col:nth-child(6) { width: 64px !important; }
+.contract-policy-table col:nth-child(7) { width: 176px !important; }
+.contract-policy-table td:nth-child(2), .contract-policy-table td:nth-child(5) { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; overflow-wrap: anywhere; }
+.contract-policy-table td:last-child button { display: inline-block; min-height: 32px; margin: 2px 6px 2px 0 !important; padding: 4px 10px; font-size: 13px; }
+
+/* ---------- data analysis (자료분석) ---------- */
+.data-analysis {
+  max-width: 1230px; margin: 0 auto; padding: 8px 24px 40px; font-size: 14px; line-height: 1.6;
+}
+.data-analysis-title { margin: 0 0 6px; font-size: 26px; font-weight: 800; letter-spacing: -0.04em; }
+.data-analysis-lead { margin: 0 0 22px; font-size: 14px; color: var(--color-text-secondary); }
+.data-analysis-tabs { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 24px; border-bottom: 1px solid var(--color-border-default); }
+.data-analysis-tab {
+  display: flex; align-items: baseline; gap: 8px; min-height: 44px; padding: 0 0 12px !important; text-align: left;
+  background: none !important; border: 0 !important; border-bottom: 3px solid transparent !important; border-radius: 0 !important;
+  color: var(--color-text-primary) !important; font-weight: 700;
+}
+.data-analysis-tab[aria-selected="true"] { color: var(--color-accent-text) !important; border-bottom-color: var(--color-accent-text) !important; }
+.data-analysis-tab-label { font-size: 15px; }
+.data-analysis-tab-desc { font-size: 13px; font-weight: 400; color: var(--color-text-secondary); }
+.data-analysis-panel { background: transparent; }
+#data-panel-new { background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--moa-radius); padding: 24px; }
+.data-analysis-panel > div[style*="dashed"] { border-style: solid !important; border-radius: var(--moa-radius) !important; padding: 24px !important; }
+.data-analysis-panel > div[style*="border"] { border-radius: var(--moa-radius) !important; }
+.data-analysis table {
+  font-size: 14px !important;
+}
+.data-analysis button {
+  font-size: 14px !important; min-height: 40px;
+}
+.data-analysis input,
+.data-analysis select,
+.data-analysis textarea {
+  font-size: 14px !important; min-height: 40px;
+}
+.data-analysis th, .data-analysis td { font-size: 14px !important; }
+
+/* ---------- coverage analysis ---------- */
+.coverage-page { color: var(--color-text-primary); }
+.coverage-toolbar { border-radius: var(--moa-radius); box-shadow: none; }
+.coverage-filter.is-active { background: var(--primary-600); color: #fff; }
+
+@media (max-width: 1100px) {
+  .app-shell { grid-template-columns: 148px minmax(0, 1fr); }
+  .customers-list-panel { width: 250px; }
+  .customer-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 800px) {
+  .app-shell { display: block; }
+  .customers-list-panel { width: 100%; }
+  .customers-list-panel > div:last-child { max-height: 420px !important; }
+  .data-analysis { padding: 8px 12px 32px; }
+  .data-analysis-tabs { gap: 16px; }
+  .data-analysis-tab-desc { display: none; }
+}

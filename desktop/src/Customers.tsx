@@ -9,6 +9,7 @@ import {
 } from "./PolicyList";
 
 import FamilyRelationships from "./FamilyRelationships";
+import { NavIcon } from "./components/MoaBrand";
 import NewCustomerFamilyRelationships from "./NewCustomerFamilyRelationships";
 import {
   createFamilyBatchIdempotencyKey,
@@ -344,7 +345,7 @@ function expiryBadge(endDate: string | null) {
 
 function statusChip(status: string | null | undefined) {
   if (!status) return null;
-  return <span style={{ ...badge(STATUS_CHIP[status] ?? "#888"), marginLeft: 0 }}>{status}</span>;
+  return <span className="status-chip" data-status={status} style={{ ...badge(STATUS_CHIP[status] ?? "#888"), marginLeft: 0 }}>{status}</span>;
 }
 
 /** 남은 일수 배지 (management 목록의 days / days_until 용) */
@@ -802,6 +803,7 @@ export default function CustomersScreen({
         tabIndex={0}
         aria-label={`${c.name} 고객 상세 열기`}
         aria-pressed={c.id === selectedId}
+        className="customer-row"
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
@@ -820,23 +822,26 @@ export default function CustomersScreen({
           background: c.id === selectedId ? "var(--color-bg-base)" : "var(--color-bg-surface)",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {c.name}
-            {statusChip(c.effective_status)}
-          </span>
-          <span style={{ display: "flex", gap: 4 }}>
-            {fu && <span style={{ ...badge(fu.color), marginLeft: 0 }}>연 {fu.label}</span>}
-            {exp && <span style={{ ...badge(exp.color), marginLeft: 0 }}>만 {exp.label}</span>}
-          </span>
+        <span className="customer-avatar" aria-hidden="true">{Array.from(c.name.trim())[0] ?? "?"}</span>
+        <div className="customer-row-body">
+          <div className="customer-row-head" style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span className="customer-row-name">{c.name}</span>
+              {statusChip(c.effective_status)}
+            </span>
+            <span style={{ display: "flex", gap: 4 }}>
+              {fu && <span style={{ ...badge(fu.color), marginLeft: 0 }}>연 {fu.label}</span>}
+              {exp && <span style={{ ...badge(exp.color), marginLeft: 0 }}>만 {exp.label}</span>}
+            </span>
+          </div>
+          <div className="customer-row-meta" style={{ fontSize: 12, color: "#888" }}>
+            {c.phone || "-"}
+            {c.active_policy_count > 0 && ` · 계약 ${c.active_policy_count}`}
+          </div>
+          {c.tags.length > 0 && (
+            <div className="customer-row-tags" style={{ fontSize: 11, color: "#2563eb" }}>{c.tags.map((t) => `#${t}`).join(" ")}</div>
+          )}
         </div>
-        <div style={{ fontSize: 12, color: "#888" }}>
-          {c.phone || "-"}
-          {c.active_policy_count > 0 && ` · 계약 ${c.active_policy_count}`}
-        </div>
-        {c.tags.length > 0 && (
-          <div style={{ fontSize: 11, color: "#2563eb" }}>{c.tags.map((t) => `#${t}`).join(" ")}</div>
-        )}
       </div>
     );
   };
@@ -1390,7 +1395,7 @@ export default function CustomersScreen({
       {/* 왼쪽: 고객 목록 (고객 목록 탭에서만) */}
       {screen === "list" && (
       <div className="customers-list-panel">
-        <button onClick={() => startNew()} style={{ width: "100%", marginBottom: 6, padding: "10px 16px", fontWeight: 700, fontSize: 14, background: "var(--primary-600)", color: "#fff", border: "2px solid var(--primary-500)", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.2)" }}>
+        <button className="customers-new-button" onClick={() => startNew()} style={{ width: "100%", marginBottom: 6, padding: "10px 16px", fontWeight: 700, fontSize: 14, background: "var(--primary-600)", color: "#fff", border: "2px solid var(--primary-500)", borderRadius: 8, cursor: "pointer", boxShadow: "0 2px 8px rgba(37,99,235,0.2)" }}>
           새 고객
         </button>
         <input
@@ -1401,7 +1406,7 @@ export default function CustomersScreen({
           onChange={(e) => setQ(e.target.value)}
         />
         {/* 가입/미가입/해지 세그먼트 — GET /customers?status= */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+        <div className="customers-segments" style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
           {[
             ["", "전체"],
             ["가입", "가입"],
@@ -1411,6 +1416,7 @@ export default function CustomersScreen({
           ].map(([v, label]) => (
             <button
               key={v || "all"}
+              aria-pressed={statusFilter === v}
               onClick={() => setStatusFilter(v)}
               style={{
                 flex: "1 1 auto",
@@ -1604,7 +1610,9 @@ export default function CustomersScreen({
                 gap: 6,
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", width: "100%" }}>
+              <div className="customer-profile-row">
+              <div className="customer-profile-main" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", width: "100%" }}>
+                {mode === "edit" && detail && <span className="customer-avatar customer-avatar-lg" aria-hidden="true">{Array.from(detail.name.trim())[0] ?? "?"}</span>}
                 <strong style={{ fontSize: 15 }}>{mode === "new" ? "새 고객 등록" : (detail?.name || "고객 정보")}</strong>
                 {mode === "edit" && familyBackTarget && (
                   <button
@@ -1643,16 +1651,35 @@ export default function CustomersScreen({
                   </span>
                 )}
               </div>
+              {mode === "edit" && detail && (
+                <div className="customer-shortcuts" aria-label="고객 업무 바로가기">
+                  <button type="button" className="customer-shortcut" onClick={() => setActiveTab("policies")}><NavIcon name="data" /><strong>계약현황</strong><small>{detail.policies.length}건</small></button>
+                  <button type="button" className="customer-shortcut" onClick={() => setActiveTab("coverage")}><NavIcon name="coverage" /><strong>보장분석</strong><small>가입 담보 보기</small></button>
+                  <button type="button" className="customer-shortcut" onClick={() => setActiveTab("consultations")}><NavIcon name="customers" /><strong>상담이력</strong><small>{detail.consultations.length}건</small></button>
+                </div>
+              )}
+              </div>
               {mode === "edit" && detail && kpi && (
-                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "2px 12px", fontSize: 12, color: "#555", width: "100%" }}>
-                  <span>전화 <b style={{ color: "#333" }}>{detail.phone || "-"}</b></span>
-                  <span>계약 <b style={{ color: "#333" }}>{kpi.policyCount}</b>건{kpi.policyCount !== kpi.activeCount && <> (유지중 <b style={{ color: "#333" }}>{kpi.activeCount}</b>)</>}</span>
-                  <span>총 월납 <b style={{ color: "#333" }}>₩{kpi.premium.total.toLocaleString()}</b>{kpi.premium.lumpSumCount > 0 && <span style={{ color: "#888" }} title="일시납 보험료는 총 월납에서 제외됩니다"> +일시납 {kpi.premium.lumpSumCount}건</span>}</span>
-                  <span style={{ color: kpi.expiring > 0 ? "#c60" : "#555" }}>만기 임박 <b style={{ color: "#333" }}>{kpi.expiring}</b>건 (30일)</span>
+                <div className="customer-kpi" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "2px 12px", fontSize: 12, color: "#555", width: "100%" }}>
+                  <span className="customer-kpi-item"><span className="customer-kpi-label">전화</span><b style={{ color: "#333" }}>{detail.phone || "-"}</b></span>
+                  <span className="customer-kpi-item"><span className="customer-kpi-label">계약</span><span className="customer-kpi-value"><b style={{ color: "#333" }}>{kpi.policyCount}</b>건{kpi.policyCount !== kpi.activeCount && <> (유지중 <b style={{ color: "#333" }}>{kpi.activeCount}</b>)</>}</span></span>
+                  <span className="customer-kpi-item"><span className="customer-kpi-label">총 월납</span><span className="customer-kpi-value"><b style={{ color: "#333" }}>₩{kpi.premium.total.toLocaleString()}</b>{kpi.premium.lumpSumCount > 0 && <span style={{ color: "#888" }} title="일시납 보험료는 총 월납에서 제외됩니다"> +일시납 {kpi.premium.lumpSumCount}건</span>}</span></span>
+                  <span className="customer-kpi-item" style={{ color: kpi.expiring > 0 ? "#c60" : "#555" }}><span className="customer-kpi-label">만기 임박</span><span className="customer-kpi-value"><b style={{ color: "#333" }}>{kpi.expiring}</b>건 (30일)</span></span>
                 </div>
               )}
               {mode === "edit" && detail && (
-                <div role="tablist" style={{ display: "flex", flexWrap: "nowrap", overflowX: "auto", gap: 2, width: "100%" }}>
+                <section className="customer-overview" aria-label="저장된 고객 개요">
+                  <h3>고객 개요</h3>
+                  <dl>
+                    <div><dt>등록년월</dt><dd>{detail.first_registered_ym || "미입력"}</dd></div>
+                    <div><dt>직업</dt><dd>{detail.occupation || "미입력"}</dd></div>
+                    <div><dt>태그</dt><dd>{detail.tags?.join(" · ") || "없음"}</dd></div>
+                    <div><dt>주소</dt><dd>{detail.address || "미입력"}</dd></div>
+                  </dl>
+                </section>
+              )}
+              {mode === "edit" && detail && (
+                <div role="tablist" className="customers-detail-tabs" style={{ display: "flex", flexWrap: "nowrap", overflowX: "auto", gap: 2, width: "100%" }}>
                   {([
                     ["basic", "기본정보", null],
                     ["policies", "계약", detail.policies.length],
@@ -1663,8 +1690,8 @@ export default function CustomersScreen({
                   ] as [DetailTab, string, number | null][]).map(([tab, label, count]) => {
                     const on = activeTab === tab;
                     return (
-                      <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={on} tabIndex={on ? 0 : -1} onClick={() => setActiveTab(tab)} style={{ flex: "0 0 auto", background: "none", border: "1px solid var(--color-border-default)", borderBottom: "2px solid " + (on ? "#2563eb" : "transparent"), color: on ? "#2563eb" : "#555", fontWeight: on ? 700 : 400, fontSize: 13, padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap" }}>
-                        {label}{count !== null && <span style={{ marginLeft: 4, fontSize: 12, fontWeight: 400, color: on ? "#2563eb" : "#888" }}>{count}</span>}
+                      <button key={tab} role="tab" id={`tab-${tab}`} aria-controls={`panel-${tab}`} aria-selected={on} tabIndex={on ? 0 : -1} onClick={() => setActiveTab(tab)} className="detail-tab" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
+                        {label}{count !== null && <span className="detail-tab-count">{count}</span>}
                       </button>
                     );
                   })}

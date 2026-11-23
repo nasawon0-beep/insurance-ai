@@ -9,6 +9,7 @@ import { CoverageTable, PolicyList, savePolicies, type PolicyDraft } from "./Pol
 import { StatCard } from "./components/DashboardCards";
 import OnboardingScreen from "./components/OnboardingScreen";
 import { ThemeToggle, ThemeSelector } from "./components/ThemeToggle";
+import { MoaLogo, NavIcon } from "./components/MoaBrand";
 import MobileConnectionPanel from "./components/MobileConnectionPanel";
 import BusinessResetPanel from "./components/BusinessResetPanel";
 import BusinessRestorePanel from "./components/BusinessRestorePanel";
@@ -1864,38 +1865,49 @@ function DataAnalysisScreen({
   onBackgroundJob: BackgroundJobReporter;
 }) {
   const [section, setSection] = useState<"new" | "bulk" | "customerPdf" | "coveragePdf">("new");
+  const sectionOrder = ["new", "bulk", "customerPdf", "coveragePdf"] as const;
+  const moveSection = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const index = sectionOrder.indexOf(section);
+    const next = event.key === "ArrowRight" ? (index + 1) % sectionOrder.length
+      : event.key === "ArrowLeft" ? (index + sectionOrder.length - 1) % sectionOrder.length
+      : event.key === "Home" ? 0
+      : event.key === "End" ? sectionOrder.length - 1
+      : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    setSection(sectionOrder[next]);
+    document.getElementById(`data-tab-${sectionOrder[next]}`)?.focus();
+  };
   const sectionButton = (key: typeof section, label: string, desc: string) => (
     <button
       key={key}
+      type="button"
+      role="tab"
+      id={`data-tab-${key}`}
+      aria-selected={section === key}
+      aria-controls={`data-panel-${key}`}
+      tabIndex={section === key ? 0 : -1}
+      className="data-analysis-tab"
       onClick={() => setSection(key)}
-      style={{
-        textAlign: "left",
-        padding: 14,
-        border: `1px solid ${section === key ? "#2563eb" : "var(--color-border-default)"}`,
-        borderRadius: 10,
-        background: section === key ? "#eff6ff" : "var(--color-bg-surface)",
-        color: "var(--color-text-primary)",
-        cursor: "pointer",
-      }}
     >
-      <div style={{ fontWeight: 800, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{desc}</div>
+      <span className="data-analysis-tab-label">{label}</span>
+      <span className="data-analysis-tab-desc">{desc}</span>
     </button>
   );
 
   return (
-    <div style={{ maxWidth: 1040, margin: "24px auto", padding: "0 16px" }}>
-      <h2 style={{ margin: "0 0 4px" }}>자료분석</h2>
-      <p style={{ margin: "0 0 16px", color: "var(--color-text-secondary)", fontSize: 13 }}>
+    <div className="data-analysis">
+      <h2 className="data-analysis-title">자료분석</h2>
+      <p className="data-analysis-lead">
         업로드 전용 화면입니다. 조회는 고객 탭과 보장분석 탭에서 진행합니다.
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 }}>
+      <div className="data-analysis-tabs" role="tablist" aria-label="자료 종류" onKeyDown={moveSection}>
         {sectionButton("new", "새고객 등록", "상세 입력·파일/텍스트 분석")}
         {sectionButton("bulk", "일괄등록", "엑셀/CSV 업로드")}
         {sectionButton("customerPdf", "고객자료 PDF", "증권·제안서·상담자료 업로드")}
         {sectionButton("coveragePdf", "보장분석서 PDF", "보장분석 자료 업로드")}
       </div>
-      <div style={{ display: section === "new" ? "block" : "none" }} aria-hidden={section !== "new"}>
+      <div className="data-analysis-panel" role="tabpanel" id="data-panel-new" aria-labelledby="data-tab-new" style={{ display: section === "new" ? "block" : "none" }} aria-hidden={section !== "new"}>
         <CustomersScreen
           screen="new"
           onOpenCustomer={onOpenCustomer}
@@ -1903,13 +1915,13 @@ function DataAnalysisScreen({
           onBackgroundJob={onBackgroundJob}
         />
       </div>
-      <div style={{ display: section === "bulk" ? "block" : "none" }} aria-hidden={section !== "bulk"}>
+      <div className="data-analysis-panel" role="tabpanel" id="data-panel-bulk" aria-labelledby="data-tab-bulk" style={{ display: section === "bulk" ? "block" : "none" }} aria-hidden={section !== "bulk"}>
         <div style={pboxStyle}>
           <b>일괄등록 (엑셀)</b>
           <ImportWizard onBackgroundJob={onBackgroundJob} />
         </div>
       </div>
-      <div style={{ display: section === "customerPdf" ? "block" : "none" }} aria-hidden={section !== "customerPdf"}>
+      <div className="data-analysis-panel" role="tabpanel" id="data-panel-customerPdf" aria-labelledby="data-tab-customerPdf" style={{ display: section === "customerPdf" ? "block" : "none" }} aria-hidden={section !== "customerPdf"}>
         <CapturePanel
           title="고객자료 PDF"
           subtitle="고객자료·증권·제안서 PDF를 업로드해 고객/계약/상담 정보를 저장합니다."
@@ -1923,7 +1935,7 @@ function DataAnalysisScreen({
           onBackgroundJob={onBackgroundJob}
         />
       </div>
-      <div style={{ display: section === "coveragePdf" ? "block" : "none" }} aria-hidden={section !== "coveragePdf"}>
+      <div className="data-analysis-panel" role="tabpanel" id="data-panel-coveragePdf" aria-labelledby="data-tab-coveragePdf" style={{ display: section === "coveragePdf" ? "block" : "none" }} aria-hidden={section !== "coveragePdf"}>
         <CapturePanel
           title="보장분석서 PDF"
           subtitle="보장분석서 PDF를 업로드해 고객별 보장분석 데이터를 저장합니다."
@@ -2327,7 +2339,8 @@ function AssistantTabButton({ view, setView }: { view: View; setView: (v: View) 
         letterSpacing: "0.01em",
       }}
     >
-      AI 문의
+      <NavIcon name="assistant" />
+      <span>AI 문의</span>
       {pendingTasks > 0 && (
         <span
           style={{
@@ -2939,7 +2952,8 @@ function App() {
           letterSpacing: "0.01em",
         }}
       >
-        {label}
+        <NavIcon name={key} />
+        <span>{label}</span>
       </button>
     );
   };
@@ -2992,7 +3006,7 @@ function App() {
           </div>
         )}
         <aside className="app-sidebar">
-          <div className="app-brand">모아<span>둠</span></div>
+          <div className="app-brand"><MoaLogo /></div>
         <nav className="app-navigation" aria-label="주요 메뉴">
           {tab("home", "홈")}
           {tab("customers", "고객")}

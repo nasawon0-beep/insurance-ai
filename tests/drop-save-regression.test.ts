@@ -42,7 +42,8 @@ test("visible desktop branding is 모아둠 while technical identity remains sta
   const engine = read("desktop/src/engine.ts");
 
   assert.match(app, /모아둠 시작 중/);
-  assert.match(app, /className="app-brand">모아<span>둠<\/span>/);
+  assert.match(app, /className="app-brand"><MoaLogo \/>/);
+  assert.match(read("desktop/src/components/MoaBrand.tsx"), /className="app-brand-name">모아둠<\/span>/);
   assert.match(login, />\s*모아둠\s*</);
   assert.match(onboarding, /모아둠을 사용할 준비가 되었습니다/);
   assert.match(onboarding, /모아둠 초기 설정/);

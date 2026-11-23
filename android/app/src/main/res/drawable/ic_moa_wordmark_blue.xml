@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp" android:height="28dp"
+    android:viewportWidth="28" android:viewportHeight="28">
+    <!-- Approved click-through UI v2 wordmark; launcher/package identity is unchanged. -->
+    <path android:fillColor="#1761FF" android:pathData="m2,7 l5,-4 7,7 7,-7 5,4 v15 l-5,3 V12 l-7,7 -7,-7 v13 l-5,-3 Z" />
+    <path android:fillColor="#5A9DFF" android:pathData="m2,7 l5,-4 v9 l-5,4 Z M21,12 l5,-5 v15 l-5,3 Z" />
+</vector>
