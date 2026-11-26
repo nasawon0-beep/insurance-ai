@@ -3067,6 +3067,7 @@ function App() {
         <div style={{ display: view === "customers" ? "block" : "none" }} aria-hidden={view !== "customers"}>
           <CustomersScreen
             screen="list"
+            visible={view === "customers"}
             focusCustomer={focusCustomer}
             focusListView={focusListView}
             onOpenCustomer={openCustomer}

@@ -386,6 +386,7 @@ export default function CustomersScreen({
   focusCustomer = null,
   focusListView = null,
   screen = "list",
+  visible = true,
   onOpenCustomer,
   onFocusConsumed,
   onListViewConsumed,
@@ -395,6 +396,7 @@ export default function CustomersScreen({
   focusCustomer?: { id: string; nonce: number } | null;
   focusListView?: { view: "expiry" | "birthday"; nonce: number } | null;
   screen?: "new" | "list";
+  visible?: boolean;
   onOpenCustomer?: (id: string) => void;
   onFocusConsumed?: () => void;
   onListViewConsumed?: () => void;
@@ -709,8 +711,10 @@ export default function CustomersScreen({
   }, [selectedId]);
 
   useEffect(() => {
-    refreshList();
-  }, [refreshList]);
+    // App keeps tabs mounted: returning from a save must read the current
+    // authenticated, filtered list rather than reuse the hidden tab's rows.
+    if (visible) void refreshList();
+  }, [refreshList, visible]);
 
   useEffect(() => () => listAbortRef.current?.abort(), []);
 
@@ -731,6 +735,7 @@ export default function CustomersScreen({
   // (그래야 탭을 다시 열 때 옛 참조로 없는 고객을 조회하지 않는다).
   useEffect(() => {
     if (focusCustomer) {
+      void refreshList();
       setSelectedId(focusCustomer.id);
       onFocusConsumed?.();
     }

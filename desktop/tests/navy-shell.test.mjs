@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+
 import ts from 'typescript';
 const source = name => fs.readFileSync(new URL('../src/' + name, import.meta.url), 'utf8');
-const root = new URL('../../', import.meta.url);
+
 const css = source('styles/navy.css');
 
 test('navy shell keeps six existing destinations and mounted panels', () => {
@@ -35,8 +35,18 @@ test('API calls and payload expressions stay identical to the approved base', ()
     visit(file); return result;
   }
   for(const name of ['App.tsx','Customers.tsx','PolicyList.tsx','Assistant.tsx']) {
-    const before = execFileSync('git',['show',`HEAD:desktop/src/${name}`],{cwd:root,encoding:'utf8'});
-    assert.deepEqual(calls(source(name)),calls(before),name);
+    // Keep the pre-fix API contract pinned even on a shallow CI checkout.
+    const baseline = JSON.parse(fs.readFileSync(new URL('./fixtures/list-fix-api-baseline.json', import.meta.url), 'utf8'));
+    assert.equal(baseline.base, '642093bae39ca79d3f8849df0135aa4b010f0ea8');
+    const expected = [...baseline.files[name]];
+    if (name === 'Customers.tsx') {
+      // Approved list-readback fix adds exactly one argument-free refresh on
+      // external focus. All API paths, payloads and other calls stay identical.
+      const firstRefresh = expected.indexOf('refreshList()');
+      assert.ok(firstRefresh >= 0);
+      expected.splice(firstRefresh + 1, 0, 'refreshList()');
+    }
+    assert.deepEqual(calls(source(name)),expected,name);
   }
 });
 
