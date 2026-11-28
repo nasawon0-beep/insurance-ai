@@ -32,7 +32,9 @@ internal fun MoaTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composabl
         background = Color(0xFF111E34), onBackground = Color(0xFFE5EDFF),
         surface = Color(0xFF111E34), onSurface = Color(0xFFE5EDFF),
         surfaceVariant = Color(0xFF18263D), onSurfaceVariant = Color(0xFFA6B3CD),
-        outline = Color(0xFF6E7B96), outlineVariant = Color(0xFF2E3E59),
+        outline = Color(0xFF8896B3), outlineVariant = Color(0xFF2E3E59),
+        error = Color(0xFFFFB4AB), onError = Color(0xFF4A2A2F),
+        errorContainer = Color(0xFF4A2A2F), onErrorContainer = Color(0xFFFFB4AB),
     ) else lightColorScheme(
         primary = Color(0xFF0055FF), onPrimary = Color.White,
         primaryContainer = Color(0xFFEDF4FF), onPrimaryContainer = Color(0xFF0055FF),
@@ -40,8 +42,10 @@ internal fun MoaTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composabl
         secondaryContainer = Color(0xFFEDF4FF), onSecondaryContainer = Color(0xFF0055FF),
         background = Color.White, onBackground = Color(0xFF08163C),
         surface = Color.White, onSurface = Color(0xFF08163C),
-        surfaceVariant = Color(0xFFF7F9FC), onSurfaceVariant = Color(0xFF6E7B96),
+        surfaceVariant = Color(0xFFF7F9FC), onSurfaceVariant = Color(0xFF5B6883),
         outline = Color(0xFF6E7B96), outlineVariant = Color(0xFFE4E9F2),
+        error = Color(0xFFB3261E), onError = Color.White,
+        errorContainer = Color(0xFFFDECEA), onErrorContainer = Color(0xFFB3261E),
     )
     MaterialTheme(
         colorScheme = colors,
@@ -51,9 +55,9 @@ internal fun MoaTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composabl
             titleLarge = TextStyle(fontSize = 21.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold),
             titleMedium = TextStyle(fontSize = 16.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold),
             bodyLarge = TextStyle(fontSize = 14.sp, lineHeight = 22.sp),
-            bodyMedium = TextStyle(fontSize = 13.sp, lineHeight = 21.sp),
-            bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 19.sp),
-            labelLarge = TextStyle(fontSize = 13.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
+            bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 22.sp),
+            bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 21.sp),
+            labelLarge = TextStyle(fontSize = 14.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
             labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold),
         ), content = content,
     )

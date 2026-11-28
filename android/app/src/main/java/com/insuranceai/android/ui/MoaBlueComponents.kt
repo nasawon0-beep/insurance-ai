@@ -24,7 +24,9 @@ import com.insuranceai.android.R
 /** Presentation only. All values and actions are supplied by existing screen state. */
 @Composable
 internal fun MoaBrandHeader() {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+    Row(Modifier.fillMaxWidth()
+        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+        .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Image(painterResource(R.drawable.ic_moa_wordmark_blue), contentDescription = null, modifier = Modifier.size(26.dp))
         Text("모아둠", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)

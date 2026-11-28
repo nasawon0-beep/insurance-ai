@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -159,7 +160,7 @@ fun InsuranceAiApp(
                 }
             }
             if (authenticationPolicy.showLockScreen) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Surface(Modifier.fillMaxSize().safeDrawingPadding(), color = MaterialTheme.colorScheme.background) {
                     LoginScreen(
                         biometricAvailable = biometricAvailable,
                         onAuthenticate = { errorSink -> onAuthenticate({}, errorSink) },
