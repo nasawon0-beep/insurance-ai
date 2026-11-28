@@ -1,0 +1,17 @@
+{
+  "primary": "#0055ff",
+  "ink": "#08163c",
+  "muted": "#5b6883",
+  "line": "#e4e9f2",
+  "pale": "#edf4ff",
+  "canvas": "#f7f9fc",
+  "success": "#065f60",
+  "successSoft": "#c2f5e9",
+  "error": "#b3261e",
+  "darkSurface": "#111e34",
+  "darkInk": "#e5edff",
+  "darkMuted": "#a6b3cd",
+  "darkAccent": "#6f9eff",
+  "buttonRadius": 8,
+  "cardRadius": 10
+}

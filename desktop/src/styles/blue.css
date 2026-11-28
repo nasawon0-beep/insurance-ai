@@ -2,7 +2,14 @@
    Source of truth: the approved click-through design (PC). No data, API, auth or update behaviour lives here.
    - --moa-muted (#6e7b96) is the approved secondary hue; it is 4.25:1 on white, so it is used for icons/rules only.
      Body-size secondary text uses --color-text-secondary (#5b6883, 5.6:1) to keep WCAG AA. */
+@font-face {
+  font-family: 'SUIT';
+  src: url('../assets/fonts/SUIT-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
 :root {
+  --font-sans: 'SUIT', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
   --moa-radius: 10px;
   --moa-muted: #6e7b96;
   --moa-subtle: #f7f9fc;
@@ -172,11 +179,11 @@ th { background: var(--moa-subtle); color: var(--color-text-secondary); font-wei
 .customer-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(86px, 1fr)); gap: 8px; flex: 0 0 300px; }
 .customer-shortcut { min-height: 88px !important; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 10px !important; background: var(--color-accent-soft) !important; border-color: var(--color-border-default) !important; color: var(--color-text-primary) !important; }
 .customer-shortcut .moa-nav-icon { color: var(--color-accent-text); }
-.customer-shortcut small { color: var(--color-text-secondary); font-size: 11px; }
+.customer-shortcut small { color: var(--color-text-secondary); font-size: 12px; }
 .customer-overview { width: 100%; padding: 13px 16px; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--color-bg-surface); }
 .customer-overview h3 { margin: 0 0 10px; font-size: 14px; }
 .customer-overview dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 0; }
-.customer-overview dt { color: var(--color-text-secondary); font-size: 11px; margin-bottom: 5px; }
+.customer-overview dt { color: var(--color-text-secondary); font-size: 12px; margin-bottom: 5px; }
 .customer-overview dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 1300px) {
   .customer-profile-row { flex-wrap: wrap; }
@@ -266,4 +273,15 @@ th { background: var(--moa-subtle); color: var(--color-text-secondary); font-wei
   .data-analysis { padding: 8px 12px 32px; }
   .data-analysis-tabs { gap: 16px; }
   .data-analysis-tab-desc { display: none; }
+}
+
+/* Shared interaction contract, matching Android and public account screens. */
+button:disabled {cursor:default}
+@media(pointer:coarse){
+  button,.detail-tab,.data-analysis-tab,.customers-segments button {min-height:48px!important}
+  input:not([type="checkbox"]):not([type="radio"]),select {min-height:48px}
+}
+@media(forced-colors:active){
+  button:focus-visible,a:focus-visible,input:focus-visible {outline:3px solid Highlight!important}
+  .customer-row[aria-pressed="true"],.detail-tab[aria-selected="true"] {border:2px solid Highlight!important}
 }

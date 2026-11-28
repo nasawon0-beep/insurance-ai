@@ -25,8 +25,8 @@ class BlueThemeTest {
    compose.waitForIdle()
    assertEquals(Color(0xFF0055FF),primary)
    assertEquals(Color(0xFF08163C),ink)
-   assertEquals(Color(0xFF6E7B96),muted)
-   assertEquals(13.sp,body)
+   assertEquals(Color(0xFF5B6883),muted)
+   assertEquals(14.sp,body)
    assertEquals("Filter chips must not retain default Material purple",Color(0xFFEDF4FF),chip)
   }
  }
