@@ -8,20 +8,31 @@ plugins {
 android {
     namespace = "com.insuranceai.android"
     compileSdk = 35
+    testBuildType = "release"
 
     defaultConfig {
-        applicationId = "com.insuranceai.android"
+        applicationId = "com.flowon.moadoom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.0.0-phase18"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "com.insuranceai.android.MoaDoomTestRunner"
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        create("storeRelease") {
+            storeFile = file(System.getenv("MOADOOM_STORE_KEYSTORE") ?: "missing-release-key.jks")
+            storePassword = System.getenv("MOADOOM_STORE_PASSWORD")
+            keyAlias = "moadoom-release"
+            keyPassword = System.getenv("MOADOOM_STORE_PASSWORD")
+        }
+    }
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("storeRelease")
+            isDebuggable = false
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -65,7 +76,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
-    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    implementation("net.zetetic:sqlcipher-android:4.6.1@aar")
     implementation("androidx.sqlite:sqlite-ktx:2.4.0")
 
     implementation("androidx.biometric:biometric:1.1.0")

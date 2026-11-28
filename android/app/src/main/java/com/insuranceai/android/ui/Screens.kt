@@ -830,6 +830,20 @@ fun SyncScreen(
     }
     Column(Modifier.fillMaxSize()) {
         MoaTopBar(title = { Text("PC 동기화") })
+        TextButton(onClick = {
+            android.app.AlertDialog.Builder(context)
+                .setTitle("모아둠 정식 · 개인정보 안내")
+                .setMessage("고객·보험·상담 자료는 이 기기와 직접 연결한 PC 사이에서 동기화합니다. 고객자료를 입력하기 전에 적법한 처리 권한과 필요한 동의를 확보해 주세요. 카메라는 PC 연결 QR 스캔에만 선택적으로 사용합니다. 기존 모아둠 앱의 자료는 자동으로 옮겨지지 않으며 기존 앱을 삭제하지 마세요. 문의: nasawon0@gmail.com")
+                .setPositiveButton("개인정보 처리방침") { _, _ ->
+                    try {
+                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://nasawon0-beep.github.io/insurance-ai-updates/privacy/")))
+                    } catch (_: android.content.ActivityNotFoundException) {
+                        android.widget.Toast.makeText(context, "브라우저에서 모아둠 사이트를 열어 주세요", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }.setNegativeButton("닫기", null).show()
+        }) { Text("개인정보 안내 · 문의") }
+
         LazyColumn(
             Modifier.fillMaxSize().imePadding(),
             contentPadding = PaddingValues(22.dp),

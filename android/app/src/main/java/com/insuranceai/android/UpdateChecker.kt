@@ -24,6 +24,8 @@ data class UpdateInfo(
 /** Checks the published Android update JSON and returns only newer versions. */
 class UpdateChecker(private val context: Context) {
     suspend fun checkForUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
+        // Store builds only update through ONEstore; never download the legacy debug package.
+        if (BuildConfig.APPLICATION_ID == "com.flowon.moadoom") return@withContext null
         val connection = URL(UpdateMetadataPolicy.ENDPOINT).openConnection() as java.net.HttpURLConnection
         try {
             connection.connectTimeout = 8000

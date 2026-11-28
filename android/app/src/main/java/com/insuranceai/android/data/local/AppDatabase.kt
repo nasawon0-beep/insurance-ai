@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Database(
     entities = [CustomerEntity::class, PolicyEntity::class, ConsultationEntity::class,
@@ -29,8 +29,8 @@ abstract class AppDatabase : RoomDatabase() {
         const val DB_NAME = "insurance_ai.db"
 
         fun create(context: Context, passphrase: ByteArray): AppDatabase {
-            SQLiteDatabase.loadLibs(context)
-            val factory = SupportFactory(passphrase)
+            System.loadLibrary("sqlcipher")
+            val factory = SupportOpenHelperFactory(passphrase)
             return Room.databaseBuilder(context, AppDatabase::class.java, DB_NAME)
                 .openHelperFactory(factory)
                 .addMigrations(*DatabaseMigrations.ALL)
