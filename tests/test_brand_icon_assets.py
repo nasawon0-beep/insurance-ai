@@ -21,7 +21,7 @@ def sha256(path: Path) -> str:
 
 def test_selected_round2_b_source_is_preserved_exactly() -> None:
     assert sha256(SOURCE_DIR / "moadoom-icon-b.png") == EXPECTED_PNG_SHA256
-    assert sha256(SOURCE_DIR / "moadoom-icon-b.svg") == EXPECTED_SVG_SHA256
+    assert hashlib.sha256((SOURCE_DIR / "moadoom-icon-b.svg").read_bytes().replace(b"\r\n", b"\n")).hexdigest() == EXPECTED_SVG_SHA256
 
 
 def test_windows_tauri_icons_are_generated_from_selected_source() -> None:
@@ -44,13 +44,13 @@ def test_windows_tauri_icons_are_generated_from_selected_source() -> None:
         assert {(16, 16), (32, 32), (48, 48), (256, 256)} <= image.ico.sizes()
 
 
-def test_android_adaptive_and_themed_icons_reference_b_resources() -> None:
+def test_android_adaptive_and_themed_icons_reference_m_resources() -> None:
     colors = (ANDROID_RES / "values" / "colors.xml").read_text(encoding="utf-8")
-    assert '<color name="ic_launcher_background">#285AA8</color>' in colors
+    assert '<color name="ic_launcher_background">#F7F9FC</color>' in colors
 
     foreground = (ANDROID_RES / "drawable" / "ic_launcher_foreground.xml").read_text(encoding="utf-8")
-    assert "#F7F0DF" in foreground
-    assert "#E6D8BD" in foreground
+    assert "#1761FF" in foreground
+    assert "#5A9DFF" in foreground
     assert "gradient" not in foreground.lower()
 
     monochrome = ANDROID_RES / "drawable" / "ic_launcher_monochrome.xml"
@@ -66,7 +66,7 @@ def test_android_adaptive_and_themed_icons_reference_b_resources() -> None:
         assert '@color/ic_launcher_background' in text
 
 
-def test_tauri_installer_uses_b_icon_without_changing_product_identity() -> None:
+def test_tauri_installer_uses_m_icon_without_changing_product_identity() -> None:
     config = json.loads((ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     assert config["productName"] == "Insurance AI"
     assert config["mainBinaryName"] == "Insurance AI"
@@ -77,3 +77,10 @@ def test_tauri_installer_uses_b_icon_without_changing_product_identity() -> None
     assert 'android:label="모아둠"' in manifest
     assert 'android:icon="@mipmap/ic_launcher"' in manifest
     assert 'android:roundIcon="@mipmap/ic_launcher_round"' in manifest
+
+def test_shortcut_icon_matches_executable_icon():
+    assert (WINDOWS_ICONS / "moadoom-brand-m.ico").read_bytes() == (WINDOWS_ICONS / "icon.ico").read_bytes()
+    with Image.open(WINDOWS_ICONS / "icon.png") as image:
+        # M has an open lower centre and solid blue outer strokes.
+        assert image.getpixel((256, 400))[:3] == (247, 249, 252)
+        assert image.getpixel((137, 300))[:3] == (23, 97, 255)

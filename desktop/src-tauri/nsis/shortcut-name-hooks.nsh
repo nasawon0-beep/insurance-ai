@@ -4,7 +4,7 @@
 !define MOADOOM_SHORTCUT_NAME "모아둠"
 !define MOADOOM_LEGACY_SHORTCUT_NAME "Insurance AI"
 !define MOADOOM_MAIN_BINARY_NAME "Insurance AI"
-!define MOADOOM_BRAND_ICON_FILE "moadoom-brand-b.ico"
+!define MOADOOM_BRAND_ICON_FILE "moadoom-brand-m.ico"
 
 Var MoadoomInstallCompleted
 

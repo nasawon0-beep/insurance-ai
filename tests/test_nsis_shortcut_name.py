@@ -7,9 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
 HOOK = ROOT / "desktop" / "src-tauri" / "nsis" / "shortcut-name-hooks.nsh"
-BRAND_ICON = ROOT / "desktop" / "src-tauri" / "icons" / "moadoom-brand-b.ico"
+BRAND_ICON = ROOT / "desktop" / "src-tauri" / "icons" / "moadoom-brand-m.ico"
 EXPECTED_TARGET = r"C:\Users\fixture\AppData\Local\Insurance AI\Insurance AI.exe"
-EXPECTED_ICON = r"C:\Users\fixture\AppData\Local\Insurance AI\moadoom-brand-b.ico"
+EXPECTED_ICON = r"C:\Users\fixture\AppData\Local\Insurance AI\moadoom-brand-m.ico"
 
 
 def migrate_fixture(old_target: str | None, new_target: str | None) -> tuple[str | None, str | None]:
@@ -36,7 +36,7 @@ def icon_fixture(target: str | None, current_icon: str | None) -> str | None:
 
 
 APPROVED_RESOURCES = {
-    'icons/moadoom-brand-b.ico': 'moadoom-brand-b.ico',
+    'icons/moadoom-brand-m.ico': 'moadoom-brand-m.ico',
     'binaries/maintenance/maintenance-worker.exe': 'maintenance-worker.exe',
 }
 
@@ -51,7 +51,7 @@ def test_shipping_resource_contract_rejects_unapproved_variants(fault):
     if fault == 'missing-worker':
         resources.pop('binaries/maintenance/maintenance-worker.exe')
     elif fault == 'missing-icon':
-        resources.pop('icons/moadoom-brand-b.ico')
+        resources.pop('icons/moadoom-brand-m.ico')
     elif fault == 'extra':
         resources['unapproved.exe'] = 'unapproved.exe'
     elif fault == 'qa-worker':
@@ -88,7 +88,7 @@ def test_hook_is_target_gated_and_never_creates_shortcuts() -> None:
     assert "Function .onGUIEnd" in text
     assert "!insertmacro IsShortcutTarget" in text
     assert '"$INSTDIR\\${MOADOOM_MAIN_BINARY_NAME}.exe"' in text
-    assert '!define MOADOOM_BRAND_ICON_FILE "moadoom-brand-b.ico"' in text
+    assert '!define MOADOOM_BRAND_ICON_FILE "moadoom-brand-m.ico"' in text
     assert '"$INSTDIR\\${MOADOOM_BRAND_ICON_FILE}"' in text
     assert "${IShellLink::SetIconLocation}" in text
     assert "$UpdateMode != 1" in text
@@ -102,7 +102,7 @@ def test_bundled_shortcut_icon_is_the_verified_b_asset() -> None:
     import hashlib
 
     assert hashlib.sha256(BRAND_ICON.read_bytes()).hexdigest() == (
-        "77abcf6dba9b22bea5de1705537e4eafb2bcd01cd6b2e59950aaf7d2e170baf4"
+        "8aa594a1229b0973de9df21679bb1ab5b2d73e19df5a800bda9ba6a64dca3b15"
     )
 
 
