@@ -71,7 +71,9 @@ class BlueUiScreenTest {
    nav("분석");shot("light-analysis-list","보장분석")
    tap(models.customers.value.first().name);shot("light-analysis-detail","분석 전체 4항목")
    scroll("파싱 원본 보기");shot("light-analysis-bottom","질병 입원일당")
-   scroll("암 (1)");tap("암 (1)");shot("light-analysis-category","선택: 암 · 표시 1 / 전체 4항목")
+   scroll("분석 목록으로");scroll("암 (1)");tap("암 (1)")
+   scroll("선택: 암 · 표시 1 / 전체 4항목")
+   shot("light-analysis-category","선택: 암 · 표시 1 / 전체 4항목")
   }
  }
  @Test fun darkEmptyLongManyAndLargeFontUseTheSameProductionScreens(){
